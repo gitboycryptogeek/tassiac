@@ -4,13 +4,15 @@
   "version": "0.0.0",
   "type": "commonjs",
   "scripts": {
-  "dev": "vite",
-  "build": "vite build",
-  "preview": "vite preview",
-  "start": "node server/server.js",
-  "heroku-postbuild": "npm run build && cp -r src/views src/utils src/components dist/",
-  "migrate": "node server/database/migrate.js"
-},
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "node server/server.js",
+    "heroku-postbuild": "npm run build && cp -r src/views src/utils src/components dist/",
+    "migrate": "node server/database/migrate.js",
+    "db:migrate": "sequelize db:migrate",
+    "postinstall": "npm run db:migrate"
+  },
   "devDependencies": {
     "autoprefixer": "^10.4.21",
     "vite": "^6.2.0"
