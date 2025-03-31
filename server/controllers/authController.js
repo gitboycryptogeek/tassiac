@@ -59,27 +59,21 @@ function querySqlite(sql, params = []) {
     
     // Additional PostgreSQL-specific transformations
     let modifiedSql = sql
-      // Table names
+      // Remove existing quotes first
+      .replace(/"([^"]+)"/g, '$1')
+      // Quote table names
       .replace(/(?:FROM|UPDATE|INTO|JOIN)\s+(\w+)/gi, (match, table) => 
         `${match.split(table)[0]}"${table}"`
       )
-      // ALL camelCase column names need quotes
-      .replace(/([a-z])([A-Z])/g, (match, lower, upper) => 
-        `"${lower}${upper}"`
-      )
-      // Known PostgreSQL reserved words
-      .replace(/\b(user|group|order|select|where|from|update|delete|index)\b(?=\s|$)/gi,
-        match => `"${match}"`
+      // Quote camelCase column names and known fields
+      .replace(/\b(fullName|isAdmin|lastLogin|createdAt|updatedAt|resetToken|resetTokenExpiry)\b/g, 
+        '"$1"'
       )
       // Fix any double quoting issues
       .replace(/""+/g, '"')
       // Convert SQLite LIMIT/OFFSET syntax
       .replace(/LIMIT \?/g, 'LIMIT $1')
-      .replace(/OFFSET \?/g, 'OFFSET $2')
-      // Convert boolean literals
-      .replace(/\b(true|false)\b/gi, match => 
-        match.toLowerCase()
-      );
+      .replace(/OFFSET \?/g, 'OFFSET $2');
 
     // Convert ? placeholders to $1, $2, etc.
     let paramCount = 0;
