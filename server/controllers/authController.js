@@ -283,7 +283,7 @@ exports.login = async (req, res) => {
   }
 };
 
-// Register user (admin only) with direct SQLite
+// Register user (admin only)
 exports.registerUser = async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -294,10 +294,22 @@ exports.registerUser = async (req, res) => {
     const { username, password, fullName, phone, email, isAdmin } = req.body;
 
     // Check if username already exists
-    const existingUsers = await querySqlite(
-      'SELECT id FROM "Users" WHERE username = ?',
-      [username]
-    );
+    let existingUsers;
+    
+    if (process.env.DATABASE_URL) {
+      existingUsers = await sequelize.query(
+        'SELECT id FROM "Users" WHERE username = $1',
+        { 
+          replacements: [username],
+          type: sequelize.QueryTypes.SELECT 
+        }
+      );
+    } else {
+      existingUsers = await querySqlite(
+        'SELECT id FROM Users WHERE username = ?',
+        [username]
+      );
+    }
     
     if (existingUsers && existingUsers.length > 0) {
       return res.status(400).json({ message: 'Username already exists' });
@@ -314,29 +326,38 @@ exports.registerUser = async (req, res) => {
 
     // Create the user
     const now = new Date().toISOString();
+    let newUser;
     
-    const result = await querySqlite(
-      `INSERT INTO "Users" (username, password, "fullName", phone, email, "isAdmin", "createdAt", "updatedAt") 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        username,
-        hashedPassword,
-        fullName,
-        phone,
-        email || null,
-        isAdmin ? 1 : 0,
-        now,
-        now
-      ]
-    );
-
-    // Get the inserted user without password
-    const newUser = await querySqlite(
-      `SELECT id, username, "fullName", phone, email, "isAdmin", "createdAt", "updatedAt" 
-       FROM "Users" 
-       WHERE username = ?`,
-      [username]
-    );
+    if (process.env.DATABASE_URL) {
+      // Direct PostgreSQL insert
+      const result = await sequelize.query(
+        'INSERT INTO "Users" (username, password, "fullName", phone, email, "isAdmin", "createdAt", "updatedAt") VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
+        { 
+          replacements: [username, hashedPassword, fullName, phone, email || null, isAdmin ? true : false, now, now],
+          type: sequelize.QueryTypes.INSERT 
+        }
+      );
+      
+      // Get the inserted user
+      newUser = await sequelize.query(
+        'SELECT id, username, "fullName", phone, email, "isAdmin", "createdAt", "updatedAt" FROM "Users" WHERE username = $1',
+        { 
+          replacements: [username],
+          type: sequelize.QueryTypes.SELECT 
+        }
+      );
+    } else {
+      // SQLite insert
+      await querySqlite(
+        'INSERT INTO Users (username, password, fullName, phone, email, isAdmin, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [username, hashedPassword, fullName, phone, email || null, isAdmin ? 1 : 0, now, now]
+      );
+      
+      newUser = await querySqlite(
+        'SELECT id, username, fullName, phone, email, isAdmin, createdAt, updatedAt FROM Users WHERE username = ?',
+        [username]
+      );
+    }
 
     res.status(201).json({
       message: 'User registered successfully',
@@ -349,7 +370,7 @@ exports.registerUser = async (req, res) => {
       error: process.env.NODE_ENV === 'production' ? undefined : error.message
     });
   }
-};
+}
 
 // Get user profile with direct SQLite
 exports.getProfile = async (req, res) => {
