@@ -61,9 +61,10 @@ function querySqlite(sql, params = []) {
     let modifiedSql = sql
       // Remove all existing quotes first
       .replace(/["`]/g, '')
-      // Add proper quotes for PostgreSQL
+      // Add proper quotes for ALL table names and column names that need it
       .replace(/\bUsers\b/g, '"Users"')
-      .replace(/\b(fullName|isAdmin|lastLogin|createdAt|updatedAt|resetToken|resetTokenExpiry)\b/g, 
+      .replace(/\bPayments\b/g, '"Payments"')
+      .replace(/\b(fullName|isAdmin|lastLogin|createdAt|updatedAt|resetToken|resetTokenExpiry|userId|paymentType|paymentMethod|receiptNumber|transactionId|titheDistribution|platformFee|customFields|targetGoal|isTemplate|endDate)\b/g, 
         '"$1"'
       );
 
@@ -71,16 +72,15 @@ function querySqlite(sql, params = []) {
     let paramCount = 0;
     modifiedSql = modifiedSql.replace(/\?/g, () => `$${++paramCount}`);
 
-    // Convert numeric boolean values to PostgreSQL boolean
-    const postgresParams = params.map(param => 
-      param === 1 || param === 0 ? Boolean(param) : param
-    );
+    // Log the transformed query for debugging
+    debugLog('PostgreSQL transformed query:', { 
+      original: sql,
+      modified: modifiedSql,
+      params: params 
+    });
 
-    debugLog('PostgreSQL query:', { sql: modifiedSql, params: postgresParams });
-
-    // Use raw query with proper parameter binding
     return sequelize.query(modifiedSql, {
-      bind: postgresParams,  // Use bind instead of replacements
+      bind: params,
       type: sequelize.QueryTypes.SELECT,
       raw: true
     });

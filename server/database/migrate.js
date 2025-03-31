@@ -2,6 +2,23 @@ const sequelize = require('../config/database');
 
 async function migrate() {
   try {
+    // Add diagnostic queries
+    console.log('Checking database state...');
+    
+    const tables = await sequelize.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public'
+    `);
+    console.log('Existing tables:', tables[0]);
+
+    const columns = await sequelize.query(`
+      SELECT table_name, column_name, data_type 
+      FROM information_schema.columns 
+      WHERE table_schema = 'public'
+    `);
+    console.log('Table columns:', columns[0]);
+
     // Create Users table
     await sequelize.query(`
       CREATE TABLE IF NOT EXISTS "Users" (
