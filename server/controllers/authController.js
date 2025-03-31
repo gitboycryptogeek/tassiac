@@ -40,18 +40,34 @@ function debugLog(message, data = null) {
   return logMessage;
 }
 
-
-
-// Direct database query function based on environment
 // Direct database query function based on environment
 function querySqlite(sql, params = []) {
   // Check if we're in production with Postgres
   if (process.env.DATABASE_URL) {
     debugLog('POSTGRES ENVIRONMENT DETECTED - Using Sequelize query');
-    // For PostgreSQL, ensure we use double quotes for table names
-    const modifiedSql = sql
-      .replace(/FROM Users/g, 'FROM "Users"')
-      .replace(/FROM Payments/g, 'FROM "Payments"');
+    
+    // For PostgreSQL, ensure we use double quotes for table and column names
+    let modifiedSql = sql
+      .replace(/FROM Users/gi, 'FROM "Users"')
+      .replace(/FROM Payments/gi, 'FROM "Payments"')
+      .replace(/FROM Receipts/gi, 'FROM "Receipts"')
+      .replace(/UPDATE Users/gi, 'UPDATE "Users"')
+      .replace(/DELETE FROM Users/gi, 'DELETE FROM "Users"')
+      .replace(/INSERT INTO Users/gi, 'INSERT INTO "Users"');
+    
+    // Fix column names - ensure camelCase columns have double quotes
+    modifiedSql = modifiedSql
+      .replace(/fullName/g, '"fullName"')
+      .replace(/isAdmin/g, '"isAdmin"')
+      .replace(/lastLogin/g, '"lastLogin"')
+      .replace(/createdAt/g, '"createdAt"')
+      .replace(/updatedAt/g, '"updatedAt"')
+      .replace(/resetToken/g, '"resetToken"')
+      .replace(/resetTokenExpiry/g, '"resetTokenExpiry"');
+    
+    // Fix double quoting issue (avoid "\"fullName\"")
+    modifiedSql = modifiedSql
+      .replace(/"\"([^\"]+)\""/, '"$1"');
     
     return sequelize.query(modifiedSql, {
       replacements: params,
@@ -77,7 +93,7 @@ function querySqlite(sql, params = []) {
         return reject(err);
       }
       
-      debugLog(`SQLite query returned ${rows.length} rows`);
+      debugLog(`SQLite query returned ${rows ? rows.length : 0} rows`);
       resolve(rows);
       
       db.close((closeErr) => {
@@ -86,7 +102,6 @@ function querySqlite(sql, params = []) {
     });
   });
 }
-  
 
 // Login controller with extensive debugging
 exports.login = async (req, res) => {
@@ -195,7 +210,7 @@ exports.login = async (req, res) => {
     try {
       debugLog('Updating last login time');
       await querySqlite(
-        'UPDATE Users SET lastLogin = ?, updatedAt = ? WHERE id = ?',
+        'UPDATE "Users" SET "lastLogin" = ?, "updatedAt" = ? WHERE id = ?',
         [new Date().toISOString(), new Date().toISOString(), user.id]
       );
       debugLog('Last login time updated successfully');
@@ -220,10 +235,12 @@ exports.login = async (req, res) => {
     } catch (objError) {
       debugLog('Error creating clean user object:', objError);
       // Create a minimal object to continue
+      const isAdminValue = typeof user.isAdmin === 'boolean' ? user.isAdmin : 
+                          (user.isAdmin === 1 || user.isAdmin === '1' || user.isAdmin === 'true');
       userObj = {
         id: user.id,
         username: user.username,
-        isAdmin: user.isAdmin === 1 || user.isAdmin === true
+        isAdmin: isAdminValue
       };
     }
 
@@ -231,11 +248,13 @@ exports.login = async (req, res) => {
     let token = '';
     try {
       debugLog('Generating JWT token');
+      const isAdminValue = typeof user.isAdmin === 'boolean' ? user.isAdmin : 
+                          (user.isAdmin === 1 || user.isAdmin === '1' || user.isAdmin === 'true');
       token = jwt.sign(
         {
           id: user.id,
           username: user.username,
-          isAdmin: user.isAdmin === 1 || user.isAdmin === true
+          isAdmin: isAdminValue
         },
         process.env.JWT_SECRET || 'default-secret-key',
         { expiresIn: '8h' }
@@ -297,7 +316,7 @@ exports.registerUser = async (req, res) => {
     const now = new Date().toISOString();
     
     const result = await querySqlite(
-      `INSERT INTO Users (username, password, fullName, phone, email, isAdmin, createdAt, updatedAt) 
+      `INSERT INTO "Users" (username, password, "fullName", phone, email, "isAdmin", "createdAt", "updatedAt") 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         username,
@@ -313,8 +332,8 @@ exports.registerUser = async (req, res) => {
 
     // Get the inserted user without password
     const newUser = await querySqlite(
-      `SELECT id, username, fullName, phone, email, isAdmin, createdAt, updatedAt 
-       FROM Users 
+      `SELECT id, username, "fullName", phone, email, "isAdmin", "createdAt", "updatedAt" 
+       FROM "Users" 
        WHERE username = ?`,
       [username]
     );
@@ -341,8 +360,8 @@ exports.getProfile = async (req, res) => {
     
     // Get user without sensitive fields
     const users = await querySqlite(
-      `SELECT id, username, fullName, phone, email, isAdmin, lastLogin, createdAt, updatedAt 
-       FROM Users 
+      `SELECT id, username, "fullName", phone, email, "isAdmin", "lastLogin", "createdAt", "updatedAt" 
+       FROM "Users" 
        WHERE id = ?`,
       [req.user.id]
     );
@@ -366,8 +385,8 @@ exports.getUsers = async (req, res) => {
   try {
     // Get all users without sensitive fields
     const users = await querySqlite(
-      `SELECT id, username, fullName, phone, email, isAdmin, lastLogin, createdAt, updatedAt 
-       FROM Users`
+      `SELECT id, username, "fullName", phone, email, "isAdmin", "lastLogin", "createdAt", "updatedAt" 
+       FROM "Users"`
     );
 
     res.json({ users });
@@ -379,6 +398,7 @@ exports.getUsers = async (req, res) => {
     });
   }
 };
+
 // Update user (admin only) with direct SQLite
 exports.updateUser = async (req, res) => {
   try {
@@ -392,7 +412,7 @@ exports.updateUser = async (req, res) => {
 
     // Check if user exists
     const users = await querySqlite(
-      'SELECT id, isAdmin FROM "Users" WHERE id = ?',
+      'SELECT id, "isAdmin" FROM "Users" WHERE id = ?',
       [userId]
     );
     
@@ -403,7 +423,7 @@ exports.updateUser = async (req, res) => {
     // Count total admins if we're changing admin status
     if (users[0].isAdmin !== (isAdmin ? 1 : 0)) {
       const adminCount = await querySqlite(
-        'SELECT COUNT(*) as count FROM "Users" WHERE isAdmin = 1'
+        'SELECT COUNT(*) as count FROM "Users" WHERE "isAdmin" = 1'
       );
       
       // If user is being promoted to admin, check admin limit (max 5)
@@ -419,12 +439,12 @@ exports.updateUser = async (req, res) => {
 
     // Update the user
     await querySqlite(
-      `UPDATE Users SET 
-        fullName = ?, 
+      `UPDATE "Users" SET 
+        "fullName" = ?, 
         phone = ?, 
         email = ?, 
-        isAdmin = ?, 
-        updatedAt = ?
+        "isAdmin" = ?, 
+        "updatedAt" = ?
       WHERE id = ?`,
       [
         fullName,
@@ -438,8 +458,8 @@ exports.updateUser = async (req, res) => {
 
     // Get the updated user
     const updatedUser = await querySqlite(
-      `SELECT id, username, fullName, phone, email, isAdmin, lastLogin, createdAt, updatedAt 
-       FROM Users 
+      `SELECT id, username, "fullName", phone, email, "isAdmin", "lastLogin", "createdAt", "updatedAt" 
+       FROM "Users" 
        WHERE id = ?`,
       [userId]
     );
@@ -465,7 +485,7 @@ exports.deleteUser = async (req, res) => {
 
     // Check if user exists
     const users = await querySqlite(
-      'SELECT id, isAdmin FROM "Users" WHERE id = ?',
+      'SELECT id, "isAdmin" FROM "Users" WHERE id = ?',
       [userId]
     );
     
@@ -480,21 +500,21 @@ exports.deleteUser = async (req, res) => {
 
     // Check if the user has any related records
     const payments = await querySqlite(
-      'SELECT COUNT(*) as count FROM Payments WHERE userId = ?',
+      'SELECT COUNT(*) as count FROM "Payments" WHERE userId = ?',
       [userId]
     );
 
     const receipts = await querySqlite(
-      'SELECT COUNT(*) as count FROM Receipts WHERE userId = ?',
+      'SELECT COUNT(*) as count FROM "Receipts" WHERE userId = ?',
       [userId]
     );
 
     // If user has related records, don't delete but mark as inactive
     if (payments[0].count > 0 || receipts[0].count > 0) {
       await querySqlite(
-        `UPDATE Users SET 
+        `UPDATE "Users" SET 
           isActive = 0, 
-          updatedAt = ?
+          "updatedAt" = ?
         WHERE id = ?`,
         [new Date().toISOString(), userId]
       );
@@ -523,6 +543,7 @@ exports.deleteUser = async (req, res) => {
     });
   }
 };
+
 exports.resetUserPassword = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -568,7 +589,7 @@ exports.resetUserPassword = async (req, res) => {
     
     // Update password
     await querySqlite(
-      `UPDATE Users SET password = ?, updatedAt = ? WHERE id = ?`,
+      `UPDATE "Users" SET password = ?, "updatedAt" = ? WHERE id = ?`,
       [hashedPassword, new Date().toISOString(), userId]
     );
     
@@ -579,7 +600,7 @@ exports.resetUserPassword = async (req, res) => {
       
       if (tables && tables.length > 0) {
         await querySqlite(
-          `INSERT INTO AdminAction (actionType, targetId, actionData, initiatedBy, status, createdAt, updatedAt) 
+          `INSERT INTO "AdminAction" (actionType, targetId, actionData, initiatedBy, status, "createdAt", "updatedAt") 
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [
             'RESET_PASSWORD',
@@ -609,6 +630,7 @@ exports.resetUserPassword = async (req, res) => {
     });
   }
 };
+
 // Change password with direct SQLite
 exports.changePassword = async (req, res) => {
   try {
@@ -652,7 +674,7 @@ exports.changePassword = async (req, res) => {
     
     // Update password
     await querySqlite(
-      `UPDATE Users SET password = ?, updatedAt = ? WHERE id = ?`,
+      `UPDATE "Users" SET password = ?, "updatedAt" = ? WHERE id = ?`,
       [hashedPassword, new Date().toISOString(), req.user.id]
     );
     
