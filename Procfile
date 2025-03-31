@@ -1,1 +1,2 @@
-web: node server/server.js
+release: npm run migrate
+web: npm start
