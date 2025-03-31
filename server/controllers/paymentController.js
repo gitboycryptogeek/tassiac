@@ -585,5 +585,43 @@ exports.mpesaCallback = async (req, res) => {
   }
 };
 
+exports.createManualPayment = async (req, res) => {
+  try {
+    // Extract payment data from request
+    const paymentData = req.body;
+    
+    // Allow special offerings if they have the required fields
+    if (paymentData.paymentType?.startsWith('SPECIAL_')) {
+      if (!paymentData.targetGoal || !paymentData.endDate) {
+        return res.status(400).json({
+          message: "Special offerings require targetGoal and endDate"
+        });
+      }
+      // Set as template if it's the initial special offering creation
+      if (!paymentData.userId) {
+        paymentData.isTemplate = true;
+        paymentData.status = 'COMPLETED';
+      }
+    }
+
+    // Create the payment
+    const payment = await Payment.create({
+      ...paymentData,
+      addedBy: req.user.id
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Payment created successfully',
+      payment
+    });
+  } catch (error) {
+    console.error('Error creating payment:', error);
+    res.status(400).json({
+      message: error.message || 'Error creating payment'
+    });
+  }
+};
+
 // DO NOT CHANGE THIS EXPORT
 module.exports = exports;

@@ -119,25 +119,22 @@ Payment.init({
   tableName: '"Payments"', // Force quoted table name for PostgreSQL
   timestamps: true,
   hooks: {
-    beforeValidate: (payment) => {
-      // Ensure description is never empty for special offerings
-      if (payment.paymentType && 
-          payment.paymentType.startsWith('SPECIAL_') && 
-          (!payment.description || payment.description.trim() === '')) {
-        payment.description = 'Unnamed Special Offering';
+    beforeValidate: (payment, options) => {
+      // Allow special offering creation from both endpoints
+      if (payment.paymentType && payment.paymentType.startsWith('SPECIAL_')) {
+        // Don't throw error, just validate and normalize the data
+        if (!payment.description || payment.description.trim() === '') {
+          payment.description = 'Unnamed Special Offering';
+        }
+        if (payment.isTemplate) {
+          payment.status = 'COMPLETED';
+        }
       }
     },
     
     beforeCreate: async (payment, options) => {
-      // Check for duplicate templates if this is a special offering template
-      if (payment.paymentType && 
-          payment.paymentType.startsWith('SPECIAL_') && 
-          payment.isTemplate === true) {
-        
-        // Ensure special offering templates are always completed
-        payment.status = 'COMPLETED';
-        
-        // Check for existing template with the same paymentType
+      // Only validate duplicate templates
+      if (payment.isTemplate && payment.paymentType?.startsWith('SPECIAL_')) {
         const existingTemplate = await Payment.findOne({
           where: {
             paymentType: payment.paymentType,
@@ -149,14 +146,6 @@ Payment.init({
         if (existingTemplate) {
           throw new Error(`A special offering template with type ${payment.paymentType} already exists`);
         }
-      }
-      
-      // Make sure actual payments to special offerings are NOT marked as templates
-      if (payment.paymentType && 
-          payment.paymentType.startsWith('SPECIAL_') && 
-          payment.isTemplate !== true) {
-        // Force isTemplate to false for actual payments
-        payment.isTemplate = false;
       }
     },
     
