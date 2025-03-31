@@ -334,10 +334,11 @@ exports.registerUser = async (req, res) => {
     let existingUsers;
     
     if (process.env.DATABASE_URL) {
+      // Fixed PostgreSQL query with proper parameter binding
       existingUsers = await sequelize.query(
-        'SELECT id FROM "Users" WHERE username = $1',
+        'SELECT id FROM "Users" WHERE username = :username',
         { 
-          replacements: [username],
+          replacements: { username },
           type: sequelize.QueryTypes.SELECT 
         }
       );
@@ -366,25 +367,62 @@ exports.registerUser = async (req, res) => {
     let newUser;
     
     if (process.env.DATABASE_URL) {
-      // Direct PostgreSQL insert
+      // Fixed PostgreSQL insert with named parameters
       const result = await sequelize.query(
-        'INSERT INTO "Users" (username, password, "fullName", phone, email, "isAdmin", "createdAt", "updatedAt") VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
+        `INSERT INTO "Users" (
+          username, 
+          password, 
+          "fullName", 
+          phone, 
+          email, 
+          "isAdmin", 
+          "createdAt", 
+          "updatedAt"
+        ) VALUES (
+          :username, 
+          :password, 
+          :fullName, 
+          :phone, 
+          :email, 
+          :isAdmin, 
+          :createdAt, 
+          :updatedAt
+        ) RETURNING id`,
         { 
-          replacements: [username, hashedPassword, fullName, phone, email || null, isAdmin ? true : false, now, now],
+          replacements: {
+            username,
+            password: hashedPassword,
+            fullName,
+            phone,
+            email: email || null,
+            isAdmin: isAdmin ? true : false,
+            createdAt: now,
+            updatedAt: now
+          },
           type: sequelize.QueryTypes.INSERT 
         }
       );
       
-      // Get the inserted user
+      // Get the inserted user with named parameters
       newUser = await sequelize.query(
-        'SELECT id, username, "fullName", phone, email, "isAdmin", "createdAt", "updatedAt" FROM "Users" WHERE username = $1',
+        `SELECT 
+          id, 
+          username, 
+          "fullName", 
+          phone, 
+          email, 
+          "isAdmin", 
+          "createdAt", 
+          "updatedAt" 
+        FROM "Users" 
+        WHERE username = :username`,
         { 
-          replacements: [username],
+          replacements: { username },
           type: sequelize.QueryTypes.SELECT 
         }
       );
     } else {
-      // SQLite insert
+      // SQLite queries remain unchanged
       await querySqlite(
         'INSERT INTO Users (username, password, fullName, phone, email, isAdmin, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         [username, hashedPassword, fullName, phone, email || null, isAdmin ? 1 : 0, now, now]
