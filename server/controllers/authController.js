@@ -7,6 +7,18 @@ const fs = require('fs');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 
+// Add after other requires
+if (process.env.DATABASE_URL) {
+  debugLog('Initializing with PostgreSQL database');
+  // Verify PostgreSQL connection
+  sequelize.authenticate()
+    .then(() => debugLog('PostgreSQL connection established successfully'))
+    .catch(err => {
+      debugLog('PostgreSQL connection error:', err);
+      console.error('Unable to connect to PostgreSQL database:', err);
+    });
+}
+
 // Setup debug log file
 const LOG_DIR = path.join(__dirname, '..', 'logs');
 if (!fs.existsSync(LOG_DIR)) {
@@ -42,32 +54,46 @@ function debugLog(message, data = null) {
 
 // Direct database query function based on environment
 function querySqlite(sql, params = []) {
-  // PostgreSQL environment
   if (process.env.DATABASE_URL) {
     debugLog('POSTGRES ENVIRONMENT DETECTED - Using Sequelize query');
     
-    // Normalize SQL for PostgreSQL
+    // Additional PostgreSQL-specific transformations
     let modifiedSql = sql
       // Table names
-      .replace(/(?:FROM|UPDATE|INTO)\s+(\w+)/gi, (match, table) => 
+      .replace(/(?:FROM|UPDATE|INTO|JOIN)\s+(\w+)/gi, (match, table) => 
         `${match.split(table)[0]}"${table}"`
       )
-      // Column names that need quotes
-      .replace(/(?<!")(\b(?:fullName|isAdmin|lastLogin|createdAt|updatedAt|resetToken|resetTokenExpiry)\b)(?!")/g, 
-        '"$1"'
+      // ALL camelCase column names need quotes
+      .replace(/([a-z])([A-Z])/g, (match, lower, upper) => 
+        `"${lower}${upper}"`
+      )
+      // Known PostgreSQL reserved words
+      .replace(/\b(user|group|order|select|where|from|update|delete|index)\b(?=\s|$)/gi,
+        match => `"${match}"`
       )
       // Fix any double quoting issues
       .replace(/""+/g, '"')
-      // Convert SQLite LIMIT/OFFSET syntax if present
+      // Convert SQLite LIMIT/OFFSET syntax
       .replace(/LIMIT \?/g, 'LIMIT $1')
-      .replace(/OFFSET \?/g, 'OFFSET $2');
+      .replace(/OFFSET \?/g, 'OFFSET $2')
+      // Convert boolean literals
+      .replace(/\b(true|false)\b/gi, match => 
+        match.toLowerCase()
+      );
 
     // Convert ? placeholders to $1, $2, etc.
     let paramCount = 0;
     modifiedSql = modifiedSql.replace(/\?/g, () => `$${++paramCount}`);
 
+    // Convert numeric boolean values to PostgreSQL boolean
+    const postgresParams = params.map(param => 
+      param === 1 || param === 0 ? Boolean(param) : param
+    );
+
+    debugLog('PostgreSQL query:', { sql: modifiedSql, params: postgresParams });
+
     return sequelize.query(modifiedSql, {
-      replacements: params,
+      replacements: postgresParams,
       type: sequelize.QueryTypes.SELECT,
       raw: true
     });
@@ -99,6 +125,19 @@ function querySqlite(sql, params = []) {
       });
     });
   });
+}
+
+// Add after other helper functions
+function normalizeBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  if (value === 1 || value === '1' || value === 'true') return true;
+  if (value === 0 || value === '0' || value === 'false') return false;
+  return false;
+}
+
+function normalizeDate(value) {
+  if (!value) return null;
+  return new Date(value).toISOString();
 }
 
 // Login controller with extensive debugging
