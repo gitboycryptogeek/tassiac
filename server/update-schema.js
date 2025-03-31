@@ -17,8 +17,8 @@ async function updateSchema() {
       process.exit(1);
     }
 
-    // This will add the new columns without dropping existing data
-    await sequelize.sync({ alter: true });
+    // Use sync instead of alter to avoid foreign key issues
+    await sequelize.sync({ force: false });
     console.log('Database schema updated successfully!');
 
     // Initialize database if needed

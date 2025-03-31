@@ -4,22 +4,34 @@ require('dotenv').config();
 
 let sequelize;
 
-// FORCE production mode when on Heroku
 if (process.env.DATABASE_URL) {
-  console.log('PRODUCTION ENVIRONMENT DETECTED - Using PostgreSQL');
-  sequelize = new Sequelize(process.env.DATABASE_URL, {
-    dialect: 'postgres',
-    protocol: 'postgres',
-    dialectOptions: {
-      ssl: {
-        require: true,
-        rejectUnauthorized: false
-      }
-    },
-    logging: console.log
-  });
+  // Production environment (Heroku)
+  try {
+    sequelize = new Sequelize(process.env.DATABASE_URL, {
+      dialect: 'postgres',
+      protocol: 'postgres',
+      dialectOptions: {
+        ssl: {
+          require: true,
+          rejectUnauthorized: false
+        }
+      },
+      logging: false
+    });
+    console.log('Production database configuration loaded');
+  } catch (error) {
+    console.error('Error parsing DATABASE_URL:', error);
+    // Fallback to SQLite if DATABASE_URL is invalid
+    console.log('Falling back to SQLite database');
+    sequelize = new Sequelize({
+      dialect: 'sqlite',
+      storage: './database.sqlite',
+      logging: false
+    });
+  }
 } else {
-  console.log('DEVELOPMENT ENVIRONMENT - Using SQLite');
+  // Development environment
+  console.log('Development environment - Using SQLite');
   sequelize = new Sequelize({
     dialect: 'sqlite',
     storage: './database.sqlite',
@@ -28,16 +40,13 @@ if (process.env.DATABASE_URL) {
 }
 
 // Test database connection
-const testConnection = async () => {
-  try {
-    await sequelize.authenticate();
+sequelize.authenticate()
+  .then(() => {
     console.log('Database connection established successfully.');
     console.log('Dialect being used:', sequelize.getDialect());
-  } catch (error) {
+  })
+  .catch(error => {
     console.error('Unable to connect to the database:', error);
-  }
-};
-
-testConnection();
+  });
 
 module.exports = sequelize;
