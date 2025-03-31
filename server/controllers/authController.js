@@ -41,7 +41,20 @@ function debugLog(message, data = null) {
 }
 
 // Direct SQLite query function to bypass Sequelize issues
+
+// Direct database query function based on environment
 function querySqlite(sql, params = []) {
+  // Check if we're in production with Postgres
+  if (process.env.DATABASE_URL) {
+    debugLog('POSTGRES ENVIRONMENT DETECTED - Using Sequelize queries');
+    return sequelize.query(sql, {
+      replacements: params,
+      type: sequelize.QueryTypes.SELECT
+    });
+  }
+  
+  // Fall back to SQLite for development
+  debugLog('DEVELOPMENT ENVIRONMENT - Using direct SQLite');
   return new Promise((resolve, reject) => {
     const db = new sqlite3.Database(DB_PATH, (err) => {
       if (err) {
@@ -59,7 +72,7 @@ function querySqlite(sql, params = []) {
         return reject(err);
       }
       
-      debugLog(`SQLite query returned ${rows.length} rows`);
+      debugLog(`SQLite query returned ${rows ? rows.length : 0} rows`);
       resolve(rows);
       
       db.close((closeErr) => {
@@ -67,7 +80,25 @@ function querySqlite(sql, params = []) {
       });
     });
   });
-}
+};
+    
+    debugLog(`Executing SQLite query: ${sql}`, { params });
+    
+    db.all(sql, params, (err, rows) => {
+      if (err) {
+        debugLog('SQLite query error:', err);
+        db.close();
+        return reject(err);
+      }
+      
+      debugLog(`SQLite query returned ${rows.length} rows`);
+      resolve(rows);
+      
+      db.close((closeErr) => {
+        if (closeErr) debugLog('Error closing database:', closeErr);
+      });
+    });
+  
 
 // Login controller with extensive debugging
 exports.login = async (req, res) => {
