@@ -12,26 +12,39 @@ async function updateSchema() {
     try {
       await sequelize.authenticate();
       console.log('Database connection authenticated');
+
+      // Check if tables exist
+      const tableExists = await sequelize.query(
+        'SELECT * FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2',
+        {
+          bind: ['public', 'Payments'],
+          type: sequelize.QueryTypes.SELECT
+        }
+      );
+
+      // If tables don't exist, force create them
+      const force = tableExists.length === 0;
+      console.log(`Tables exist: ${!force}`);
+
+      await sequelize.sync({ force });
+      console.log(`Database schema ${force ? 'created' : 'updated'} successfully!`);
+
+      if (force) {
+        // Initialize database if needed
+        const { initializeDatabase } = require('./utils/dbInit');
+        await initializeDatabase();
+        console.log('Database initialization completed');
+      }
     } catch (error) {
-      console.error('Database connection failed:', error);
+      console.error('Database operation failed:', error);
       process.exit(1);
     }
 
-    // Use sync instead of alter to avoid foreign key issues
-    await sequelize.sync({ force: false });
-    console.log('Database schema updated successfully!');
-
-    // Initialize database if needed
-    const { initializeDatabase } = require('./utils/dbInit');
-    await initializeDatabase();
-    console.log('Database initialization completed');
-
     if (require.main === module) {
-      // Only exit if running directly (not required as a module)
       process.exit(0);
     }
   } catch (error) {
-    console.error('Error updating database schema:', error);
+    console.error('Error in schema update:', error);
     if (require.main === module) {
       process.exit(1);
     }
