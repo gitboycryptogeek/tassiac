@@ -57,23 +57,15 @@ function querySqlite(sql, params = []) {
   if (process.env.DATABASE_URL) {
     debugLog('POSTGRES ENVIRONMENT DETECTED - Using Sequelize query');
     
-    // Additional PostgreSQL-specific transformations
+    // Clean up the SQL for PostgreSQL
     let modifiedSql = sql
-      // Remove existing quotes first
-      .replace(/"([^"]+)"/g, '$1')
-      // Quote table names
-      .replace(/(?:FROM|UPDATE|INTO|JOIN)\s+(\w+)/gi, (match, table) => 
-        `${match.split(table)[0]}"${table}"`
-      )
-      // Quote camelCase column names and known fields
+      // Remove all existing quotes first
+      .replace(/["`]/g, '')
+      // Add proper quotes for PostgreSQL
+      .replace(/\bUsers\b/g, '"Users"')
       .replace(/\b(fullName|isAdmin|lastLogin|createdAt|updatedAt|resetToken|resetTokenExpiry)\b/g, 
         '"$1"'
-      )
-      // Fix any double quoting issues
-      .replace(/""+/g, '"')
-      // Convert SQLite LIMIT/OFFSET syntax
-      .replace(/LIMIT \?/g, 'LIMIT $1')
-      .replace(/OFFSET \?/g, 'OFFSET $2');
+      );
 
     // Convert ? placeholders to $1, $2, etc.
     let paramCount = 0;
@@ -86,8 +78,9 @@ function querySqlite(sql, params = []) {
 
     debugLog('PostgreSQL query:', { sql: modifiedSql, params: postgresParams });
 
+    // Use raw query with proper parameter binding
     return sequelize.query(modifiedSql, {
-      replacements: postgresParams,
+      bind: postgresParams,  // Use bind instead of replacements
       type: sequelize.QueryTypes.SELECT,
       raw: true
     });
@@ -179,7 +172,7 @@ exports.login = async (req, res) => {
     let user = null;
     try {
       const users = await querySqlite(
-        'SELECT * FROM "Users" WHERE username = ?',
+        'SELECT * FROM Users WHERE username = ?',
         [username]
       );
       
@@ -195,7 +188,7 @@ exports.login = async (req, res) => {
       
       // Try to get all users as a diagnostic
       try {
-        const allUsers = await querySqlite('SELECT username FROM "Users" LIMIT 5');
+        const allUsers = await querySqlite('SELECT username FROM Users LIMIT 5');
         debugLog('Sample of available users:', allUsers);
       } catch (allError) {
         debugLog('Error getting all users:', allError);
