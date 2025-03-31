@@ -5,15 +5,14 @@
   "type": "commonjs",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "NODE_ENV=production vite build",
     "preview": "vite preview",
     "start": "node server/server.js",
-    "heroku-postbuild": "npm run build && node server/update-schema.js",
+    "heroku-postbuild": "npm install @rollup/rollup-linux-x64-gnu && npm run build && node server/update-schema.js",
     "db:init": "node server/update-schema.js"
   },
   "devDependencies": {
-    "autoprefixer": "^10.4.21",
-    "vite": "^6.2.0"
+    "autoprefixer": "^10.4.21"
   },
   "dependencies": {
     "africastalking": "^0.7.3",
@@ -44,9 +43,12 @@
     "pg": "^8.14.1",
     "sequelize": "^6.37.6",
     "sqlite3": "^5.1.7",
-    "sequelize-cli": "^6.6.1"
+    "sequelize-cli": "^6.6.1",
+    "vite": "^6.2.0",
+    "@rollup/rollup-linux-x64-gnu": "4.13.0"
   },
   "engines": {
-    "node": "18.x"
+    "node": "18.x",
+    "npm": "10.x"
   }
 }
