@@ -48,7 +48,12 @@ function querySqlite(sql, params = []) {
   // Check if we're in production with Postgres
   if (process.env.DATABASE_URL) {
     debugLog('POSTGRES ENVIRONMENT DETECTED - Using Sequelize query');
-    return sequelize.query(sql, {
+    // For PostgreSQL, ensure we use double quotes for table names
+    const modifiedSql = sql
+      .replace(/FROM Users/g, 'FROM "Users"')
+      .replace(/FROM Payments/g, 'FROM "Payments"');
+    
+    return sequelize.query(modifiedSql, {
       replacements: params,
       type: sequelize.QueryTypes.SELECT
     });
@@ -128,7 +133,7 @@ exports.login = async (req, res) => {
     let user = null;
     try {
       const users = await querySqlite(
-        'SELECT * FROM Users WHERE username = ?',
+        'SELECT * FROM "Users" WHERE username = ?',
         [username]
       );
       
@@ -144,7 +149,7 @@ exports.login = async (req, res) => {
       
       // Try to get all users as a diagnostic
       try {
-        const allUsers = await querySqlite('SELECT username FROM Users LIMIT 5');
+        const allUsers = await querySqlite('SELECT username FROM "Users" LIMIT 5');
         debugLog('Sample of available users:', allUsers);
       } catch (allError) {
         debugLog('Error getting all users:', allError);
@@ -271,7 +276,7 @@ exports.registerUser = async (req, res) => {
 
     // Check if username already exists
     const existingUsers = await querySqlite(
-      'SELECT id FROM Users WHERE username = ?',
+      'SELECT id FROM "Users" WHERE username = ?',
       [username]
     );
     
@@ -387,7 +392,7 @@ exports.updateUser = async (req, res) => {
 
     // Check if user exists
     const users = await querySqlite(
-      'SELECT id, isAdmin FROM Users WHERE id = ?',
+      'SELECT id, isAdmin FROM "Users" WHERE id = ?',
       [userId]
     );
     
@@ -398,7 +403,7 @@ exports.updateUser = async (req, res) => {
     // Count total admins if we're changing admin status
     if (users[0].isAdmin !== (isAdmin ? 1 : 0)) {
       const adminCount = await querySqlite(
-        'SELECT COUNT(*) as count FROM Users WHERE isAdmin = 1'
+        'SELECT COUNT(*) as count FROM "Users" WHERE isAdmin = 1'
       );
       
       // If user is being promoted to admin, check admin limit (max 5)
@@ -460,7 +465,7 @@ exports.deleteUser = async (req, res) => {
 
     // Check if user exists
     const users = await querySqlite(
-      'SELECT id, isAdmin FROM Users WHERE id = ?',
+      'SELECT id, isAdmin FROM "Users" WHERE id = ?',
       [userId]
     );
     
@@ -502,7 +507,7 @@ exports.deleteUser = async (req, res) => {
 
     // Delete the user if no related records
     await querySqlite(
-      'DELETE FROM Users WHERE id = ?',
+      'DELETE FROM "Users" WHERE id = ?',
       [userId]
     );
 
@@ -541,7 +546,7 @@ exports.resetUserPassword = async (req, res) => {
     
     // Find the user
     const users = await querySqlite(
-      'SELECT id, password FROM Users WHERE id = ?',
+      'SELECT id, password FROM "Users" WHERE id = ?',
       [userId]
     );
     
@@ -620,7 +625,7 @@ exports.changePassword = async (req, res) => {
     
     // Find the user
     const users = await querySqlite(
-      `SELECT id, password FROM Users WHERE id = ?`,
+      `SELECT id, password FROM "Users" WHERE id = ?`,
       [req.user.id]
     );
     
