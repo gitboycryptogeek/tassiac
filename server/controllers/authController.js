@@ -42,36 +42,34 @@ function debugLog(message, data = null) {
 
 // Direct database query function based on environment
 function querySqlite(sql, params = []) {
-  // Check if we're in production with Postgres
+  // PostgreSQL environment
   if (process.env.DATABASE_URL) {
     debugLog('POSTGRES ENVIRONMENT DETECTED - Using Sequelize query');
     
-    // For PostgreSQL, ensure we use double quotes for table and column names
+    // Normalize SQL for PostgreSQL
     let modifiedSql = sql
-      .replace(/FROM Users/gi, 'FROM "Users"')
-      .replace(/FROM Payments/gi, 'FROM "Payments"')
-      .replace(/FROM Receipts/gi, 'FROM "Receipts"')
-      .replace(/UPDATE Users/gi, 'UPDATE "Users"')
-      .replace(/DELETE FROM Users/gi, 'DELETE FROM "Users"')
-      .replace(/INSERT INTO Users/gi, 'INSERT INTO "Users"');
-    
-    // Fix column names - ensure camelCase columns have double quotes
-    modifiedSql = modifiedSql
-      .replace(/fullName/g, '"fullName"')
-      .replace(/isAdmin/g, '"isAdmin"')
-      .replace(/lastLogin/g, '"lastLogin"')
-      .replace(/createdAt/g, '"createdAt"')
-      .replace(/updatedAt/g, '"updatedAt"')
-      .replace(/resetToken/g, '"resetToken"')
-      .replace(/resetTokenExpiry/g, '"resetTokenExpiry"');
-    
-    // Fix double quoting issue (avoid "\"fullName\"")
-    modifiedSql = modifiedSql
-      .replace(/"\"([^\"]+)\""/, '"$1"');
-    
+      // Table names
+      .replace(/(?:FROM|UPDATE|INTO)\s+(\w+)/gi, (match, table) => 
+        `${match.split(table)[0]}"${table}"`
+      )
+      // Column names that need quotes
+      .replace(/(?<!")(\b(?:fullName|isAdmin|lastLogin|createdAt|updatedAt|resetToken|resetTokenExpiry)\b)(?!")/g, 
+        '"$1"'
+      )
+      // Fix any double quoting issues
+      .replace(/""+/g, '"')
+      // Convert SQLite LIMIT/OFFSET syntax if present
+      .replace(/LIMIT \?/g, 'LIMIT $1')
+      .replace(/OFFSET \?/g, 'OFFSET $2');
+
+    // Convert ? placeholders to $1, $2, etc.
+    let paramCount = 0;
+    modifiedSql = modifiedSql.replace(/\?/g, () => `$${++paramCount}`);
+
     return sequelize.query(modifiedSql, {
       replacements: params,
-      type: sequelize.QueryTypes.SELECT
+      type: sequelize.QueryTypes.SELECT,
+      raw: true
     });
   }
   
@@ -404,18 +402,44 @@ exports.getProfile = async (req, res) => {
 // Get all users (for admin) with direct SQLite
 exports.getUsers = async (req, res) => {
   try {
-    // Special handling for PostgreSQL vs SQLite
     let users;
     
     if (process.env.DATABASE_URL) {
-      // Direct PostgreSQL query with properly formatted column names
+      // Ensure consistent double quotes for PostgreSQL identifiers
       users = await sequelize.query(
-        'SELECT id, username, "fullName", phone, email, "isAdmin", "lastLogin", "createdAt", "updatedAt" FROM "Users"',
-        { type: sequelize.QueryTypes.SELECT }
+        `SELECT 
+          id, 
+          username, 
+          "fullName", 
+          phone, 
+          email, 
+          "isAdmin", 
+          "lastLogin", 
+          "createdAt", 
+          "updatedAt" 
+        FROM "Users"
+        ORDER BY "createdAt" DESC`,
+        { 
+          type: sequelize.QueryTypes.SELECT,
+          raw: true 
+        }
       );
     } else {
-      // SQLite query
-      users = await querySqlite('SELECT id, username, fullName, phone, email, isAdmin, lastLogin, createdAt, updatedAt FROM Users');
+      // SQLite query - no quotes needed for column names
+      users = await querySqlite(
+        `SELECT 
+          id, 
+          username, 
+          fullName, 
+          phone, 
+          email, 
+          isAdmin, 
+          lastLogin, 
+          createdAt, 
+          updatedAt 
+        FROM Users 
+        ORDER BY createdAt DESC`
+      );
     }
 
     res.json({ users });
