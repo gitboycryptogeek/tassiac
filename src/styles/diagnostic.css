@@ -1,0 +1,56 @@
+/* src/styles/diagnostic.css */
+/* This file adds visible outlines to help debug CSS issues */
+
+/* Add to your index.html before your main CSS */
+
+/* Debug outline for all elements */
+* {
+    outline: 1px solid rgba(255, 0, 0, 0.2) !important;
+  }
+  
+  /* Check if key elements have their styles */
+  .header-logo {
+    outline: 2px solid red !important;
+  }
+  
+  .nav-link {
+    outline: 2px solid blue !important;
+  }
+  
+  .card {
+    outline: 2px solid green !important;
+  }
+  
+  .btn {
+    outline: 2px solid purple !important;
+  }
+  
+  .container {
+    outline: 2px solid orange !important;
+  }
+  
+  /* Add debug messages to empty containers */
+  .container:empty::before {
+    content: "Empty container";
+    color: red;
+    font-weight: bold;
+  }
+  
+  .card:empty::before {
+    content: "Empty card";
+    color: red;
+    font-weight: bold;
+  }
+  
+  /* Debug message */
+  body::after {
+    content: "CSS Diagnostic Active";
+    position: fixed;
+    bottom: 10px;
+    left: 10px;
+    background: black;
+    color: white;
+    padding: 5px 10px;
+    font-size: 12px;
+    z-index: 9999;
+  }
