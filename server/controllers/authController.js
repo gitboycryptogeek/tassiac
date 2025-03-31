@@ -383,11 +383,19 @@ exports.getProfile = async (req, res) => {
 // Get all users (for admin) with direct SQLite
 exports.getUsers = async (req, res) => {
   try {
-    // Get all users without sensitive fields
-    const users = await querySqlite(
-      `SELECT id, username, "fullName", phone, email, "isAdmin", "lastLogin", "createdAt", "updatedAt" 
-       FROM "Users"`
-    );
+    // Special handling for PostgreSQL vs SQLite
+    let users;
+    
+    if (process.env.DATABASE_URL) {
+      // Direct PostgreSQL query with properly formatted column names
+      users = await sequelize.query(
+        'SELECT id, username, "fullName", phone, email, "isAdmin", "lastLogin", "createdAt", "updatedAt" FROM "Users"',
+        { type: sequelize.QueryTypes.SELECT }
+      );
+    } else {
+      // SQLite query
+      users = await querySqlite('SELECT id, username, fullName, phone, email, isAdmin, lastLogin, createdAt, updatedAt FROM Users');
+    }
 
     res.json({ users });
   } catch (error) {
