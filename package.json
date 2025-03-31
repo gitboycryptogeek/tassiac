@@ -8,7 +8,8 @@
   "build": "vite build",
   "preview": "vite preview",
   "start": "node server/server.js",
-  "heroku-postbuild": "npm run build && cp -r src/views src/utils src/components dist/"
+  "heroku-postbuild": "npm run build && cp -r src/views src/utils src/components dist/",
+  "migrate": "node server/database/migrate.js"
 },
   "devDependencies": {
     "autoprefixer": "^10.4.21",
