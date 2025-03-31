@@ -8,10 +8,10 @@ const session = require('express-session');
 const { initializeDatabase } = require('./utils/dbInit');
 const errorHandler = require('./middlewares/errorHandler');
 
-// Import the special offering routes
+// Import routes
 const specialOfferingRoutes = require('./routes/specialOfferingRoutes');
-
-
+const contactRoutes = require('./routes/contactRoutes');
+const routes = require('./routes');
 
 // Load environment variables
 require('dotenv').config();
@@ -19,8 +19,6 @@ require('dotenv').config();
 // Initialize Express app
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-
 
 // Detailed request logging for debugging
 app.use((req, res, next) => {
@@ -69,6 +67,7 @@ app.use((req, res, next) => {
   }
   next();
 });
+
 // Session configuration
 app.use(session({
   secret: process.env.SESSION_SECRET || 'tassiac-session-secret',
@@ -82,40 +81,72 @@ app.use(session({
 }));
 
 // Serve static files from public directory
-app.use(express.static(path.join(__dirname, 'public')));
+app.use('/public', express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, path) => {
+    if (path.endsWith('.pdf')) {
+      res.setHeader('Content-Type', 'application/pdf');
+    }
+  }
+}));
 
-// API routes
-const routes = require('./routes');
+// API routes must come before static file serving
 app.use('/api', routes);
-
-// Add the special offering routes to your API
 app.use('/api/payment/special-offering', specialOfferingRoutes);
-
-// Add route for contact
-const contactRoutes = require('./routes/contactRoutes');
 app.use('/api/contact', contactRoutes);
 
-// Add health check endpoint
+// Health check endpoint
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'up', message: 'Server is running', timestamp: new Date().toISOString() });
 });
 
-// Error handling middleware must be after all routes
-app.use(errorHandler);
-
-// Serve the frontend in production
+// Production static file serving with proper MIME types
 if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '..', 'dist')));
-  
+  // Serve built frontend with correct MIME types
+  app.use(express.static(path.join(__dirname, '..', 'dist'), {
+    setHeaders: (res, path) => {
+      if (path.endsWith('.js')) {
+        res.setHeader('Content-Type', 'application/javascript');
+      } else if (path.endsWith('.css')) {
+        res.setHeader('Content-Type', 'text/css');
+      } else if (path.endsWith('.svg')) {
+        res.setHeader('Content-Type', 'image/svg+xml');
+      } else if (path.endsWith('.json')) {
+        res.setHeader('Content-Type', 'application/json');
+      }
+    }
+  }));
+
+  // Serve source JS files for dynamic imports with correct MIME type
+  app.use('/views', express.static(path.join(__dirname, '..', 'src', 'views'), {
+    setHeaders: (res, path) => {
+      res.setHeader('Content-Type', 'application/javascript');
+    }
+  }));
+
+  app.use('/utils', express.static(path.join(__dirname, '..', 'src', 'utils'), {
+    setHeaders: (res, path) => {
+      res.setHeader('Content-Type', 'application/javascript');
+    }
+  }));
+
+  app.use('/components', express.static(path.join(__dirname, '..', 'src', 'components'), {
+    setHeaders: (res, path) => {
+      res.setHeader('Content-Type', 'application/javascript');
+    }
+  }));
+
+  // SPA fallback - must be after all other routes
   app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, '..', 'dist', 'index.html'));
   });
 }
 
+// Error handling middleware
+app.use(errorHandler);
+
 // Global error handler for unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Promise Rejection:', reason);
-  // Don't exit the process in production, but log the error
   if (process.env.NODE_ENV !== 'production') {
     console.error('Stack trace:', reason.stack);
   }
@@ -129,13 +160,11 @@ initializeDatabase().then(success => {
       console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`API accessible at: http://localhost:${PORT}/api`);
       
-      // Warn if JWT_SECRET isn't set
       if (!process.env.JWT_SECRET) {
         console.warn('WARNING: JWT_SECRET environment variable is not set. Using insecure default secret.');
       }
     });
 
-    // Handle server errors
     server.on('error', (error) => {
       if (error.code === 'EADDRINUSE') {
         console.error(`Port ${PORT} is already in use. Please use another port.`);
