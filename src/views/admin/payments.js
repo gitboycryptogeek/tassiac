@@ -42,6 +42,33 @@ export class AdminPaymentsView extends BaseComponent {
     
     // State flag to prevent double rendering
     this.isRendering = false;
+
+    // Add sorting configuration
+    this.sortConfig = {
+      field: 'id',
+      direction: 'desc'
+    };
+    
+    // Add responsive breakpoints
+    this.breakpoints = {
+      mobile: 768,
+      tablet: 1024
+    };
+    
+    // Add viewport tracking
+    this.viewport = {
+      width: window.innerWidth,
+      isMobile: window.innerWidth < 768,
+      isTablet: window.innerWidth >= 768 && window.innerWidth < 1024
+    };
+    
+    // Add resize handler
+    this.handleResize = this.handleResize.bind(this);
+    window.addEventListener('resize', this.handleResize);
+    
+    // Add loading optimization
+    this.pageSize = this.viewport.isMobile ? 10 : 20;
+    this.lazyLoadThreshold = 500;
   }
   
   async render() {
@@ -77,14 +104,18 @@ export class AdminPaymentsView extends BaseComponent {
           zIndex: '1'
         }
       });
-  
-      // Add page title with the same styling as dashboard
+
+      // Add navigation at the very top
+      container.appendChild(this.renderTopNavigation());
+      
+      // Add page title
       container.appendChild(this.renderPageHeader());
       
       // Show error or success messages if any
       if (this.error) {
         container.appendChild(this.renderAlert('error', this.error));
       }
+      
       
       if (this.success) {
         container.appendChild(this.renderAlert('success', this.success));
@@ -3031,189 +3062,6 @@ export class AdminPaymentsView extends BaseComponent {
         }
       });
     }
-    
-    // Add navigation links (attach to all admin pages)
-    this.attachNavigationLinks();
-  }
-  
-  attachNavigationLinks() {
-    // Add navigation menu if it doesn't exist
-    if (!document.getElementById('admin-nav-menu')) {
-      const navMenu = this.createElement('div', {
-        id: 'admin-nav-menu',
-        className: 'neo-card',
-        style: {
-          position: 'fixed',
-          top: '20px',
-          left: '20px',
-          zIndex: '999',
-          padding: '15px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '10px',
-          minWidth: '180px'
-        }
-      });
-      
-      // Menu header
-      const menuHeader = this.createElement('div', {
-        style: {
-          borderBottom: '1px solid rgba(148, 163, 184, 0.1)',
-          paddingBottom: '10px',
-          marginBottom: '5px',
-          fontSize: '16px',
-          fontWeight: '600',
-          color: '#f1f5f9',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between'
-        }
-      }, 'Admin Navigation');
-      
-      // Add collapse button
-      const collapseButton = this.createElement('button', {
-        style: {
-          background: 'none',
-          border: 'none',
-          color: '#94a3b8',
-          cursor: 'pointer',
-          padding: '0',
-          fontSize: '16px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: '24px',
-          height: '24px'
-        },
-        onclick: () => {
-          const navLinks = document.getElementById('admin-nav-links');
-          navLinks.style.display = navLinks.style.display === 'none' ? 'flex' : 'none';
-          
-          // Rotate button when collapsing/expanding
-          collapseButton.style.transform = navLinks.style.display === 'none' ? 'rotate(180deg)' : 'rotate(0deg)';
-        }
-      });
-      
-      collapseButton.innerHTML = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="18 15 12 9 6 15"></polyline>
-        </svg>
-      `;
-      
-      menuHeader.appendChild(collapseButton);
-      navMenu.appendChild(menuHeader);
-      
-      // Links container
-      const navLinks = this.createElement('div', {
-        id: 'admin-nav-links',
-        style: {
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '8px'
-        }
-      });
-      
-      // Navigation links
-      const links = [
-        { name: 'Dashboard', url: '/admin/dashboard', icon: 'dashboard' },
-        { name: 'Payments', url: '/admin/payments', icon: 'payments', active: true },
-        { name: 'Add Payment', url: '/admin/add-payment', icon: 'add' },
-        { name: 'Expenses', url: '/admin/expenses', icon: 'expenses' },
-        { name: 'Users', url: '/admin/users', icon: 'users' }
-      ];
-      
-      links.forEach(link => {
-        const navLink = this.createElement('a', {
-          href: link.url,
-          className: 'nav-link',
-          style: {
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '8px 10px',
-            borderRadius: '6px',
-            fontSize: '14px',
-            fontWeight: '500',
-            textDecoration: 'none',
-            color: link.active ? '#f1f5f9' : '#94a3b8',
-            backgroundColor: link.active ? 'rgba(79, 70, 229, 0.2)' : 'transparent',
-            transition: 'all 0.2s ease'
-          }
-        }, link.name);
-        
-        navLink.addEventListener('mouseenter', () => {
-          if (!link.active) {
-            navLink.style.backgroundColor = 'rgba(30, 41, 59, 0.5)';
-            navLink.style.color = '#f1f5f9';
-          }
-        });
-        
-        navLink.addEventListener('mouseleave', () => {
-          if (!link.active) {
-            navLink.style.backgroundColor = 'transparent';
-            navLink.style.color = '#94a3b8';
-          }
-        });
-        
-        // Add icon
-        let iconSvg = '';
-        switch (link.icon) {
-          case 'dashboard':
-            iconSvg = `
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="3" y="3" width="7" height="7"></rect>
-                <rect x="14" y="3" width="7" height="7"></rect>
-                <rect x="14" y="14" width="7" height="7"></rect>
-                <rect x="3" y="14" width="7" height="7"></rect>
-              </svg>
-            `;
-            break;
-          case 'payments':
-            iconSvg = `
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect>
-                <line x1="1" y1="10" x2="23" y2="10"></line>
-              </svg>
-            `;
-            break;
-          case 'add':
-            iconSvg = `
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="8" x2="12" y2="16"></line>
-                <line x1="8" y1="12" x2="16" y2="12"></line>
-              </svg>
-            `;
-            break;
-          case 'expenses':
-            iconSvg = `
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M2 17h2v.5H3v1h1v.5H2v1h3v-4H2v1zm2-5h1V8H3v1h1v3zm-1 3h1.8L2 13.1v.9h3v-1H3.2L5 14.9v-.9H2v1zm5-6v2h14V9H8zm0 14h14v-2H8v2zm0-6h14v-2H8v2z"></path>
-              </svg>
-            `;
-            break;
-          case 'users':
-            iconSvg = `
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-                <circle cx="9" cy="7" r="4"></circle>
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-                <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-              </svg>
-            `;
-            break;
-        }
-        
-        const iconSpan = this.createElement('span');
-        iconSpan.innerHTML = iconSvg;
-        navLink.prepend(iconSpan);
-        
-        navLinks.appendChild(navLink);
-      });
-      
-      navMenu.appendChild(navLinks);
-      document.body.appendChild(navMenu);
-    }
   }
   
   updateView() {
@@ -3498,4 +3346,59 @@ export class AdminPaymentsView extends BaseComponent {
       document.head.appendChild(styleElement);
     }
   }
-}
+
+  renderTopNavigation() {
+    const nav = document.createElement('nav');
+    nav.className = 'admin-top-nav';
+    nav.style.cssText = 'padding: 1rem; border-bottom: 1px solid rgba(148, 163, 184, 0.1); background: rgba(30, 41, 59, 0.5);';
+    
+    const links = [
+      { path: '/admin/dashboard', text: 'Dashboard', icon: '📊' },
+      { path: '/admin/payments', text: 'Payments', icon: '💰', active: true },
+      { path: '/admin/users', text: 'Users', icon: '👥' },
+      { path: '/admin/expenses', text: 'Expenses', icon: '📉' }
+    ];
+    
+    const navContent = document.createElement('div');
+    navContent.style.cssText = 'max-width: 1200px; margin: 0 auto; display: flex; gap: 1rem;';
+    
+    links.forEach(link => {
+      const a = document.createElement('a');
+      a.href = link.path;
+      a.className = `nav-link ${link.active ? 'active' : ''}`;
+      a.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 1rem;
+        color: ${link.active ? '#fff' : '#94a3b8'};
+        text-decoration: none;
+        border-radius: 0.5rem;
+        background: ${link.active ? 'rgba(79, 70, 229, 0.2)' : 'transparent'};
+        transition: all 0.2s;
+      `;
+      
+      a.innerHTML = `${link.icon} ${link.text}`;
+      
+      // Hover effect
+      a.addEventListener('mouseenter', () => {
+        if (!link.active) {
+          a.style.background = 'rgba(30, 41, 59, 0.5)';
+          a.style.color = '#fff';
+        }
+      });
+      
+      a.addEventListener('mouseleave', () => {
+        if (!link.active) {
+          a.style.background = 'transparent';
+          a.style.color = '#94a3b8';
+        }
+      });
+      
+      navContent.appendChild(a);
+    });
+    
+    nav.appendChild(navContent);
+    return nav;
+  }
+} // End of class AdminPaymentsView
