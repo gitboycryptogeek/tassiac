@@ -62,15 +62,32 @@ export class AdminPaymentsView extends BaseComponent {
       isTablet: window.innerWidth >= 768 && window.innerWidth < 1024
     };
     
-    // Add resize handler
-    this.handleResize = this.handleResize.bind(this);
-    window.addEventListener('resize', this.handleResize);
-    
     // Add loading optimization
     this.pageSize = this.viewport.isMobile ? 10 : 20;
     this.lazyLoadThreshold = 500;
+
+    // Add resize handler binding after method definition 
+    this.handleResize = this.handleResize.bind(this);
+    window.addEventListener('resize', this.handleResize);
   }
   
+  handleResize() {
+    const width = window.innerWidth;
+    this.viewport = {
+        width,
+        isMobile: width < this.breakpoints.mobile,
+        isTablet: width >= this.breakpoints.mobile && width < this.breakpoints.tablet
+    };
+    
+    // Update page size based on viewport
+    this.pageSize = this.viewport.isMobile ? 10 : 20;
+    
+    // Trigger re-render if needed
+    if (this.isRendered) {
+        this.updateView();
+    }
+  }
+
   async render() {
     // Prevent re-entry during rendering
     if (this.isRendering) {
@@ -1971,8 +1988,8 @@ export class AdminPaymentsView extends BaseComponent {
           <div style="text-align: center; padding: 40px 0; color: #ef4444;">
             <svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin: 0 auto 20px;">
               <circle cx="12" cy="12" r="10"></circle>
-              <line x1="12" y1="8" x2="12" y2="12"></line>
-              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              <path d="M12 8v4"></path>
+              <path d="M12 16h.01"></path>
             </svg>
             <p style="font-weight: 600; margin-bottom: 8px; font-size: 18px;">Error loading payment details</p>
             <p style="color: #94a3b8;">${error.message}</p>
