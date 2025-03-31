@@ -13,28 +13,29 @@ async function updateSchema() {
       await sequelize.authenticate();
       console.log('Database connection authenticated');
 
-      // Check if tables exist
-      const tableExists = await sequelize.query(
-        'SELECT * FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2',
-        {
-          bind: ['public', 'Payments'],
-          type: sequelize.QueryTypes.SELECT
-        }
-      );
-
-      // If tables don't exist, force create them
-      const force = tableExists.length === 0;
-      console.log(`Tables exist: ${!force}`);
-
-      await sequelize.sync({ force });
-      console.log(`Database schema ${force ? 'created' : 'updated'} successfully!`);
-
-      if (force) {
-        // Initialize database if needed
-        const { initializeDatabase } = require('./utils/dbInit');
-        await initializeDatabase();
-        console.log('Database initialization completed');
+      if (sequelize.getDialect() === 'postgres') {
+        // For PostgreSQL, create schema if it doesn't exist
+        await sequelize.query('CREATE SCHEMA IF NOT EXISTS public');
+        
+        // Drop and recreate tables in PostgreSQL (only in production)
+        console.log('Recreating tables in PostgreSQL...');
+        await sequelize.query('DROP TABLE IF EXISTS "Payments" CASCADE');
+        await sequelize.query('DROP TABLE IF EXISTS "Users" CASCADE');
+        
+        // Force sync to create tables with proper casing
+        await sequelize.sync({ force: true });
+      } else {
+        // For SQLite, just sync normally
+        await sequelize.sync({ alter: true });
       }
+
+      console.log('Database schema updated successfully!');
+
+      // Initialize database
+      const { initializeDatabase } = require('./utils/dbInit');
+      await initializeDatabase();
+      console.log('Database initialization completed');
+
     } catch (error) {
       console.error('Database operation failed:', error);
       process.exit(1);

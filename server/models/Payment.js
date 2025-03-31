@@ -1,9 +1,11 @@
 // server/models/Payment.js
-const { DataTypes, Op } = require('sequelize');
+const { DataTypes, Op, Model } = require('sequelize');
 const sequelize = require('../config/database');
 const User = require('./User');
 
-const Payment = sequelize.define('Payment', {
+class Payment extends Model {}
+
+Payment.init({
   id: {
     type: DataTypes.INTEGER,
     primaryKey: true,
@@ -112,9 +114,10 @@ const Payment = sequelize.define('Payment', {
     comment: 'Flag for special offering templates (not actual payments)'
   }
 }, {
-  // Model options
-  timestamps: true, // Enables createdAt and updatedAt
-  
+  sequelize,
+  modelName: 'Payment',
+  tableName: '"Payments"', // Force quoted table name for PostgreSQL
+  timestamps: true,
   hooks: {
     beforeValidate: (payment) => {
       // Ensure description is never empty for special offerings
