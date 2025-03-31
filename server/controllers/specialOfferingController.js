@@ -242,7 +242,7 @@ exports.createSpecialOffering = async (req, res) => {
     
     // Direct database query to ensure no duplicates exist
     const [duplicateCheck] = await sequelize.query(
-      "SELECT COUNT(*) as count FROM Payments WHERE paymentType = ? AND isTemplate = 1",
+      "SELECT COUNT(*) as count FROM \"Payments\" WHERE \"paymentType\" = ? AND \"isTemplate\" = true",
       { 
         replacements: [offeringType],
         type: sequelize.QueryTypes.SELECT,

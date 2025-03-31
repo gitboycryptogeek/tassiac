@@ -116,7 +116,7 @@ Payment.init({
 }, {
   sequelize,
   modelName: 'Payment',
-  tableName: '"Payments"', // Force quoted table name for PostgreSQL
+  tableName: 'Payments', // Change to match your PostgreSQL table name
   timestamps: true,
   hooks: {
     beforeValidate: (payment, options) => {
