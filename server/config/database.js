@@ -4,8 +4,9 @@ require('dotenv').config();
 
 let sequelize;
 
-if (process.env.NODE_ENV === 'production') {
-  // Production database (Heroku PostgreSQL)
+// FORCE production mode when on Heroku
+if (process.env.DATABASE_URL) {
+  console.log('PRODUCTION ENVIRONMENT DETECTED - Using PostgreSQL');
   sequelize = new Sequelize(process.env.DATABASE_URL, {
     dialect: 'postgres',
     protocol: 'postgres',
@@ -15,10 +16,10 @@ if (process.env.NODE_ENV === 'production') {
         rejectUnauthorized: false
       }
     },
-    logging: false
+    logging: console.log
   });
 } else {
-  // Development database (SQLite)
+  console.log('DEVELOPMENT ENVIRONMENT - Using SQLite');
   sequelize = new Sequelize({
     dialect: 'sqlite',
     storage: './database.sqlite',
@@ -31,6 +32,7 @@ const testConnection = async () => {
   try {
     await sequelize.authenticate();
     console.log('Database connection established successfully.');
+    console.log('Dialect being used:', sequelize.getDialect());
   } catch (error) {
     console.error('Unable to connect to the database:', error);
   }
