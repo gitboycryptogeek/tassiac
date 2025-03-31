@@ -1,4 +1,4 @@
-// create-env-admins.js
+// fix-env-admins.js
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 
@@ -35,7 +35,7 @@ async function createEnvAdmins() {
           const hashedPassword = await bcrypt.hash(password, salt);
           
           await client.query(`
-            INSERT INTO "Users" (username, password, fullName, email, phone, isAdmin, "createdAt", "updatedAt")
+            INSERT INTO "Users" (username, password, "fullName", email, phone, "isAdmin", "createdAt", "updatedAt")
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
             [
               username, 
