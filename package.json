@@ -10,8 +10,8 @@
     "start": "node server/server.js",
     "heroku-postbuild": "npm run build && cp -r src/views src/utils src/components dist/",
     "migrate": "node server/database/migrate.js",
-    "db:migrate": "sequelize db:migrate",
-    "postinstall": "npm run db:migrate"
+    "db:migrate": "node server/update-schema.js",
+    "postinstall": "node server/update-schema.js"
   },
   "devDependencies": {
     "autoprefixer": "^10.4.21",
@@ -45,6 +45,10 @@
     "pdfkit": "^0.16.0",
     "pg": "^8.14.1",
     "sequelize": "^6.37.6",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^5.1.7",
+    "sequelize-cli": "^6.6.1"
+  },
+  "engines": {
+    "node": "18.x"
   }
 }
