@@ -62,7 +62,7 @@ export class DashboardView {
       if (specialGrid) specialGrid.style.gridTemplateColumns = 'repeat(2, 1fr)';
     } else {
       if (statsGrid) statsGrid.style.gridTemplateColumns = 'repeat(3, 1fr)';
-      if (actionsGrid) actionsGrid.style.gridTemplateColumns = 'repeat(3, 1fr)';
+      if (actionsGrid) statsGrid.style.gridTemplateColumns = 'repeat(3, 1fr)';
       if (specialGrid) specialGrid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(300px, 1fr))';
     }
   }
@@ -367,36 +367,27 @@ export class DashboardView {
   }
   
   calculatePaymentStats(payments) {
-    if (!payments || payments.length === 0) {
-      return;
-    }
+    if (!payments?.length) return;
     
-    // Normalize payment properties to handle inconsistent structures
-    const normalizedPayments = payments.map(payment => ({
-      ...payment,
-      // Force boolean interpretation for isTemplate and isExpense
-      isTemplate: payment.isTemplate === true || payment.isTemplate === 1 || payment.isTemplate === 'true',
-      isExpense: payment.isExpense === true || payment.isExpense === 1 || payment.isExpense === 'true',
-      // Ensure status is uppercase string for consistent comparison
-      status: String(payment.status || '').toUpperCase(),
-      // Ensure amount is numeric
-      amount: parseFloat(payment.amount || 0)
-    }));
-    
-    // Filter for valid payments: completed, not expense, not template
-    const completedPayments = normalizedPayments.filter(p => 
-      p.status === 'COMPLETED' && 
-      p.isExpense !== true && 
-      p.isTemplate !== true
-    );
-    
-    // Calculate total contributed
+    const completedPayments = payments.filter(payment => {
+      const isSpecialOffering = payment.paymentType?.startsWith('SPECIAL_');
+      const isValidType = payment.paymentType === 'TITHE' || 
+                         payment.paymentType === 'OFFERING' || 
+                         isSpecialOffering;
+      
+      return payment.status === 'COMPLETED' && 
+             !payment.isExpense && 
+             !payment.isTemplate && 
+             isValidType;
+    });
+  
+    // Calculate total including special offerings
     this.paymentStats.totalContributed = completedPayments.reduce(
-      (sum, payment) => sum + payment.amount, 
+      (sum, payment) => sum + parseFloat(payment.amount || 0), 
       0
     );
-    
-    // Calculate this month's contributions
+  
+    // Calculate this month's contributions including special offerings
     const now = new Date();
     const thisMonth = now.getMonth();
     const thisYear = now.getFullYear();
@@ -407,12 +398,11 @@ export class DashboardView {
         return paymentDate.getMonth() === thisMonth && 
                paymentDate.getFullYear() === thisYear;
       })
-      .reduce((sum, payment) => sum + payment.amount, 0);
-    
-    // Get last payment date from sorted payments (newest first)
-    if (completedPayments.length > 0) {
-      const sortedPayments = this.sortByNewestFirst(completedPayments);
-      this.paymentStats.lastPaymentDate = sortedPayments[0].paymentDate;
+      .reduce((sum, payment) => sum + parseFloat(payment.amount || 0), 0);
+      
+    // Update last payment date
+    if (completedPayments.length) {
+      this.paymentStats.lastPaymentDate = this.sortByNewestFirst(completedPayments)[0].paymentDate;
     }
   }
   
@@ -2551,17 +2541,16 @@ export class DashboardView {
   }
   
   filterPaymentsArray(filter) {
-    if (!this.userPayments || this.userPayments.length === 0) {
-      return [];
-    }
+    if (!this.userPayments?.length) return [];
     
-    // Remove template records completely - these should NEVER be displayed to users
-    let filteredPayments = this.userPayments.filter(p => {
-      return !(p.isTemplate === true || p.isTemplate === 1 || p.isTemplate === 'true');
-    });
+    // Remove templates
+    let filteredPayments = this.userPayments.filter(p => !p.isTemplate);
     
-    // Apply specific filter
     switch(filter) {
+      case 'special':
+        return filteredPayments.filter(payment => 
+          payment.paymentType?.startsWith('SPECIAL_')
+        );
       case 'completed':
         return filteredPayments.filter(payment => payment.status === 'COMPLETED');
       case 'pending':
@@ -2570,11 +2559,6 @@ export class DashboardView {
         return filteredPayments.filter(payment => payment.paymentType === 'TITHE');
       case 'offering':
         return filteredPayments.filter(payment => payment.paymentType === 'OFFERING');
-      case 'special':
-        // FIXED: Correctly identify special offering PAYMENTS
-        return filteredPayments.filter(payment => 
-          payment.paymentType && payment.paymentType.startsWith('SPECIAL_')
-        );
       default:
         return filteredPayments;
     }
@@ -3448,38 +3432,34 @@ export class DashboardView {
   }
   
   formatSpecialOfferingName(type) {
-    if (!type) return 'Unknown';
-    
-    if (!type.startsWith('SPECIAL_')) {
-      return type;
+    if (!type?.startsWith('SPECIAL_')) {
+      return 'Unknown Offering';
     }
     
     const name = type.replace('SPECIAL_', '');
+    const validTypes = [
+      'BUILDING', 'MISSION', 'CHARITY', 'YOUTH', 
+      'EDUCATION', 'EQUIPMENT', 'COMMUNITY', 'OTHER'
+    ];
     
-    // Handle common special offering types
-    switch (name) {
-      case 'BUILDING':
-        return 'Building Fund';
-      case 'MISSION':
-        return 'Mission Trip';
-      case 'CHARITY':
-        return 'Charity Drive';
-      case 'YOUTH':
-        return 'Youth Program';
-      case 'EDUCATION':
-        return 'Education Fund';
-      case 'EQUIPMENT':
-        return 'Equipment Purchase';
-      case 'COMMUNITY':
-        return 'Community Outreach';
-      case 'OTHER':
-        return 'Special Offering';
-      default:
-        // Convert SNAKE_CASE to Title Case
-        return name.split('_')
-          .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-          .join(' ');
-    }
+    return validTypes.includes(name) 
+      ? this.getSpecialOfferingLabel(name)
+      : name.split('_')
+           .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+           .join(' ');
+  }
+  getSpecialOfferingLabel(name) {
+    const labels = {
+      'BUILDING': 'Building Fund',
+      'MISSION': 'Mission Trip',
+      'CHARITY': 'Charity Drive',
+      'YOUTH': 'Youth Program',
+      'EDUCATION': 'Education Fund',
+      'EQUIPMENT': 'Equipment Purchase',
+      'COMMUNITY': 'Community Outreach',
+      'OTHER': 'Special Offering'
+    };
+    return labels[name] || name;
   }
   
   formatTitheCategory(key) {
