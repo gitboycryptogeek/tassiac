@@ -8,22 +8,27 @@ async function updateSchema() {
     console.log('Database URL:', process.env.DATABASE_URL ? 'Found' : 'Not found');
     console.log('Node ENV:', process.env.NODE_ENV);
 
-    // Wait for database connection
     try {
       await sequelize.authenticate();
       console.log('Database connection authenticated');
 
       if (sequelize.getDialect() === 'postgres') {
-        // For PostgreSQL, create schema if it doesn't exist
+        // For PostgreSQL, only create schema if it doesn't exist
         await sequelize.query('CREATE SCHEMA IF NOT EXISTS public');
         
-        // Drop and recreate tables in PostgreSQL (only in production)
-        console.log('Recreating tables in PostgreSQL...');
-        await sequelize.query('DROP TABLE IF EXISTS "Payments" CASCADE');
-        await sequelize.query('DROP TABLE IF EXISTS "Users" CASCADE');
+        // Check if tables exist first
+        const [tables] = await sequelize.query(
+          `SELECT tablename FROM pg_tables WHERE schemaname = 'public'`
+        );
         
-        // Force sync to create tables with proper casing
-        await sequelize.sync({ force: true });
+        if (!tables.some(t => t.tablename === 'Users')) {
+          console.log('Tables not found, running initial sync...');
+          // Only sync if tables don't exist
+          await sequelize.sync({ force: false });
+        } else {
+          console.log('Tables already exist, skipping sync');
+          return;
+        }
       } else {
         // For SQLite, just sync normally
         await sequelize.sync({ alter: true });
@@ -31,10 +36,16 @@ async function updateSchema() {
 
       console.log('Database schema updated successfully!');
 
-      // Initialize database
-      const { initializeDatabase } = require('./utils/dbInit');
-      await initializeDatabase();
-      console.log('Database initialization completed');
+      // Only initialize if no users exist
+      const adminCount = await User.count({ where: { isAdmin: true } });
+      if (adminCount === 0) {
+        console.log('No admin users found. Creating default admin accounts...');
+        const { initializeDatabase } = require('./utils/dbInit');
+        await initializeDatabase();
+        console.log('Database initialization completed');
+      } else {
+        console.log(`Found ${adminCount} existing admin users, skipping initialization`);
+      }
 
     } catch (error) {
       console.error('Database operation failed:', error);

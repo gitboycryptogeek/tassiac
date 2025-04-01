@@ -8,9 +8,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "node server/server.js",
-    "heroku-postbuild": "vite build && node server/update-schema.js",
+    "heroku-postbuild": "vite build",
     "db:init": "node server/update-schema.js",
-    "migrate": "node migrate.js"
+    "migrate": "node migrate.js",
+    "release": "node server/update-schema.js"
   },
   "devDependencies": {
     "autoprefixer": "^10.4.21"
