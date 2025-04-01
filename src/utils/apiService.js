@@ -549,7 +549,8 @@ extractIdFromType(typeString) {
         
         // Fall back to creating via manual payment
         const paymentData = {
-          userId: this.authService.getUser().id,
+          // CHANGE THIS LINE - use passed userId instead of admin's id
+          userId: offeringData.userId || this.authService.getUser().id, // Allow passed userId or fallback to admin
           amount: offeringData.targetGoal || 0,
           paymentType: offeringData.offeringType,
           paymentMethod: 'MANUAL',
@@ -561,6 +562,7 @@ extractIdFromType(typeString) {
           endDate: offeringData.endDate,
           targetGoal: offeringData.targetGoal,
           isTemplate: true, // Explicitly mark as template
+          addedBy: this.authService.getUser().id, // Explicitly track who added it
           customFields: typeof offeringData.customFields === 'string' 
             ? offeringData.customFields 
             : JSON.stringify({

@@ -268,116 +268,40 @@ exports.initiatePayment = async (req, res) => {
 
 // Add manual payment (admin only)
 exports.addManualPayment = async (req, res) => {
+  const transaction = await sequelize.transaction();
+  
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-    
-    const { 
-      userId, 
-      amount, 
-      paymentType, 
-      description, 
-      isExpense, 
-      department,
-      paymentDate,
-      titheDistribution,
-      isPromoted,
-      endDate,
-      customFields,
-      targetGoal
-    } = req.body;
-    
-    // Check if user exists
+    const { userId, amount, paymentType, description } = req.body;
+
+    // Validate that specified user exists
     const user = await User.findByPk(userId);
     if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+      await transaction.rollback();
+      return res.status(400).json({ message: 'Invalid user ID specified' });
     }
-    
-    // Calculate platform fee (0.5% for manual entries)
-    const platformFee = parseFloat((amount * 0.005).toFixed(2));
-    
-    // Generate receipt number
-    const receiptNumber = generateReceiptNumber(paymentType);
-    
-    // FIXED: Check if this is a special offering creation request
-    // We handle this in the specialOfferingController now
-    if (paymentType && paymentType.startsWith('SPECIAL_') && targetGoal) {
-      // This appears to be a special offering template creation
-      // Redirect to the appropriate controller
-      return res.status(400).json({ 
-        message: 'Use the special offering endpoint to create special offerings',
-        error: 'Incorrect endpoint for special offering creation'
-      });
-    }
-    
-    // Determine if this is an actual payment to a special offering
-    const isSpecialOfferingPayment = paymentType && paymentType.startsWith('SPECIAL_');
-    
-    // Create the payment (ensuring it's never marked as a template)
+
+    // Create payment with correct user and admin tracking
     const payment = await Payment.create({
-      userId,
+      userId: userId, // Use the specified user ID (person who paid)
       amount,
       paymentType,
       paymentMethod: 'MANUAL',
       description,
       status: 'COMPLETED',
-      receiptNumber,
-      isExpense: isExpense || false,
-      department: isExpense ? department : null,
-      addedBy: req.user.id,
-      paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
-      platformFee,
-      titheDistribution: paymentType === 'TITHE' ? titheDistribution : null,
-      isPromoted: isPromoted || false,
-      endDate: endDate || null,
-      customFields: customFields || null,
-      targetGoal: null, // Never set targetGoal for actual payments
-      isTemplate: false // Always false for actual payments
+      addedBy: req.user.id, // Track the admin who added it
+      ...req.body // Include other valid fields
+    }, { transaction });
+
+    await transaction.commit();
+
+    res.json({
+      message: 'Manual payment added successfully',
+      payment
     });
-    
-    // Create receipt
-    const receiptData = {
-      paymentId: payment.id,
-      amount,
-      paymentType,
-      paymentMethod: 'MANUAL',
-      description,
-      userDetails: {
-        name: user.fullName,
-        phone: user.phone,
-        email: user.email
-      },
-      churchDetails: {
-        name: 'TASSIAC Church',
-        address: 'Church Address',
-        phone: 'Church Phone',
-        email: 'church@tassiac.com'
-      },
-      receiptNumber,
-      paymentDate: payment.paymentDate,
-      issuedDate: new Date(),
-      titheDistribution: payment.titheDistribution
-    };
-    
-    await Receipt.create({
-      receiptNumber,
-      paymentId: payment.id,
-      userId,
-      generatedBy: req.user.id,
-      receiptData
-    });
-    
-    res.status(201).json({
-      message: isSpecialOfferingPayment ? 
-        'Payment to special offering added successfully' : 
-        'Payment added successfully',
-      payment,
-      receiptNumber
-    });
+
   } catch (error) {
-    console.error('Add manual payment error:', error);
+    await transaction.rollback();
+    console.error('Error adding manual payment:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 };
