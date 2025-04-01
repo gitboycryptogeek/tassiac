@@ -89,6 +89,9 @@ app.use('/public', express.static(path.join(__dirname, 'public'), {
   }
 }));
 
+// Mount special offering routes before general routes
+app.use('/api/special-offerings', require('./routes/specialOfferingRoutes'));
+
 // API routes must come before static file serving
 app.use('/api', routes);
 app.use('/api/payment/special-offering', specialOfferingRoutes);
