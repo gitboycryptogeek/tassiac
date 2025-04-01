@@ -19,11 +19,11 @@ const models = {
 // Sync all models with database
 const syncDatabase = async (force = false) => {
   try {
-    // Never force sync in production
+    // NEVER force sync or alter in production
     if (process.env.NODE_ENV === 'production') {
       console.log('Production environment detected - skipping force sync');
-      // Only run migrations in production
-      await sequelize.sync({ force: false });
+      // Only run migrations in production, no syncing
+      return;
     } else {
       await sequelize.sync({ force });
     }

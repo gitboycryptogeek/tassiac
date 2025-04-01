@@ -15,10 +15,10 @@ if (process.env.DATABASE_URL) {
         rejectUnauthorized: false
       }
     },
-    // Disable logging in production
+    // Important: Disable all auto-sync in production
     logging: false,
-    // Prevent automatic syncing
     sync: false,
+    alter: false, // Prevent automatic schema alterations
     // Add connection pool configuration
     pool: {
       max: 5,

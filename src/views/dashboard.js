@@ -2543,8 +2543,10 @@ export class DashboardView {
   filterPaymentsArray(filter) {
     if (!this.userPayments?.length) return [];
     
-    // Remove templates
-    let filteredPayments = this.userPayments.filter(p => !p.isTemplate);
+    // Remove templates and validate payment types
+    let filteredPayments = this.userPayments.filter(p => {
+      return !p.isTemplate && this.validatePaymentType(p.paymentType);
+    });
     
     switch(filter) {
       case 'special':
@@ -3474,13 +3476,17 @@ export class DashboardView {
         return 'Division';
       case 'generalConference':
         return 'General Conference';
+      case 'special':
+        return 'Special Offering';
       case 'other':
         return 'Other';
       default:
-        // Convert camelCase to Title Case
+        // Convert camelCase or snake_case to Title Case
         return key
           .replace(/([A-Z])/g, ' $1')
-          .replace(/^./, str => str.toUpperCase());
+          .replace(/_/g, ' ')
+          .replace(/^./, str => str.toUpperCase())
+          .trim();
     }
   }
   
@@ -3502,7 +3508,35 @@ export class DashboardView {
 
     return `${r}, ${g}, ${b}`;
   }
-  
+  validatePaymentType(type) {
+    if (!type) return false;
+    
+    const validTypes = [
+      'TITHE',
+      'OFFERING',
+      'DONATION',
+      'EXPENSE',
+      'OTHER'
+    ];
+    
+    // Check if it's a special offering
+    if (type.startsWith('SPECIAL_')) {
+      const specialType = type.replace('SPECIAL_', '');
+      const validSpecialTypes = [
+        'BUILDING',
+        'MISSION',
+        'CHARITY',
+        'YOUTH',
+        'EDUCATION',
+        'EQUIPMENT',
+        'COMMUNITY',
+        'OTHER'
+      ];
+      return validSpecialTypes.includes(specialType);
+    }
+    
+    return validTypes.includes(type);
+  }
   // Add global styles
   addGlobalStyles() {
     if (!document.getElementById('dashboard-global-styles')) {
