@@ -9,8 +9,6 @@
     "preview": "vite preview",
     "start": "node server/server.js",
     "heroku-postbuild": "vite build",
-    "db:init": "node server/update-schema.js",
-    "migrate": "node migrate.js",
     "release": "node server/update-schema.js"
   },
   "devDependencies": {
