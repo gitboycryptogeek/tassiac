@@ -19,11 +19,18 @@ const models = {
 // Sync all models with database
 const syncDatabase = async (force = false) => {
   try {
-    await sequelize.sync({ force });
+    // Never force sync in production
+    if (process.env.NODE_ENV === 'production') {
+      console.log('Production environment detected - skipping force sync');
+      // Only run migrations in production
+      await sequelize.sync({ force: false });
+    } else {
+      await sequelize.sync({ force });
+    }
     console.log('Database synced successfully');
     
-    // Initialize admin accounts from .env if force is true (new database)
-    if (force) {
+    // Initialize admin accounts only if force is true AND not in production
+    if (force && process.env.NODE_ENV !== 'production') {
       await initializeAdmins();
     }
   } catch (error) {

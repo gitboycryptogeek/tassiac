@@ -6,29 +6,27 @@ let sequelize;
 
 if (process.env.DATABASE_URL) {
   // Production environment (Heroku)
-  try {
-    sequelize = new Sequelize(process.env.DATABASE_URL, {
-      dialect: 'postgres',
-      protocol: 'postgres',
-      dialectOptions: {
-        ssl: {
-          require: true,
-          rejectUnauthorized: false
-        }
-      },
-      logging: false
-    });
-    console.log('Production database configuration loaded');
-  } catch (error) {
-    console.error('Error parsing DATABASE_URL:', error);
-    // Fallback to SQLite if DATABASE_URL is invalid
-    console.log('Falling back to SQLite database');
-    sequelize = new Sequelize({
-      dialect: 'sqlite',
-      storage: './database.sqlite',
-      logging: false
-    });
-  }
+  sequelize = new Sequelize(process.env.DATABASE_URL, {
+    dialect: 'postgres',
+    protocol: 'postgres',
+    dialectOptions: {
+      ssl: {
+        require: true,
+        rejectUnauthorized: false
+      }
+    },
+    // Disable logging in production
+    logging: false,
+    // Prevent automatic syncing
+    sync: false,
+    // Add connection pool configuration
+    pool: {
+      max: 5,
+      min: 0,
+      acquire: 30000,
+      idle: 10000
+    }
+  });
 } else {
   // Development environment
   console.log('Development environment - Using SQLite');

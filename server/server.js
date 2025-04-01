@@ -155,24 +155,31 @@ process.on('unhandledRejection', (reason, promise) => {
 // Initialize database and then start server
 initializeDatabase().then(success => {
   if (success) {
-    const server = app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`API accessible at: http://localhost:${PORT}/api`);
-      
-      if (!process.env.JWT_SECRET) {
-        console.warn('WARNING: JWT_SECRET environment variable is not set. Using insecure default secret.');
-      }
-    });
+    // In production, skip database reinitialization
+    if (process.env.NODE_ENV === 'production') {
+      console.log('Production mode - skipping database reinitialization');
+      startServer();
+    } else {
+      // Only reinitialize in development
+      const server = app.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+        console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+        console.log(`API accessible at: http://localhost:${PORT}/api`);
+        
+        if (!process.env.JWT_SECRET) {
+          console.warn('WARNING: JWT_SECRET environment variable is not set. Using insecure default secret.');
+        }
+      });
 
-    server.on('error', (error) => {
-      if (error.code === 'EADDRINUSE') {
-        console.error(`Port ${PORT} is already in use. Please use another port.`);
-      } else {
-        console.error('Server error:', error);
-      }
-      process.exit(1);
-    });
+      server.on('error', (error) => {
+        if (error.code === 'EADDRINUSE') {
+          console.error(`Port ${PORT} is already in use. Please use another port.`);
+        } else {
+          console.error('Server error:', error);
+        }
+        process.exit(1);
+      });
+    }
   } else {
     console.error('Failed to initialize database. Server not started.');
     process.exit(1);
@@ -181,3 +188,21 @@ initializeDatabase().then(success => {
   console.error('Unexpected error during initialization:', error);
   process.exit(1);
 });
+
+// Separate server start function
+function startServer() {
+  const server = app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`Database URL: ${process.env.DATABASE_URL ? 'Found' : 'Not found'}`);
+  });
+
+  server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`Port ${PORT} is already in use. Please use another port.`);
+    } else {
+      console.error('Server error:', error);
+    }
+    process.exit(1);
+  });
+}

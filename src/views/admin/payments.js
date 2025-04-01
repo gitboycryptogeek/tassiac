@@ -4,6 +4,13 @@ import { BaseComponent } from '../../utils/BaseComponent.js';
 export class AdminPaymentsView extends BaseComponent {
   constructor() {
     super();
+    
+    // Add authService initialization at the start
+    this.authService = window.authService;
+    if (!this.authService) {
+      throw new Error('AuthService not initialized');
+    }
+
     this.title = 'Payment Management';
     this.user = this.authService ? this.authService.getUser() : null;
     this.apiService = window.apiService;
