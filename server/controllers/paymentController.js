@@ -455,36 +455,49 @@ exports.mpesaCallback = async (req, res) => {
 };
 
 exports.createManualPayment = async (req, res) => {
+  const transaction = await sequelize.transaction();
+  
   try {
-    // Extract payment data from request
     const paymentData = req.body;
     
-    // Allow special offerings if they have the required fields
+    // Special handling for special offerings
     if (paymentData.paymentType?.startsWith('SPECIAL_')) {
-      if (!paymentData.targetGoal || !paymentData.endDate) {
-        return res.status(400).json({
-          message: "Special offerings require targetGoal and endDate"
-        });
-      }
-      // Set as template if it's the initial special offering creation
-      if (!paymentData.userId) {
-        paymentData.isTemplate = true;
-        paymentData.status = 'COMPLETED';
+      // Validate special offering requirements
+      if (paymentData.isTemplate) {
+        if (!paymentData.targetGoal || !paymentData.endDate) {
+          await transaction.rollback();
+          return res.status(400).json({
+            message: "Special offerings require targetGoal and endDate"
+          });
+        }
+      } else {
+        // Regular payment to special offering
+        if (!paymentData.userId) {
+          await transaction.rollback();
+          return res.status(400).json({
+            message: "User ID is required for special offering payments"
+          });
+        }
       }
     }
 
-    // Create the payment
+    // Create the payment with proper tracking
     const payment = await Payment.create({
       ...paymentData,
-      addedBy: req.user.id
-    });
+      addedBy: req.user.id,
+      status: 'COMPLETED',
+      paymentMethod: paymentData.paymentMethod || 'MANUAL'
+    }, { transaction });
 
+    await transaction.commit();
+    
     res.status(201).json({
       success: true,
       message: 'Payment created successfully',
       payment
     });
   } catch (error) {
+    await transaction.rollback();
     console.error('Error creating payment:', error);
     res.status(400).json({
       message: error.message || 'Error creating payment'

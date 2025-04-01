@@ -525,52 +525,32 @@ extractIdFromType(typeString) {
     try {
       console.log('Creating special offering:', offeringData);
       
-      // Ensure offeringType uses the correct format
-      if (!offeringData.offeringType.startsWith('SPECIAL_')) {
-        offeringData.offeringType = `SPECIAL_${offeringData.offeringType}`;
-      }
+      // Format offering data properly
+      const formattedData = {
+        ...offeringData,
+        offeringType: !offeringData.offeringType.startsWith('SPECIAL_') 
+          ? `SPECIAL_${offeringData.offeringType}` 
+          : offeringData.offeringType,
+        isTemplate: true,
+        status: 'COMPLETED',
+        customFields: this.formatCustomFields(offeringData)
+      };
       
-      // Ensure template flag is set
-      offeringData.isTemplate = true;
-      
-      // Format customFields properly if it's not already a string
-      if (offeringData.customFields && typeof offeringData.customFields !== 'string') {
-        offeringData.customFields = JSON.stringify({
-          fullDescription: offeringData.description || offeringData.name,
-          fields: Array.isArray(offeringData.customFields) ? offeringData.customFields : []
-        });
-      }
-      
-      // Try the dedicated endpoint first
+      // Try dedicated endpoint first
       try {
-        return await this.post('/payment/special-offering', offeringData);
+        return await this.post('/payment/special-offering', formattedData);
       } catch (error) {
         console.warn('Special offering endpoint failed, falling back to manual payment:', error);
         
-        // Fall back to creating via manual payment
-        const paymentData = {
-          userId: offeringData.userId || this.authService.getUser().id, // Allow passed userId or fallback to admin
-          amount: offeringData.targetGoal || 0,
-          paymentType: offeringData.offeringType,
+        // Fall back to manual payment creation
+        return await this.post('/payment/manual', {
+          ...formattedData,
           paymentMethod: 'MANUAL',
-          status: 'COMPLETED',
-          description: offeringData.name,
+          amount: formattedData.targetGoal || 0,
           isPromoted: true,
-          isExpense: false, // Explicitly mark as not an expense
-          paymentDate: offeringData.startDate,
-          endDate: offeringData.endDate,
-          targetGoal: offeringData.targetGoal,
-          isTemplate: true, // Explicitly mark as template
-          addedBy: this.authService.getUser().id, // Explicitly track who added it
-          customFields: typeof offeringData.customFields === 'string' 
-            ? offeringData.customFields 
-            : JSON.stringify({
-                fullDescription: offeringData.description || offeringData.name,
-                fields: Array.isArray(offeringData.customFields) ? offeringData.customFields : []
-              })
-        };
-        
-        return this.post('/payment/manual', paymentData);
+          isExpense: false,
+          addedBy: this.authService.getUser().id
+        });
       }
     } catch (error) {
       console.error('Error creating special offering:', error);
@@ -700,30 +680,32 @@ extractIdFromType(typeString) {
   // Make a payment to a special offering
 async makeSpecialOfferingPayment(offeringType, paymentData) {
   try {
-    // Ensure we have the minimum required fields
     if (!paymentData.amount) {
       throw new Error('Payment amount is required');
     }
     
-    // Set correct values for a payment to a special offering
+    if (!paymentData.userId) {
+      throw new Error('User ID is required for special offering payments');
+    }
+    
     const payment = {
       ...paymentData,
       paymentType: offeringType,
-      isTemplate: false, // Explicitly mark as NOT a template
-      status: 'COMPLETED'
+      isTemplate: false,
+      status: 'COMPLETED',
+      paymentMethod: paymentData.paymentMethod || 'MANUAL',
+      addedBy: this.authService.getUser().id
     };
     
-    return await this.post(`/payment/special-offering/${offeringType}/payment`, payment);
+    try {
+      return await this.post(`/payment/special-offering/${offeringType}/payment`, payment);
+    } catch (error) {
+      console.warn('Special offering payment endpoint failed, using manual payment:', error);
+      return await this.post('/payment/manual', payment);
+    }
   } catch (error) {
-    console.warn('Special offering payment endpoint failed, falling back to manual payment:', error);
-    
-    // Fallback to manual payment
-    return await this.post('/payment/manual', {
-      ...paymentData,
-      paymentType: offeringType,
-      isTemplate: false,
-      status: 'COMPLETED'
-    });
+    console.error('Error making special offering payment:', error);
+    throw error;
   }
 }
   /**
