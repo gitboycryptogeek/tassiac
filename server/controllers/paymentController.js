@@ -369,35 +369,6 @@ exports.addManualPayment = async (req, res) => {
       receiptData
     });
     
-    // Send SMS notification if not an expense
-    if (!isExpense) {
-      const notificationMessage = `Dear ${user.fullName}, your ${paymentType} payment of ${amount} has been recorded. Receipt: ${receiptNumber}. Thank you for your contribution to TASSIAC Church.`;
-      
-      await Notification.create({
-        userId,
-        notificationType: 'SMS',
-        message: notificationMessage,
-        reference: payment.id.toString(),
-        status: 'PENDING'
-      });
-      
-      // Send the SMS in background
-      sendSmsNotification(user.phone, notificationMessage)
-        .then(response => {
-          Notification.update(
-            { status: 'SENT', responseData: response },
-            { where: { reference: payment.id.toString() } }
-          );
-        })
-        .catch(error => {
-          console.error('SMS notification error:', error);
-          Notification.update(
-            { status: 'FAILED', responseData: { error: error.message } },
-            { where: { reference: payment.id.toString() } }
-          );
-        });
-    }
-    
     res.status(201).json({
       message: isSpecialOfferingPayment ? 
         'Payment to special offering added successfully' : 
@@ -542,32 +513,6 @@ exports.mpesaCallback = async (req, res) => {
         receiptData
       });
       
-      // Send SMS notification
-      const notificationMessage = `Dear ${user.fullName}, your ${payment.paymentType} payment of ${payment.amount} via M-Pesa has been received. Receipt: ${receiptNumber}. Thank you for your contribution to TASSIAC Church.`;
-      
-      await Notification.create({
-        userId: payment.userId,
-        notificationType: 'SMS',
-        message: notificationMessage,
-        reference: payment.id.toString(),
-        status: 'PENDING'
-      });
-      
-      // Send the SMS in background
-      sendSmsNotification(user.phone, notificationMessage)
-        .then(response => {
-          Notification.update(
-            { status: 'SENT', responseData: response },
-            { where: { reference: payment.id.toString() } }
-          );
-        })
-        .catch(error => {
-          console.error('SMS notification error:', error);
-          Notification.update(
-            { status: 'FAILED', responseData: { error: error.message } },
-            { where: { reference: payment.id.toString() } }
-          );
-        });
     } else {
       // Payment failed
       await payment.update({

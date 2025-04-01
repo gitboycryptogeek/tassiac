@@ -3126,7 +3126,7 @@ export class AdminAddPaymentView extends BaseComponent {
       if (this.isSubmitting) return;
       this.isSubmitting = true;
       
-      // Update submit button
+      // Update submit button state
       const submitBtn = document.getElementById('submit-payment-btn');
       const submitSpinner = document.getElementById('submit-spinner');
       if (submitBtn && submitSpinner) {
@@ -3136,114 +3136,108 @@ export class AdminAddPaymentView extends BaseComponent {
       
       // Get form values
       const form = e.target;
+      const userId = form.querySelector('#userId').value;
       const paymentType = form.querySelector('#paymentType').value;
       const amount = parseFloat(form.querySelector('#amount').value);
+      const description = form.querySelector('#description').value || '';
+      const paymentDate = form.querySelector('#paymentDate').value;
+
+      // Validate required fields
+      if (!userId) {
+        throw new Error('Please select a member');
+      }
       
-      // Validate payment type
       if (!paymentType) {
         throw new Error('Please select a payment type');
       }
       
-      // Create form data
-      const formData = {
-        userId: form.querySelector('#userId').value,
+      if (isNaN(amount) || amount <= 0) {
+        throw new Error('Please enter a valid amount');
+      }
+
+      // Create base payment data
+      const paymentData = {
+        userId: userId, // Use selected user's ID, not admin's
         amount: amount,
         paymentType: paymentType,
-        description: form.querySelector('#description').value || '',
-        paymentDate: form.querySelector('#paymentDate').value,
+        description: description,
+        paymentDate: paymentDate,
         paymentMethod: 'MANUAL',
         status: 'COMPLETED',
-        isTemplate: false // CRITICAL: Ensure all payments are never templates
+        addedBy: this.user.id, // Track admin who added the payment
+        isTemplate: false
       };
-      
-      // Validate user selection
-      if (!formData.userId) {
-        throw new Error('Select a member to continue');
-      }
-      
-      // Validate amount
-      if (isNaN(formData.amount) || formData.amount <= 0) {
-        throw new Error('Enter a valid amount greater than 0');
-      }
-      
-      // Get tithe distribution if applicable
+
+      // Handle tithe distribution if applicable
       if (paymentType === 'TITHE') {
-        // Add tithe distribution logic here (unchanged)
-        // ...
+        const titheDistribution = {};
+        const fields = ['localChurchBudget', 'worldMissionBudget', 'churchDevelopment', 
+                       'thanksgivingOffering', 'thirteenthSabbath', 'other'];
+        
+        fields.forEach(field => {
+          const input = document.getElementById(field);
+          if (input) {
+            titheDistribution[field] = parseFloat(input.value) || 0;
+          }
+        });
+
+        // Add other specification if present
+        const otherSpec = document.getElementById('otherSpecification');
+        if (otherSpec && otherSpec.value) {
+          titheDistribution.otherSpecification = otherSpec.value;
+        }
+
+        paymentData.titheDistribution = titheDistribution;
       }
-      
-      console.log('Submitting payment:', formData);
-      
+
       let response;
       
-      // Check if this is a special offering payment
+      // Use appropriate API endpoint based on payment type
       if (paymentType.startsWith('SPECIAL_')) {
-        try {
-          // Use specialized method for special offering payments
-          response = await this.queueApiRequest(() => 
-            this.apiService.makeSpecialOfferingPayment(paymentType, formData)
-          );
-        } catch (specialError) {
-          console.warn('Special offering payment method failed, falling back to regular payment:', specialError);
-          // Fall back to standard payment method
-          response = await this.queueApiRequest(() => 
-            this.apiService.post('/payment/manual', formData)
-          );
-        }
-      } else {
-        // Standard payment
         response = await this.queueApiRequest(() => 
-          this.apiService.post('/payment/manual', formData)
+          this.apiService.post(`/special-offerings/${paymentType}/payment`, {
+            userId: userId,
+            amount: amount,
+            description: description,
+            paymentDate: paymentDate
+          })
+        );
+      } else {
+        response = await this.queueApiRequest(() => 
+          this.apiService.post('/payment/manual', paymentData)
         );
       }
-      
+
+      // Handle successful payment
       console.log('Payment added successfully:', response);
       
-      // Clear form and show success message
+      // Reset form
       form.reset();
       
-      // Reset tithe distribution if visible
-      const titheDistributionSection = document.getElementById('tithe-distribution-section');
-      if (titheDistributionSection) {
-        titheDistributionSection.style.display = 'none';
-      }
+      // Reset special sections
+      const titheSection = document.getElementById('tithe-distribution-section');
+      if (titheSection) titheSection.style.display = 'none';
       
-      // Reset special offering info if visible
-      const specialOfferingInfo = document.getElementById('special-offering-info');
-      if (specialOfferingInfo) {
-        specialOfferingInfo.style.display = 'none';
-      }
+      const specialInfo = document.getElementById('special-offering-info');
+      if (specialInfo) specialInfo.style.display = 'none';
       
-      // Reset user search
-      const userSearchInput = document.getElementById('userSearch');
-      const userIdInput = document.getElementById('userId');
-      if (userSearchInput) userSearchInput.value = '';
-      if (userIdInput) userIdInput.value = '';
+      // Clear user selection
+      const userSearch = document.getElementById('userSearch');
+      if (userSearch) userSearch.value = '';
       
-      // Reset payment type dropdown
+      // Reset payment type
       const paymentTypeSelect = document.getElementById('paymentType');
-      if (paymentTypeSelect) {
-        paymentTypeSelect.selectedIndex = 0;
-      }
-      
-      // Set success message and reset error
+      if (paymentTypeSelect) paymentTypeSelect.selectedIndex = 0;
+
+      // Show success message
       this.successMessage = `Payment added successfully! Receipt Number: ${response.receiptNumber || 'Generated'}`;
       this.errorMessage = '';
-      
-      // Update state
       this.hasSubmitted = true;
-      this.isSubmitting = false;
-      
-      // Update UI
-      if (submitBtn && submitSpinner) {
-        submitBtn.disabled = false;
-        submitSpinner.style.display = 'none';
-      }
       
       // Show notification
       this.showNotification(this.successMessage, 'success');
-      
-      // Refresh the view to show the success message
+
+      // Refresh view
       const appContainer = document.getElementById('app');
       if (appContainer) {
         appContainer.innerHTML = '';
@@ -3251,31 +3245,22 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     } catch (error) {
       console.error('Error adding payment:', error);
-      
-      // Set error message and clear success
-      this.errorMessage = error.message || 'Failed to add payment. Try again.';
+      this.errorMessage = error.message || 'Failed to add payment. Please try again.';
       this.successMessage = '';
-      
-      // Update state
       this.hasSubmitted = true;
+      
+      // Show error notification
+      this.showNotification(this.errorMessage, 'error');
+    } finally {
+      // Reset submission state
       this.isSubmitting = false;
       
-      // Reset submit button
+      // Reset button state
       const submitBtn = document.getElementById('submit-payment-btn');
       const submitSpinner = document.getElementById('submit-spinner');
       if (submitBtn && submitSpinner) {
         submitBtn.disabled = false;
         submitSpinner.style.display = 'none';
-      }
-      
-      // Show error notification
-      this.showNotification(this.errorMessage, 'error');
-      
-      // Refresh the view to show the error message
-      const appContainer = document.getElementById('app');
-      if (appContainer) {
-        appContainer.innerHTML = '';
-        appContainer.appendChild(this.render());
       }
     }
   }
