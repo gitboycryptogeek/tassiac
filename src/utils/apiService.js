@@ -549,7 +549,6 @@ extractIdFromType(typeString) {
         
         // Fall back to creating via manual payment
         const paymentData = {
-          // CHANGE THIS LINE - use passed userId instead of admin's id
           userId: offeringData.userId || this.authService.getUser().id, // Allow passed userId or fallback to admin
           amount: offeringData.targetGoal || 0,
           paymentType: offeringData.offeringType,
