@@ -296,13 +296,9 @@ export class AdminAddPaymentView extends BaseComponent {
     return `${r}, ${g}, ${b}`;
   }
   
+  // Update the render method to support async initialization
   render() {
-    // Verify admin access
-    if (!this.user || !this.authService || !this.authService.isAdmin()) {
-      return this.renderUnauthorized();
-    }
-
-    // Create container
+    // Create container before async operations
     const container = this.createElement('div', {
       className: 'payment-container',
       style: {
@@ -315,30 +311,52 @@ export class AdminAddPaymentView extends BaseComponent {
         zIndex: '1'
       }
     });
+
+    // Add loading state
+    const loadingElement = this.createElement('div', {
+      className: 'loading-state',
+      style: {
+        textAlign: 'center',
+        padding: '2rem'
+      }
+    }, 'Loading...');
     
-    // Add background elements (only if not already present)
-    this.addBackgroundElements();
-    this.addStyles();
-    
-    // Create page header with navigation links
-    container.appendChild(this.renderPageHeader());
-    
-    // Display alerts if needed
-    if (this.hasSubmitted) {
-      container.appendChild(this.renderAlerts());
-    }
-    
-    // Main payment form
-    container.appendChild(this.renderPaymentForm());
-    
-    // Modal for special offerings
-    document.body.appendChild(this.renderSpecialOfferingModal());
-    
-    // Initialize components after render
-    setTimeout(() => {
-      this.attachEventListeners();
-    }, 0);
-    
+    container.appendChild(loadingElement);
+
+    // Initialize data after render
+    Promise.resolve().then(async () => {
+      try {
+        await this.initialize();
+        
+        // Remove loading state
+        container.removeChild(loadingElement);
+        
+        // Add the rest of the content
+        this.addBackgroundElements();
+        this.addStyles();
+        container.appendChild(this.renderPageHeader());
+        
+        if (this.hasSubmitted) {
+          container.appendChild(this.renderAlerts());
+        }
+        
+        container.appendChild(this.renderPaymentForm());
+        
+        // Add modal to document.body
+        document.body.appendChild(this.renderSpecialOfferingModal());
+        
+        // Attach event listeners
+        this.attachEventListeners();
+      } catch (error) {
+        console.error('Error initializing view:', error);
+        container.innerHTML = `
+          <div class="error-state" style="color: #ef4444; text-align: center; padding: 2rem;">
+            Failed to load payment form. Please try refreshing the page.
+          </div>
+        `;
+      }
+    });
+
     return container;
   }
   
@@ -3557,5 +3575,84 @@ export class AdminAddPaymentView extends BaseComponent {
         }, 300);
       }
     }, 5000);
+  }
+}
+
+async function handleRoute() {
+  try {
+    const path = window.location.pathname;
+    const view = await resolveView(path);
+    
+    if (!view) {
+      throw new Error('View not found');
+    }
+    
+    const appContainer = document.getElementById('app');
+    if (appContainer) {
+      // Clear existing content
+      appContainer.innerHTML = '';
+      // Render new view
+      appContainer.appendChild(view.render());
+    }
+  } catch (error) {
+    console.error('Route handling error:', error);
+    // Show error view or fallback content
+    const errorView = createErrorView(error);
+    const appContainer = document.getElementById('app');
+    if (appContainer) {
+      appContainer.innerHTML = '';
+      appContainer.appendChild(errorView);
+    }
+  }
+}
+
+function createErrorView(error) {
+  const errorContainer = document.createElement('div');
+  errorContainer.style.cssText = `
+    padding: 2rem;
+    margin: 2rem auto;
+    max-width: 600px;
+    text-align: center;
+    background: rgba(239, 68, 68, 0.1);
+    border-radius: 12px;
+    border: 1px solid rgba(239, 68, 68, 0.2);
+  `;
+
+  const errorTitle = document.createElement('h2');
+  errorTitle.textContent = 'Something went wrong';
+  errorTitle.style.color = '#ef4444';
+
+  const errorMessage = document.createElement('p');
+  errorMessage.textContent = error.message || 'An unexpected error occurred';
+  errorMessage.style.color = '#94a3b8';
+
+  const retryButton = document.createElement('button');
+  retryButton.textContent = 'Retry';
+  retryButton.onclick = () => window.location.reload();
+  retryButton.style.cssText = `
+    margin-top: 1rem;
+    padding: 0.5rem 1rem;
+    background: rgba(239, 68, 68, 0.2);
+    border: none;
+    border-radius: 6px;
+    color: #ef4444;
+    cursor: pointer;
+  `;
+
+  errorContainer.appendChild(errorTitle);
+  errorContainer.appendChild(errorMessage);
+  errorContainer.appendChild(retryButton);
+
+  return errorContainer;
+}
+
+// Initialize the app with error handling
+async function init() {
+  try {
+    await handleRoute();
+    // Add event listener for route changes
+    window.addEventListener('popstate', handleRoute);
+  } catch (error) {
+    console.error('Initialization error:', error);
   }
 }
