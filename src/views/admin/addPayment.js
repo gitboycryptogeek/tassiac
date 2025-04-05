@@ -298,13 +298,12 @@ export class AdminAddPaymentView extends BaseComponent {
   
   // Update the render method to support async initialization
   render() {
-    // Create container before async operations
     const container = this.createElement('div', {
       className: 'payment-container',
       style: {
         maxWidth: '1300px',
         margin: '0 auto',
-        padding: '30px 20px',
+        padding: '20px 15px', // Reduced padding for mobile
         color: '#eef2ff',
         fontFamily: 'Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
         position: 'relative',
@@ -448,22 +447,33 @@ export class AdminAddPaymentView extends BaseComponent {
       className: 'page-header animated-item',
       style: {
         display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: '30px',
-        flexWrap: 'wrap',
-        gap: '15px'
+        flexDirection: 'column', // Stack elements on mobile
+        gap: '15px',
+        marginBottom: '25px'
+      }
+    });
+
+    // Title container
+    const titleContainer = this.createElement('div', {
+      style: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '10px'
+      }
+    });
+
+    // Navigation links container
+    const navLinks = this.createElement('div', {
+      className: 'admin-nav-links',
+      style: {
+        display: 'flex',
+        flexWrap: 'wrap', // Allow wrapping on mobile
+        gap: '12px',
+        marginTop: '5px'
       }
     });
     
     // Left side: Page title with gradient
-    const titleContainer = this.createElement('div', {
-      style: {
-        display: 'flex',
-        flexDirection: 'column'
-      }
-    });
-    
     const pageTitle = this.createElement('h1', {
       style: {
         fontSize: '28px',
@@ -481,15 +491,6 @@ export class AdminAddPaymentView extends BaseComponent {
     titleContainer.appendChild(pageTitle);
     
     // Admin navigation links
-    const navLinks = this.createElement('div', {
-      className: 'admin-nav-links',
-      style: {
-        display: 'flex',
-        gap: '15px',
-        marginTop: '10px'
-      }
-    });
-    
     const navItems = [
       { text: 'Dashboard', href: '/admin/dashboard', icon: '📊' },
       { text: 'Payments', href: '/admin/payments', icon: '💰' },
@@ -759,8 +760,8 @@ export class AdminAddPaymentView extends BaseComponent {
       style: {
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-        gap: '20px',
-        marginBottom: '25px'
+        gap: '15px',
+        marginBottom: '20px'
       }
     });
     
@@ -1623,7 +1624,6 @@ export class AdminAddPaymentView extends BaseComponent {
   }
   
   renderSpecialOfferingModal() {
-    // Modal background
     const modal = this.createElement('div', {
       id: 'special-offering-modal',
       className: 'modal',
@@ -1638,15 +1638,16 @@ export class AdminAddPaymentView extends BaseComponent {
         backdropFilter: 'blur(5px)',
         zIndex: '1000',
         alignItems: 'center',
-        justifyContent: 'center'
+        justifyContent: 'center',
+        padding: '15px' // Add padding for mobile
       }
     });
-    
+
     // Modal content
     const modalContent = this.createElement('div', {
       className: 'neo-card',
       style: {
-        width: '90%',
+        width: '100%', // Full width on mobile
         maxWidth: '600px',
         maxHeight: '90vh',
         overflowY: 'auto',
@@ -2254,6 +2255,104 @@ export class AdminAddPaymentView extends BaseComponent {
           /* Ensure adequate spacing for touch targets */
           .dropdown-item {
             padding: 12px 15px;
+          }
+        }
+        @media (max-width: 768px) {
+          /* Container adjustments */
+          .payment-container {
+            padding: 15px;
+          }
+      
+          /* Form elements */
+          .futuristic-input, 
+          .futuristic-textarea, 
+          .futuristic-select {
+            padding: 12px;
+            font-size: 16px; /* Prevent zoom on iOS */
+          }
+      
+          /* Buttons */
+          .futuristic-button {
+            width: 100%;
+            padding: 14px 20px;
+            margin-top: 10px;
+            font-size: 16px;
+          }
+      
+          /* Tithe distribution section */
+          #tithe-distribution-section {
+            padding: 15px;
+          }
+      
+          /* Modal adjustments */
+          .modal-content {
+            padding: 15px;
+          }
+      
+          /* Navigation */
+          .admin-nav-links a {
+            padding: 8px 12px;
+            font-size: 14px;
+          }
+      
+          /* User dropdown */
+          .custom-select-dropdown {
+            max-height: 200px;
+          }
+      
+          /* Slider controls */
+          .neo-slider::-webkit-slider-thumb {
+            width: 24px;
+            height: 24px;
+          }
+      
+          /* Input groups */
+          .input-group {
+            flex-direction: column;
+          }
+          
+          .input-group-prefix {
+            border-radius: 12px 12px 0 0;
+            width: 100%;
+            justify-content: center;
+          }
+          
+          .input-group .futuristic-input {
+            border-radius: 0 0 12px 12px;
+          }
+        }
+      
+        @media (max-width: 480px) {
+          /* Even smaller screens */
+          .page-header h1 {
+            font-size: 24px;
+          }
+      
+          .form-group {
+            margin-bottom: 20px;
+          }
+      
+          /* Make dropdowns full-width */
+          .custom-select-container {
+            width: 100%;
+          }
+      
+          /* Increase touch targets */
+          .dropdown-item {
+            padding: 12px 15px;
+            min-height: 44px;
+          }
+      
+          /* Notification adjustments */
+          .futuristic-notification {
+            width: calc(100% - 30px);
+            left: 15px;
+            right: 15px;
+          }
+      
+          /* Modal close button */
+          .close-modal {
+            padding: 15px;
           }
         }
       `;
