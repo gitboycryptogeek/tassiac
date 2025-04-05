@@ -1782,11 +1782,11 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    // Start date
+    // Start date field
     const startDateField = this.createElement('div');
     
     const startDateLabel = this.createElement('label', {
-      htmlFor: 'startDate',
+      htmlFor: 'offeringStartDate',
       style: {
         display: 'block',
         marginBottom: '10px',
@@ -1798,20 +1798,20 @@ export class AdminAddPaymentView extends BaseComponent {
     
     const startDateInput = this.createElement('input', {
       type: 'date',
-      id: 'startDate',
+      id: 'offeringStartDate',
       className: 'futuristic-input',
-      value: this.formatDate(new Date()),
-      required: true
+      required: true,
+      value: this.formatDate(new Date())
     });
     
     startDateField.appendChild(startDateLabel);
     startDateField.appendChild(startDateInput);
     
-    // End date
+    // End date field
     const endDateField = this.createElement('div');
     
     const endDateLabel = this.createElement('label', {
-      htmlFor: 'endDate',
+      htmlFor: 'offeringEndDate',
       style: {
         display: 'block',
         marginBottom: '10px',
@@ -1819,18 +1819,12 @@ export class AdminAddPaymentView extends BaseComponent {
         fontSize: '14px',
         fontWeight: '500'
       }
-    }, 'End Date');
-    
-    // Calculate default end date (30 days from now)
-    const defaultEndDate = new Date();
-    defaultEndDate.setDate(defaultEndDate.getDate() + 30);
+    }, 'End Date (Optional)');
     
     const endDateInput = this.createElement('input', {
       type: 'date',
-      id: 'endDate',
-      className: 'futuristic-input',
-      value: this.formatDate(defaultEndDate),
-      required: true
+      id: 'offeringEndDate',
+      className: 'futuristic-input'
     });
     
     endDateField.appendChild(endDateLabel);
@@ -1840,14 +1834,14 @@ export class AdminAddPaymentView extends BaseComponent {
     dateRow.appendChild(endDateField);
     
     // Target goal field
-    const goalField = this.createElement('div', {
+    const targetField = this.createElement('div', {
       style: {
-        marginBottom: '20px'
+        marginBottom: '25px'
       }
     });
     
-    const goalLabel = this.createElement('label', {
-      htmlFor: 'targetGoal',
+    const targetLabel = this.createElement('label', {
+      htmlFor: 'offeringTarget',
       style: {
         display: 'block',
         marginBottom: '10px',
@@ -1855,198 +1849,79 @@ export class AdminAddPaymentView extends BaseComponent {
         fontSize: '14px',
         fontWeight: '500'
       }
-    }, 'Target Goal (optional)');
+    }, 'Target Goal (Optional)');
     
-    // Input group with currency
-    const goalInputGroup = this.createElement('div', {
-      style: {
-        display: 'flex',
-        position: 'relative'
-      }
-    });
-    
-    // Currency prefix
-    const goalCurrencyPrefix = this.createElement('div', {
-      style: {
-        backgroundColor: 'rgba(30, 41, 59, 0.5)',
-        color: '#94a3b8',
-        padding: '0 15px',
-        display: 'flex',
-        alignItems: 'center',
-        borderRadius: '12px 0 0 12px',
-        borderTop: '1px solid rgba(59, 130, 246, 0.2)',
-        borderLeft: '1px solid rgba(59, 130, 246, 0.2)',
-        borderBottom: '1px solid rgba(59, 130, 246, 0.2)',
-        fontSize: '14px',
-        fontWeight: '500'
-      }
-    }, 'KES');
-    
-    const goalInput = this.createElement('input', {
+    const targetInput = this.createElement('input', {
       type: 'number',
-      id: 'targetGoal',
+      id: 'offeringTarget',
       className: 'futuristic-input',
-      style: {
-        borderRadius: '0 12px 12px 0'
-      },
-      placeholder: '0.00',
       min: '0',
-      step: '0.01'
+      step: '0.01',
+      placeholder: '0.00'
     });
     
-    goalInputGroup.appendChild(goalCurrencyPrefix);
-    goalInputGroup.appendChild(goalInput);
+    targetField.appendChild(targetLabel);
+    targetField.appendChild(targetInput);
     
-    goalField.appendChild(goalLabel);
-    goalField.appendChild(goalInputGroup);
-    
-    // Custom fields section
-    const customFieldsSection = this.createElement('div', {
+    // Form actions
+    const formActions = this.createElement('div', {
       style: {
-        marginBottom: '10px'
-      }
-    });
-    
-    const customFieldsLabel = this.createElement('label', {
-      style: {
-        display: 'block',
-        marginBottom: '10px',
-        color: '#94a3b8',
-        fontSize: '14px',
-        fontWeight: '500'
-      }
-    }, 'Custom Fields (optional)');
-    
-    const customFieldsDescription = this.createElement('p', {
-      style: {
-        color: '#64748b',
-        fontSize: '13px',
-        margin: '0 0 15px'
-      }
-    }, 'Add any custom fields needed for this offering (e.g., T-shirt size, age group)');
-    
-    const customFieldsContainer = this.createElement('div', {
-      id: 'custom-fields-container'
-    });
-    
-    const addCustomFieldBtn = this.createElement('button', {
-      type: 'button',
-      id: 'add-custom-field-btn',
-      style: {
-        backgroundColor: 'rgba(30, 41, 59, 0.4)',
-        color: '#94a3b8',
-        border: '1px solid rgba(148, 163, 184, 0.2)',
-        borderRadius: '8px',
-        padding: '8px 12px',
-        fontSize: '13px',
-        cursor: 'pointer',
-        marginTop: '15px',
-        transition: 'all 0.15s ease'
-      },
-      onMouseenter: (e) => {
-        e.currentTarget.style.backgroundColor = 'rgba(30, 41, 59, 0.6)';
-        e.currentTarget.style.color = '#e0e7ff';
-      },
-      onMouseleave: (e) => {
-        e.currentTarget.style.backgroundColor = 'rgba(30, 41, 59, 0.4)';
-        e.currentTarget.style.color = '#94a3b8';
-      },
-      onClick: () => {
-        this.addCustomField();
-      }
-    });
-    
-    const btnIcon = this.createElement('span', {
-      style: {
-        marginRight: '5px'
-      }
-    }, '+');
-    
-    const btnText = document.createTextNode('Add Custom Field');
-    
-    addCustomFieldBtn.appendChild(btnIcon);
-    addCustomFieldBtn.appendChild(btnText);
-    
-    customFieldsSection.appendChild(customFieldsLabel);
-    customFieldsSection.appendChild(customFieldsDescription);
-    customFieldsSection.appendChild(customFieldsContainer);
-    customFieldsSection.appendChild(addCustomFieldBtn);
-    
-    // Add all fields to the form
-    offeringForm.appendChild(nameField);
-    offeringForm.appendChild(descriptionField);
-    offeringForm.appendChild(dateRow);
-    offeringForm.appendChild(goalField);
-    offeringForm.appendChild(customFieldsSection);
-    
-    modalBody.appendChild(offeringForm);
-    
-    // Modal footer
-    const modalFooter = this.createElement('div', {
-      style: {
-        padding: '15px 25px',
-        borderTop: '1px solid rgba(30, 41, 59, 0.8)',
         display: 'flex',
         justifyContent: 'flex-end',
-        gap: '15px'
+        gap: '15px',
+        marginTop: '30px'
       }
     });
     
     // Cancel button
     const cancelButton = this.createElement('button', {
       type: 'button',
-      className: 'futuristic-button close-modal',
-      style: {
-        backgroundColor: 'rgba(30, 41, 59, 0.5)',
-        color: '#94a3b8'
-      },
-      onClick: () => {
-        this.toggleSpecialOfferingModal(false);
-      }
-    }, 'Cancel');
-    
-    // Create button
-    const createButton = this.createElement('button', {
-      type: 'submit',
-      form: 'special-offering-form',
-      id: 'create-offering-btn',
       className: 'futuristic-button',
       style: {
-        backgroundColor: 'rgba(16, 185, 129, 0.2)',
-        color: '#10b981'
-      }
-    });
+        backgroundColor: 'rgba(127, 29, 29, 0.2)',
+        color: '#ef4444'
+      },
+      onClick: () => this.toggleSpecialOfferingModal(false)
+    }, 'Cancel');
     
-    // Spinner for create button
-    const offeringSpinner = this.createElement('span', {
-      id: 'offering-spinner',
-      className: 'spinner',
+    // Submit button
+    const submitButton = this.createElement('button', {
+      type: 'submit',
+      className: 'futuristic-button',
       style: {
-        display: 'none',
-        width: '16px',
-        height: '16px',
-        border: '2px solid rgba(255, 255, 255, 0.3)',
-        borderTop: '2px solid #fff',
-        borderRadius: '50%',
-        marginRight: '8px',
-        animation: 'spin 0.75s linear infinite'
+        backgroundColor: 'rgba(3, 105, 161, 0.2)',
+        color: '#38bdf8'
       }
+    }, 'Create Offering');
+    
+    formActions.appendChild(cancelButton);
+    formActions.appendChild(submitButton);
+    
+    // Assemble the form
+    offeringForm.appendChild(nameField);
+    offeringForm.appendChild(descriptionField);
+    offeringForm.appendChild(dateRow);
+    offeringForm.appendChild(targetField);
+    offeringForm.appendChild(formActions);
+    
+    // Add form submit handler
+    offeringForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      await this.handleSpecialOfferingSubmit(e);
     });
     
-    const createButtonText = document.createTextNode('Create Special Offering');
-    
-    createButton.appendChild(offeringSpinner);
-    createButton.appendChild(createButtonText);
-    
-    modalFooter.appendChild(cancelButton);
-    modalFooter.appendChild(createButton);
-    
-    // Assemble modal
+    // Assemble modal content
+    modalBody.appendChild(offeringForm);
     modalContent.appendChild(modalHeader);
     modalContent.appendChild(modalBody);
-    modalContent.appendChild(modalFooter);
-    
     modal.appendChild(modalContent);
+    
+    // Add click handler to close modal when clicking outside
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        this.toggleSpecialOfferingModal(false);
+      }
+    });
     
     return modal;
   }
@@ -3122,11 +2997,9 @@ export class AdminAddPaymentView extends BaseComponent {
     e.preventDefault();
     
     try {
-      // Prevent double submission
       if (this.isSubmitting) return;
       this.isSubmitting = true;
       
-      // Update submit button state
       const submitBtn = document.getElementById('submit-payment-btn');
       const submitSpinner = document.getElementById('submit-spinner');
       if (submitBtn && submitSpinner) {
@@ -3142,34 +3015,38 @@ export class AdminAddPaymentView extends BaseComponent {
       const description = form.querySelector('#description').value || '';
       const paymentDate = form.querySelector('#paymentDate').value;
 
-      // Validate required fields
-      if (!userId) {
-        throw new Error('Please select a member');
-      }
-      
-      if (!paymentType) {
-        throw new Error('Please select a payment type');
-      }
-      
-      if (isNaN(amount) || amount <= 0) {
-        throw new Error('Please enter a valid amount');
-      }
+      if (!userId) throw new Error('Please select a member');
+      if (!paymentType) throw new Error('Please select a payment type');
+      if (isNaN(amount) || amount <= 0) throw new Error('Please enter a valid amount');
 
       // Create base payment data
       const paymentData = {
-        userId: userId, // Use selected user's ID, not admin's
+        userId: userId,           
+        processedBy: this.user.id,
         amount: amount,
         paymentType: paymentType,
         description: description,
         paymentDate: paymentDate,
         paymentMethod: 'MANUAL',
         status: 'COMPLETED',
-        addedBy: this.user.id, // Track admin who added the payment
-        isTemplate: false
+        metadata: {
+          processedByAdmin: true,
+          originalPaymentDate: paymentDate,
+          processedDate: new Date().toISOString()
+        }
       };
 
-      // Handle tithe distribution if applicable
-      if (paymentType === 'TITHE') {
+      let response;
+
+      if (paymentType.startsWith('SPECIAL_')) {
+        response = await this.queueApiRequest(() => 
+          this.apiService.post(`/special-offerings/${paymentType}/payment`, {
+            ...paymentData,
+            contributorId: userId,
+            processedBy: this.user.id
+          })
+        );
+      } else if (paymentType === 'TITHE') {
         const titheDistribution = {};
         const fields = ['localChurchBudget', 'worldMissionBudget', 'churchDevelopment', 
                        'thanksgivingOffering', 'thirteenthSabbath', 'other'];
@@ -3181,26 +3058,14 @@ export class AdminAddPaymentView extends BaseComponent {
           }
         });
 
-        // Add other specification if present
         const otherSpec = document.getElementById('otherSpecification');
         if (otherSpec && otherSpec.value) {
           titheDistribution.otherSpecification = otherSpec.value;
         }
 
         paymentData.titheDistribution = titheDistribution;
-      }
-
-      let response;
-      
-      // Use appropriate API endpoint based on payment type
-      if (paymentType.startsWith('SPECIAL_')) {
         response = await this.queueApiRequest(() => 
-          this.apiService.post(`/special-offerings/${paymentType}/payment`, {
-            userId: userId,
-            amount: amount,
-            description: description,
-            paymentDate: paymentDate
-          })
+          this.apiService.post('/payment/manual', paymentData)
         );
       } else {
         response = await this.queueApiRequest(() => 
@@ -3208,59 +3073,41 @@ export class AdminAddPaymentView extends BaseComponent {
         );
       }
 
-      // Handle successful payment
-      console.log('Payment added successfully:', response);
-      
-      // Reset form
-      form.reset();
-      
-      // Reset special sections
-      const titheSection = document.getElementById('tithe-distribution-section');
-      if (titheSection) titheSection.style.display = 'none';
-      
-      const specialInfo = document.getElementById('special-offering-info');
-      if (specialInfo) specialInfo.style.display = 'none';
-      
-      // Clear user selection
-      const userSearch = document.getElementById('userSearch');
-      if (userSearch) userSearch.value = '';
-      
-      // Reset payment type
-      const paymentTypeSelect = document.getElementById('paymentType');
-      if (paymentTypeSelect) paymentTypeSelect.selectedIndex = 0;
+      if (!response || !response.success) {
+        throw new Error(response?.message || 'Failed to process payment');
+      }
 
       // Show success message
-      this.successMessage = `Payment added successfully! Receipt Number: ${response.receiptNumber || 'Generated'}`;
+      this.successMessage = 'Payment processed successfully!';
       this.errorMessage = '';
       this.hasSubmitted = true;
-      
-      // Show notification
-      this.showNotification(this.successMessage, 'success');
 
-      // Refresh view
-      const appContainer = document.getElementById('app');
-      if (appContainer) {
-        appContainer.innerHTML = '';
-        appContainer.appendChild(this.render());
-      }
+      // Reset form
+      form.reset();
+
+      // Show notification
+      this.showNotification('Payment processed successfully!', 'success');
+
     } catch (error) {
-      console.error('Error adding payment:', error);
-      this.errorMessage = error.message || 'Failed to add payment. Please try again.';
+      console.error('Payment submission error:', error);
+      this.errorMessage = error.message || 'Failed to process payment. Please try again.';
       this.successMessage = '';
       this.hasSubmitted = true;
-      
-      // Show error notification
       this.showNotification(this.errorMessage, 'error');
     } finally {
-      // Reset submission state
       this.isSubmitting = false;
-      
-      // Reset button state
       const submitBtn = document.getElementById('submit-payment-btn');
       const submitSpinner = document.getElementById('submit-spinner');
       if (submitBtn && submitSpinner) {
         submitBtn.disabled = false;
         submitSpinner.style.display = 'none';
+      }
+
+      // Refresh the view to show messages
+      const appContainer = document.getElementById('app');
+      if (appContainer) {
+        appContainer.innerHTML = '';
+        appContainer.appendChild(this.render());
       }
     }
   }
@@ -3269,17 +3116,8 @@ export class AdminAddPaymentView extends BaseComponent {
     e.preventDefault();
     
     try {
-      // Prevent double submission
       if (this.isSubmitting) return;
       this.isSubmitting = true;
-      
-      // Update submit button
-      const submitBtn = document.getElementById('create-offering-btn');
-      const offeringSpinner = document.getElementById('offering-spinner');
-      if (submitBtn && offeringSpinner) {
-        submitBtn.disabled = true;
-        offeringSpinner.style.display = 'inline-block';
-      }
       
       const form = e.target;
       
@@ -3287,12 +3125,12 @@ export class AdminAddPaymentView extends BaseComponent {
       const timestamp = Date.now();
       const offeringId = `SO${timestamp}`;
       
-      // Get form values
+      // Get form values - Fix incorrect field IDs
       const offeringName = form.querySelector('#offeringName').value;
       const offeringDescription = form.querySelector('#offeringDescription').value;
-      const startDate = form.querySelector('#startDate').value;
-      const endDate = form.querySelector('#endDate').value;
-      const targetGoal = parseFloat(form.querySelector('#targetGoal').value) || 0;
+      const startDate = form.querySelector('#offeringStartDate').value; // Fixed ID
+      const endDate = form.querySelector('#offeringEndDate').value;     // Fixed ID
+      const targetGoal = parseFloat(form.querySelector('#offeringTarget').value) || 0; // Fixed ID
       
       // Validate offering name
       if (!offeringName) {
@@ -3307,27 +3145,12 @@ export class AdminAddPaymentView extends BaseComponent {
         throw new Error('Enter a valid start date');
       }
       
-      if (isNaN(endDateObj.getTime())) {
-        throw new Error('Enter a valid end date');
-      }
-      
       if (endDateObj < startDateObj) {
         throw new Error('End date must be after start date');
       }
       
       // Get custom fields
       const customFields = this.getCustomFields();
-      
-      // Log what we're trying to create
-      console.log('Creating special offering:', { 
-        offeringType: `SPECIAL_${offeringId}`,
-        name: offeringName,
-        description: offeringDescription,
-        startDate,
-        endDate,
-        targetGoal,
-        customFields
-      });
       
       // Create the offering data object
       const offeringData = {
@@ -3337,119 +3160,42 @@ export class AdminAddPaymentView extends BaseComponent {
         startDate,
         endDate,
         targetGoal,
-        customFields
+        customFields,
+        createdBy: this.user.id,
+        createdAt: new Date().toISOString()
       };
       
-      // Use the dedicated special offering endpoint through apiService
+      // Submit to API
       const response = await this.queueApiRequest(() => 
         this.apiService.createSpecialOffering(offeringData)
       );
       
-      console.log('Special offering created successfully:', response);
-      
-      // Set success message
+      if (!response || !response.success) {
+        throw new Error(response?.message || 'Failed to create special offering');
+      }
+
+      // Show success and reset form
       this.successMessage = `Special offering "${offeringName}" created successfully!`;
       this.errorMessage = '';
-      
-      // Close the modal
-      this.toggleSpecialOfferingModal(false);
-      
-      // Reset form
       form.reset();
-      
-      // Update state
-      this.hasSubmitted = true;
-      this.isSubmitting = false;
-      
-      // Reset UI
-      if (submitBtn && offeringSpinner) {
-        submitBtn.disabled = false;
-        offeringSpinner.style.display = 'none';
-      }
-      
-      // Show success notification
+      this.toggleSpecialOfferingModal(false);
       this.showNotification(this.successMessage, 'success');
-      
-      // ENHANCED RELOAD LOGIC: Directly add the new offering to the local array
-      // with correct structure matching what the API would return
-      const newOffering = {
-        id: offeringId,
-        offeringType: `SPECIAL_${offeringId}`,
-        paymentType: `SPECIAL_${offeringId}`,
-        name: offeringName,
-        description: offeringDescription,
-        fullDescription: offeringDescription,
-        descriptionSummary: offeringName,
-        startDate: startDate,
-        endDate: endDate,
-        targetGoal: targetGoal,
-        customFields: customFields,
-        isTemplate: true // Explicitly mark as a template
-      };
-      
-      // Add to local array
-      if (!this.specialOfferings) this.specialOfferings = [];
-      this.specialOfferings.push(newOffering);
-      
-      // Reload special offerings with a delay to allow server processing
-      setTimeout(async () => {
-        try {
-          await this.loadSpecialOfferings();
-          console.log('Reloaded special offerings after creation:', this.specialOfferings);
-          
-          // Update the dropdown with the refreshed offerings
-          this.updateSpecialOfferingsDropdown();
-          
-          // Refresh the view
-          const appContainer = document.getElementById('app');
-          if (appContainer) {
-            appContainer.innerHTML = '';
-            appContainer.appendChild(this.render());
-          }
-        } catch (error) {
-          console.warn("Could not reload special offerings:", error);
-          
-          // Add new offering to dropdown anyway
-          this.updateSpecialOfferingsDropdown();
-          
-          // Refresh the view
-          const appContainer = document.getElementById('app');
-          if (appContainer) {
-            appContainer.innerHTML = '';
-            appContainer.appendChild(this.render());
-          }
-        }
-      }, 1000);
+
+      // Reload special offerings
+      await this.loadSpecialOfferings();
+      this.updateSpecialOfferingsDropdown();
+
     } catch (error) {
       console.error('Error creating special offering:', error);
-      
-      // Set error message
-      this.errorMessage = error.message || 'Failed to create special offering. Try again.';
-      this.successMessage = '';
-      
-      // Update state
-      this.hasSubmitted = true;
+      this.errorMessage = error.message || 'Failed to create special offering';
+      this.showNotification(this.errorMessage, 'error');
+    } finally {
       this.isSubmitting = false;
-      
-      // Reset UI
       const submitBtn = document.getElementById('create-offering-btn');
       const offeringSpinner = document.getElementById('offering-spinner');
       if (submitBtn && offeringSpinner) {
         submitBtn.disabled = false;
         offeringSpinner.style.display = 'none';
-      }
-      
-      // Show error notification
-      this.showNotification(this.errorMessage, 'error');
-      
-      // Close the modal
-      this.toggleSpecialOfferingModal(false);
-      
-      // Refresh the view to show the error message
-      const appContainer = document.getElementById('app');
-      if (appContainer) {
-        appContainer.innerHTML = '';
-        appContainer.appendChild(this.render());
       }
     }
   }
