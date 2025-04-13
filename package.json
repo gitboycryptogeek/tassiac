@@ -24,6 +24,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
     "express-session": "^1.18.1",
     "express-validator": "^7.2.1",
     "helmet": "^8.1.0",
@@ -42,16 +43,17 @@
     "pdfkit": "^0.16.0",
     "pg": "^8.14.1",
     "sequelize": "^6.37.6",
-    "sqlite3": "^5.1.7",
     "sequelize-cli": "^6.6.1",
-    "vite": "^6.2.0"
+    "sqlite3": "^5.1.7",
+    "vite": "^6.2.0",
+    "xss": "^1.0.15"
   },
   "engines": {
     "node": "18.x",
     "npm": "10.x"
   },
   "optionalDependencies": {
-    "@rollup/rollup-win32-x64-msvc": "4.13.0",
-    "@rollup/rollup-linux-x64-gnu": "4.13.0"
+    "@rollup/rollup-linux-x64-gnu": "4.13.0",
+    "@rollup/rollup-win32-x64-msvc": "4.13.0"
   }
 }
