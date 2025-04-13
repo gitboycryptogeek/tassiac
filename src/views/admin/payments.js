@@ -290,6 +290,271 @@ export class AdminPaymentsView extends BaseComponent {
     }
   }
 
+  async handleBatchSms(payments) {
+    if (this.batchSmsInProgress) {
+      this.error = 'Batch SMS sending is already in progress';
+      this.updateView();
+      return;
+    }
+
+    this.batchSmsInProgress = true;
+    this.SMS_STATUS.sending = true;
+    this.error = null;
+    this.success = null;
+    this.updateView();
+
+    try {
+      for (let i = 0; i < payments.length; i += this.batchSize) {
+        const batch = payments.slice(i, i + this.batchSize);
+        await Promise.all(batch.map(payment => this.sendSingleSms(payment)));
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Prevent rate limiting
+      }
+      this.success = `Successfully sent ${payments.length} SMS messages`;
+    } catch (error) {
+      this.error = `Failed to send batch SMS: ${error.message}`;
+      console.error('Batch SMS error:', error);
+    } finally {
+      this.batchSmsInProgress = false;
+      this.SMS_STATUS.sending = false;
+      this.updateView();
+    }
+  }
+
+  async sendSingleSms(payment) {
+    if (this.smsStatus.get(payment.id) === 'Sent') {
+      return;
+    }
+
+    try {
+      await this.secureApiCall(() => 
+        this.apiService.post('/api/payments/send-sms', {
+          paymentId: payment.id,
+          type: 'payment_confirmation'
+        })
+      );
+      this.smsStatus.set(payment.id, 'Sent');
+    } catch (error) {
+      this.smsStatus.set(payment.id, 'Failed');
+      throw error;
+    }
+  }
+
+  async handleViewPayment(paymentId) {
+    try {
+      const payment = this.payments.find(p => p.id === paymentId);
+      if (!payment) {
+        throw new Error('Payment not found');
+      }
+
+      this.selectedPayment = payment;
+      this.showPaymentDetails(payment);
+    } catch (error) {
+      this.error = `Failed to view payment: ${error.message}`;
+      console.error('View payment error:', error);
+    }
+  }
+
+  showPaymentDetails(payment) {
+    const modal = document.createElement('div');
+    modal.className = 'payment-modal';
+    
+    const offeringInfo = payment.specialOffering ? 
+      this.specialOfferings.find(so => so.id === payment.specialOffering) : null;
+    
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Transaction Details</h2>
+          <button class="close-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="detail-row">
+            <span class="label">Transaction ID:</span>
+            <span class="value">${payment.id}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Date:</span>
+            <span class="value">${new Date(payment.paymentDate).toLocaleString()}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Amount:</span>
+            <span class="value">${payment.amount.toLocaleString()}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Type:</span>
+            <span class="value">${this.getPaymentTypeName(payment)}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Description:</span>
+            <span class="value">${this.sanitizeInput(this.getPaymentDescription(payment))}</span>
+          </div>
+          ${offeringInfo ? `
+            <div class="detail-row">
+              <span class="label">Receipt Number:</span>
+              <span class="value">${offeringInfo.receiptNumber || 'N/A'}</span>
+            </div>
+          ` : ''}
+          <div class="detail-row">
+            <span class="label">Status:</span>
+            <span class="value status-badge ${payment.status.toLowerCase()}">${payment.status}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">SMS Status:</span>
+            <span class="value sms-status ${(this.smsStatus.get(payment.id) || 'not-sent').toLowerCase().replace(' ', '-')}">
+              ${this.smsStatus.get(payment.id) || 'Not Sent'}
+            </span>
+          </div>
+        </div>
+        <div class="modal-footer">
+          ${this.smsStatus.get(payment.id) !== 'Sent' ? `
+            <button class="send-sms-btn" data-id="${payment.id}">Send SMS</button>
+          ` : ''}
+          <button class="close-btn">Close</button>
+        </div>
+      </div>
+    `;
+
+    // Add modal styles
+    const modalStyle = document.createElement('style');
+    modalStyle.textContent = `
+      .payment-modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.75);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+      }
+
+      .modal-content {
+        background: rgba(30, 41, 59, 0.95);
+        border-radius: 8px;
+        width: 90%;
+        max-width: 600px;
+        max-height: 90vh;
+        overflow-y: auto;
+      }
+
+      .modal-header {
+        padding: 16px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .modal-body {
+        padding: 16px;
+      }
+
+      .modal-footer {
+        padding: 16px;
+        border-top: 1px solid rgba(148, 163, 184, 0.1);
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+      }
+
+      .detail-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+      }
+
+      .detail-row:last-child {
+        border-bottom: none;
+      }
+
+      .label {
+        color: #94a3b8;
+        font-weight: 500;
+      }
+
+      .value {
+        color: #e2e8f0;
+      }
+
+      @media (max-width: 768px) {
+        .modal-content {
+          width: 95%;
+        }
+
+        .detail-row {
+          flex-direction: column;
+          gap: 4px;
+        }
+
+        .value {
+          padding-left: 16px;
+        }
+      }
+    `;
+    document.head.appendChild(modalStyle);
+
+    // Add event listeners
+    modal.querySelector('.close-btn').addEventListener('click', () => {
+      modal.remove();
+      modalStyle.remove();
+    });
+
+    const smsBtns = modal.querySelectorAll('.send-sms-btn');
+    smsBtns.forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const paymentId = parseInt(btn.dataset.id);
+        await this.sendSingleSms({ id: paymentId });
+        modal.remove();
+        modalStyle.remove();
+        this.updateView();
+      });
+    });
+
+    document.body.appendChild(modal);
+  }
+
+  handleFilterReset() {
+    this.filters = {
+      startDate: '',
+      endDate: '',
+      paymentType: '',
+      userId: '',
+      specialOffering: ''
+    };
+    this.currentPage = 1;
+    this.loadPayments();
+  }
+
+  getPaymentTypeOptions() {
+    const types = [...new Set(this.payments.map(p => p.paymentType))];
+    return types
+      .map(type => `<option value="${type}">${type}</option>`)
+      .join('');
+  }
+
+  getSpecialOfferingOptions() {
+    return this.specialOfferings
+      .map(so => `<option value="${so.id}">${so.name}</option>`)
+      .join('');
+  }
+
+  createMessageElements() {
+    let messages = '';
+    if (this.error) {
+      messages += `<div class="error-message">${this.sanitizeInput(this.error)}</div>`;
+    }
+    if (this.success) {
+      messages += `<div class="success-message">${this.sanitizeInput(this.success)}</div>`;
+    }
+    if (this.SMS_STATUS.sending) {
+      messages += '<div class="info-message">Sending SMS messages...</div>';
+    }
+    return messages;
+  }
+
   renderPaymentsTable() {
     const wrapper = document.createElement('div');
     wrapper.className = 'payments-table-wrapper';
