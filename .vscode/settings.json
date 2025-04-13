@@ -1,0 +1,16 @@
+{
+    "mcp": {
+        "inputs": [],
+        "servers": {
+            "postgres": {
+                "command": "npx",
+                "args": [
+                    "-y",
+                    "@modelcontextprotocol/server-postgres",
+                    "postgres://u2oln40fgog742:pd5a5ddbb59f990d593c206dc77007799733b9a8e5142a4458dfa6ad6c15d416c@c4g0h0kljo97tk.cluster-czrs8kj4isg7.us-east-1.rds.amazonaws.com:5432/d87lao6phlcte4"
+                ],
+                "env": {}
+            }
+        }
+    }
+}
