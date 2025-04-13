@@ -5,6 +5,13 @@ export class AdminPaymentsView extends BaseComponent {
   constructor() {
     super();
     
+    // Add responsive breakpoints first
+    this.breakpoints = {
+      mobile: 768,
+      tablet: 1024,
+      desktop: 1280
+    };
+    
     // Add security measures
     this.sanitizeInput = (input) => {
       return input.replace(/[<>]/g, ''); // Basic XSS prevention
@@ -30,7 +37,7 @@ export class AdminPaymentsView extends BaseComponent {
       }
     };
     
-    // Add authService initialization at the start
+    // Add authService initialization
     this.authService = window.authService;
     if (!this.authService) {
       throw new Error('AuthService not initialized');
@@ -77,7 +84,7 @@ export class AdminPaymentsView extends BaseComponent {
     this.cacheVersion = '1.0';
     this.SMS_STATUS = { sending: false, error: null, success: null };
     
-    // Responsive design improvements
+    // Initialize viewport and responsive handling
     this.viewport = this.getViewportSize();
     this.resizeObserver = new ResizeObserver(this.handleResize.bind(this));
     this.resizeObserver.observe(document.body);
@@ -92,21 +99,6 @@ export class AdminPaymentsView extends BaseComponent {
         }
         return item[this.sortConfig.field];
       }
-    };
-    
-    // Add responsive breakpoints
-    this.breakpoints = {
-      mobile: 768,
-      tablet: 1024,
-      desktop: 1280
-    };
-    
-    // Add viewport tracking
-    this.viewport = {
-      width: window.innerWidth,
-      isMobile: window.innerWidth < 768,
-      isTablet: window.innerWidth >= 768 && window.innerWidth < 1024,
-      isDesktop: window.innerWidth >= 1024
     };
     
     // Add loading optimization
