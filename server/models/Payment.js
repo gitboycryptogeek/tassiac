@@ -130,6 +130,10 @@ Payment.init({
           payment.status = 'COMPLETED';
         }
       }
+      // Normalize special offering types
+      if (payment.paymentType && String(payment.paymentType).toUpperCase().indexOf('SPECIAL_') !== 0) {
+        payment.paymentType = `SPECIAL_${payment.paymentType}`;
+      }
     },
     
     beforeCreate: async (payment, options) => {

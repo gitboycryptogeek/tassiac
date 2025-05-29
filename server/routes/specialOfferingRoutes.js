@@ -27,7 +27,8 @@ router.post(
     body('startDate').isISO8601().withMessage('Valid start date is required'),
     body('endDate').optional().isISO8601().withMessage('Valid end date is required'),
     body('targetGoal').optional().isFloat({ min: 0 }).withMessage('Target goal must be a positive number'),
-    body('customFields').optional()
+    body('customFields').optional(),
+    body('amount').optional().isFloat({ min: 0 }).withMessage('Amount must be a positive number')
   ],
   specialOfferingController.createSpecialOffering
 );

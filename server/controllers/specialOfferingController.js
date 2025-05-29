@@ -204,10 +204,9 @@ exports.getSpecialOfferingProgress = async (req, res) => {
 };
 
 // Create a special offering
+// Create a special offering
 exports.createSpecialOffering = async (req, res) => {
-  // Start a transaction to ensure atomicity
   const transaction = await sequelize.transaction();
-  
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -215,7 +214,7 @@ exports.createSpecialOffering = async (req, res) => {
       return res.status(400).json({ errors: errors.array() });
     }
     
-    const { 
+    let { 
       offeringType,
       name,
       description,
@@ -225,10 +224,13 @@ exports.createSpecialOffering = async (req, res) => {
       customFields
     } = req.body;
     
-    // Validate name is provided
+    // Validate name is provided and normalize offeringType
     if (!name || name.trim() === '') {
       await transaction.rollback();
       return res.status(400).json({ message: 'Special offering name is required' });
+    }
+    if (!offeringType.startsWith('SPECIAL_')) {
+      offeringType = `SPECIAL_${offeringType}`;
     }
     
     console.log('Creating special offering:', {
@@ -240,7 +242,7 @@ exports.createSpecialOffering = async (req, res) => {
       targetGoal
     });
     
-    // Direct database query to ensure no duplicates exist
+    // Direct duplicate check
     const [duplicateCheck] = await sequelize.query(
       "SELECT COUNT(*) as count FROM \"Payments\" WHERE \"paymentType\" = ? AND \"isTemplate\" = true",
       { 
@@ -255,19 +257,19 @@ exports.createSpecialOffering = async (req, res) => {
       return res.status(400).json({ message: 'A special offering with this type already exists' });
     }
     
-    // Create the offering with explicit isTemplate=true flag
     const specialOffering = await Payment.create({
       userId: req.user.id,
-      amount: targetGoal || 0, // Store target goal amount in amount field
+      amount: targetGoal || 0,
       paymentType: offeringType,
       paymentMethod: 'MANUAL',
-      description: name.trim(), // Use trimmed name to prevent empty spaces
-      status: 'COMPLETED', // CRITICAL: Always use COMPLETED status for templates
+      // Use the trimmed name as the offering title stored in description
+      description: name.trim(),
+      status: 'COMPLETED',
       paymentDate: startDate ? new Date(startDate) : new Date(),
       endDate: endDate ? new Date(endDate) : null,
-      targetGoal: targetGoal || 0, // Also store in targetGoal field
+      targetGoal: targetGoal || 0,
       isPromoted: true,
-      isTemplate: true, // Explicitly mark as template
+      isTemplate: true,
       addedBy: req.user.id,
       customFields: JSON.stringify({
         fullDescription: description,
@@ -275,7 +277,6 @@ exports.createSpecialOffering = async (req, res) => {
       })
     }, { transaction });
     
-    // Commit the transaction
     await transaction.commit();
     
     console.log('Special offering created successfully:', {
@@ -285,12 +286,15 @@ exports.createSpecialOffering = async (req, res) => {
       isTemplate: specialOffering.isTemplate
     });
     
+    // Return the formatted special offering
+    const formattedOffering = formatSpecialOffering(specialOffering);
+    
     res.status(201).json({
+      success: true,
       message: 'Special offering created successfully',
-      specialOffering: formatSpecialOffering(specialOffering)
+      specialOffering: formattedOffering
     });
   } catch (error) {
-    // Rollback transaction on error
     await transaction.rollback();
     console.error('Error creating special offering:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -299,9 +303,7 @@ exports.createSpecialOffering = async (req, res) => {
 
 // Update a special offering
 exports.updateSpecialOffering = async (req, res) => {
-  // Start a transaction
   const transaction = await sequelize.transaction();
-  
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -309,7 +311,12 @@ exports.updateSpecialOffering = async (req, res) => {
       return res.status(400).json({ errors: errors.array() });
     }
     
-    const { offeringType } = req.params;
+    const { offeringType: rawOfferingType } = req.params;
+    let offeringType = rawOfferingType;
+    if (!offeringType.startsWith('SPECIAL_')) {
+      offeringType = `SPECIAL_${offeringType}`;
+    }
+    
     const { 
       name,
       description,
@@ -319,11 +326,10 @@ exports.updateSpecialOffering = async (req, res) => {
       isActive
     } = req.body;
     
-    // Find the special offering in the transaction
     const specialOffering = await Payment.findOne({
       where: {
         paymentType: offeringType,
-        isTemplate: true // Only update templates
+        isTemplate: true
       },
       transaction
     });
@@ -333,9 +339,7 @@ exports.updateSpecialOffering = async (req, res) => {
       return res.status(404).json({ message: 'Special offering not found' });
     }
     
-    // Prepare update data
     const updateData = {};
-    
     if (name && name.trim() !== '') {
       updateData.description = name.trim();
     }
@@ -343,29 +347,24 @@ exports.updateSpecialOffering = async (req, res) => {
     if (endDate) updateData.endDate = new Date(endDate);
     if (typeof targetGoal !== 'undefined') {
       updateData.targetGoal = targetGoal;
-      updateData.amount = targetGoal; // Update amount field to match target goal
+      updateData.amount = targetGoal;
     }
     if (typeof isActive !== 'undefined') {
-      // If deactivating, set end date to now
       if (!isActive && !updateData.endDate) {
         updateData.endDate = new Date();
       }
-      // If activating, clear end date
       if (isActive) {
         updateData.endDate = null;
       }
     }
     
-    // Update custom fields if provided
     if (typeof description !== 'undefined' || typeof customFields !== 'undefined') {
       let currentCustomFields = {};
       try {
         if (specialOffering.customFields) {
-          if (typeof specialOffering.customFields === 'string') {
-            currentCustomFields = JSON.parse(specialOffering.customFields);
-          } else {
-            currentCustomFields = specialOffering.customFields;
-          }
+          currentCustomFields = typeof specialOffering.customFields === 'string'
+            ? JSON.parse(specialOffering.customFields)
+            : specialOffering.customFields;
         }
       } catch (e) {
         console.error('Error parsing existing custom fields:', e);
@@ -378,13 +377,10 @@ exports.updateSpecialOffering = async (req, res) => {
       });
     }
     
-    // FIXED: Ensure it stays marked as a template
     updateData.isTemplate = true;
     
-    // Update the special offering
     await specialOffering.update(updateData, { transaction });
     
-    // Get the updated offering
     const updatedOffering = await Payment.findOne({
       where: {
         paymentType: offeringType,
@@ -393,7 +389,6 @@ exports.updateSpecialOffering = async (req, res) => {
       transaction
     });
     
-    // Commit the transaction
     await transaction.commit();
     
     res.json({
@@ -401,7 +396,6 @@ exports.updateSpecialOffering = async (req, res) => {
       specialOffering: formatSpecialOffering(updatedOffering)
     });
   } catch (error) {
-    // Rollback transaction on error
     await transaction.rollback();
     console.error('Error updating special offering:', error);
     res.status(500).json({ message: 'Server error', error: error.message });

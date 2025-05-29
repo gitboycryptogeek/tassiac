@@ -15,7 +15,17 @@ const Notification = models.Notification;
 // Get all payments (admin only)
 exports.getAllPayments = async (req, res) => {
   try {
-    const { page = 1, limit = 20, startDate, endDate, paymentType, userId, department, isPromoted } = req.query;
+    const { 
+      page = 1, 
+      limit = 20, 
+      startDate, 
+      endDate, 
+      paymentType, 
+      userId, 
+      department, 
+      isPromoted 
+    } = req.query;
+    
     const offset = (page - 1) * limit;
     
     // Build filter conditions
@@ -88,7 +98,14 @@ exports.getAllPayments = async (req, res) => {
 exports.getUserPayments = async (req, res) => {
   try {
     const userId = req.params.userId || req.user.id;
-    const { page = 1, limit = 10, startDate, endDate, paymentType } = req.query;
+    const { 
+      page = 1, 
+      limit = 10, 
+      startDate, 
+      endDate, 
+      paymentType 
+    } = req.query;
+    
     const offset = (page - 1) * limit;
     
     // Build filter conditions
@@ -177,7 +194,8 @@ exports.getPaymentStats = async (req, res) => {
           [Op.ne]: null
         }
       },
-      group: ['department']
+      group: ['department'],
+      raw: true
     });
     
     // Get payment breakdown by type
@@ -191,7 +209,8 @@ exports.getPaymentStats = async (req, res) => {
         isTemplate: false,  // Exclude templates
         status: 'COMPLETED'
       },
-      group: ['paymentType']
+      group: ['paymentType'],
+      raw: true
     });
     
     res.json({
@@ -199,8 +218,8 @@ exports.getPaymentStats = async (req, res) => {
       expenses: expensesTotal || 0,
       platformFees: platformFeesTotal || 0,
       netBalance: (revenueTotal || 0) - (expensesTotal || 0),
-      expensesByDepartment,
-      paymentsByType
+      expensesByDepartment: expensesByDepartment || [],
+      paymentsByType: paymentsByType || []
     });
   } catch (error) {
     console.error('Get payment stats error:', error);
@@ -216,8 +235,19 @@ exports.initiatePayment = async (req, res) => {
       return res.status(400).json({ errors: errors.array() });
     }
     
-    const { amount, paymentType, description, titheDistribution } = req.body;
+    const { 
+      amount, 
+      paymentType, 
+      description, 
+      titheDistribution 
+    } = req.body;
+    
     const userId = req.user.id;
+    
+    // Validate amount
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ message: 'Invalid amount' });
+    }
     
     // Calculate platform fee (2% for M-Pesa)
     const platformFee = parseFloat((amount * 0.02).toFixed(2));
@@ -225,41 +255,58 @@ exports.initiatePayment = async (req, res) => {
     // Create a pending payment record
     const payment = await Payment.create({
       userId,
-      amount,
+      amount: parseFloat(amount),
       paymentType,
       paymentMethod: 'MPESA',
-      description,
+      description: description || '',
       status: 'PENDING',
       platformFee,
       titheDistribution: paymentType === 'TITHE' ? titheDistribution : null,
-      isTemplate: false  // Explicitly mark as not a template
+      isTemplate: false,  // Explicitly mark as not a template
+      paymentDate: new Date()
     });
     
     // Get user phone number
     const user = await User.findByPk(userId);
     if (!user) {
+      await payment.destroy();
       return res.status(404).json({ message: 'User not found' });
     }
     
-    // Initiate M-Pesa payment (include platform fee in amount)
-    const paymentResponse = await initiateMpesaPayment(
-      payment.id,
-      amount + platformFee,
-      user.phone,
-      `TASSIAC ${paymentType}`
-    );
+    if (!user.phone) {
+      await payment.destroy();
+      return res.status(400).json({ message: 'User phone number not found' });
+    }
     
-    // Update payment with response data
-    await payment.update({
-      reference: paymentResponse.reference || null,
-      transactionId: paymentResponse.transactionId || null
-    });
-    
-    res.json({
-      message: 'Payment initiated successfully',
-      payment,
-      paymentDetails: paymentResponse
-    });
+    try {
+      // Initiate M-Pesa payment (include platform fee in amount)
+      const totalAmount = parseFloat(amount) + platformFee;
+      const paymentResponse = await initiateMpesaPayment(
+        payment.id,
+        totalAmount,
+        user.phone,
+        `TASSIAC ${paymentType}`
+      );
+      
+      // Update payment with response data
+      await payment.update({
+        reference: paymentResponse.reference || null,
+        transactionId: paymentResponse.transactionId || null
+      });
+      
+      res.json({
+        message: 'Payment initiated successfully',
+        payment,
+        paymentDetails: paymentResponse
+      });
+    } catch (mpesaError) {
+      // If M-Pesa initiation fails, update payment status
+      await payment.update({
+        status: 'FAILED',
+        description: `${description || ''} - Failed to initiate M-Pesa payment`
+      });
+      throw mpesaError;
+    }
   } catch (error) {
     console.error('Initiate payment error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -271,10 +318,32 @@ exports.addManualPayment = async (req, res) => {
   const transaction = await sequelize.transaction();
   
   try {
-    const { userId, amount, paymentType, description } = req.body;
+    const { 
+      userId, 
+      amount, 
+      paymentType, 
+      description,
+      paymentDate,
+      department,
+      isExpense
+    } = req.body;
+
+    // Validate required fields
+    if (!userId || !amount || !paymentType) {
+      await transaction.rollback();
+      return res.status(400).json({ 
+        message: 'Missing required fields: userId, amount, paymentType' 
+      });
+    }
+
+    // Validate amount
+    if (amount <= 0) {
+      await transaction.rollback();
+      return res.status(400).json({ message: 'Invalid amount' });
+    }
 
     // Validate that specified user exists
-    const user = await User.findByPk(userId);
+    const user = await User.findByPk(userId, { transaction });
     if (!user) {
       await transaction.rollback();
       return res.status(400).json({ message: 'Invalid user ID specified' });
@@ -283,14 +352,53 @@ exports.addManualPayment = async (req, res) => {
     // Create payment with correct user and admin tracking
     const payment = await Payment.create({
       userId: userId, // Use the specified user ID (person who paid)
-      amount,
+      amount: parseFloat(amount),
       paymentType,
       paymentMethod: 'MANUAL',
-      description,
+      description: description || '',
       status: 'COMPLETED',
       addedBy: req.user.id, // Track the admin who added it
-      ...req.body // Include other valid fields
+      paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+      department: department || null,
+      isExpense: isExpense || false,
+      isTemplate: false,
+      platformFee: 0 // No platform fee for manual payments
     }, { transaction });
+
+    // Generate receipt for non-expense payments
+    if (!isExpense) {
+      const receiptNumber = generateReceiptNumber(payment.paymentType);
+      
+      await Receipt.create({
+        receiptNumber,
+        paymentId: payment.id,
+        userId: payment.userId,
+        generatedBy: req.user.id,
+        receiptData: {
+          paymentId: payment.id,
+          amount: payment.amount,
+          paymentType: payment.paymentType,
+          paymentMethod: 'MANUAL',
+          description: payment.description,
+          userDetails: {
+            name: user.fullName || '',
+            phone: user.phone || '',
+            email: user.email || ''
+          },
+          churchDetails: {
+            name: 'TASSIAC Church',
+            address: process.env.CHURCH_ADDRESS || 'Church Address',
+            phone: process.env.CHURCH_PHONE || 'Church Phone',
+            email: process.env.CHURCH_EMAIL || 'church@tassiac.com'
+          },
+          receiptNumber,
+          paymentDate: payment.paymentDate,
+          issuedDate: new Date()
+        }
+      }, { transaction });
+      
+      await payment.update({ receiptNumber }, { transaction });
+    }
 
     await transaction.commit();
 
@@ -316,6 +424,10 @@ exports.getPromotedPayments = async (req, res) => {
         isTemplate: false,  // Exclude templates
         status: 'COMPLETED'
       },
+      include: [{
+        model: User,
+        attributes: ['id', 'username', 'fullName']
+      }],
       order: [['createdAt', 'DESC']],
       limit: 5
     });
@@ -327,36 +439,24 @@ exports.getPromotedPayments = async (req, res) => {
   }
 };
 
-// Get active special offerings
+// Get special offerings (redirects to special offering controller)
 exports.getSpecialOfferings = async (req, res) => {
   try {
-    const now = new Date();
+    // Import the special offering controller
+    const specialOfferingController = require('./specialOfferingController');
     
-    const specialOfferings = await Payment.findAll({
-      where: {
-        paymentType: {
-          [Op.like]: 'SPECIAL_%'
-        },
-        isTemplate: true,  // Only include templates
-        // Only include active offerings (either no end date, or end date in the future)
-        [Op.or]: [
-          { endDate: null },
-          { endDate: { [Op.gte]: now } }
-        ],
-        isPromoted: true
-      },
-      order: [['createdAt', 'DESC']]
-    });
-    
-    res.json({ specialOfferings });
+    // Delegate to the special offering controller
+    return specialOfferingController.getAllSpecialOfferings(req, res);
   } catch (error) {
-    console.error('Get special offerings error:', error);
+    console.error('Error getting special offerings:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 };
 
 // Payment callback (for M-Pesa)
 exports.mpesaCallback = async (req, res) => {
+  const transaction = await sequelize.transaction();
+  
   try {
     const { 
       Body: { 
@@ -372,22 +472,29 @@ exports.mpesaCallback = async (req, res) => {
     
     // Find the payment by the reference ID
     const payment = await Payment.findOne({ 
-      where: { reference: CheckoutRequestID || MerchantRequestID }
+      where: { 
+        [Op.or]: [
+          { reference: CheckoutRequestID },
+          { reference: MerchantRequestID }
+        ]
+      },
+      transaction
     });
     
     if (!payment) {
+      await transaction.rollback();
       return res.status(404).json({ message: 'Payment not found' });
     }
     
     // Process the payment result
     if (ResultCode === 0) {
       // Payment successful
-      const metadata = CallbackMetadata.Item.reduce((acc, item) => {
-        if (item.Name && item.Value) {
+      const metadata = CallbackMetadata?.Item?.reduce((acc, item) => {
+        if (item.Name && item.Value !== undefined) {
           acc[item.Name] = item.Value;
         }
         return acc;
-      }, {});
+      }, {}) || {};
       
       // Generate receipt number
       const receiptNumber = generateReceiptNumber(payment.paymentType);
@@ -395,113 +502,336 @@ exports.mpesaCallback = async (req, res) => {
       // Update payment
       await payment.update({
         status: 'COMPLETED',
-        transactionId: metadata.MpesaReceiptNumber || metadata.TransactionID,
+        transactionId: metadata.MpesaReceiptNumber || metadata.TransactionID || null,
         receiptNumber,
         isTemplate: false // Ensure it's never marked as template
-      });
+      }, { transaction });
       
       // Create receipt
-      const user = await User.findByPk(payment.userId);
+      const user = await User.findByPk(payment.userId, { transaction });
       
-      const receiptData = {
-        paymentId: payment.id,
-        amount: payment.amount,
-        paymentType: payment.paymentType,
-        paymentMethod: 'MPESA',
-        description: payment.description,
-        userDetails: {
-          name: user.fullName,
-          phone: user.phone,
-          email: user.email
-        },
-        churchDetails: {
-          name: 'TASSIAC Church',
-          address: 'Church Address',
-          phone: 'Church Phone',
-          email: 'church@tassiac.com'
-        },
-        transactionDetails: {
-          mpesaReceiptNumber: metadata.MpesaReceiptNumber,
-          transactionDate: metadata.TransactionDate || new Date()
-        },
-        receiptNumber,
-        paymentDate: new Date(),
-        issuedDate: new Date(),
-        titheDistribution: payment.titheDistribution
-      };
-      
-      await Receipt.create({
-        receiptNumber,
-        paymentId: payment.id,
-        userId: payment.userId,
-        receiptData
-      });
+      if (user) {
+        const receiptData = {
+          paymentId: payment.id,
+          amount: payment.amount,
+          paymentType: payment.paymentType,
+          paymentMethod: 'MPESA',
+          description: payment.description,
+          userDetails: {
+            name: user.fullName || '',
+            phone: user.phone || '',
+            email: user.email || ''
+          },
+          churchDetails: {
+            name: 'TASSIAC Church',
+            address: process.env.CHURCH_ADDRESS || 'Church Address',
+            phone: process.env.CHURCH_PHONE || 'Church Phone',
+            email: process.env.CHURCH_EMAIL || 'church@tassiac.com'
+          },
+          transactionDetails: {
+            mpesaReceiptNumber: metadata.MpesaReceiptNumber || '',
+            transactionDate: metadata.TransactionDate || new Date()
+          },
+          receiptNumber,
+          paymentDate: payment.paymentDate || new Date(),
+          issuedDate: new Date(),
+          titheDistribution: payment.titheDistribution
+        };
+        
+        await Receipt.create({
+          receiptNumber,
+          paymentId: payment.id,
+          userId: payment.userId,
+          receiptData
+        }, { transaction });
+        
+        // Send SMS notification if enabled
+        try {
+          await sendSmsNotification(
+            user.phone,
+            `Dear ${user.fullName}, your ${payment.paymentType} payment of KES ${payment.amount} has been received. Receipt: ${receiptNumber}. Thank you!`
+          );
+        } catch (smsError) {
+          console.error('SMS notification error:', smsError);
+          // Don't fail the transaction for SMS errors
+        }
+      }
       
     } else {
       // Payment failed
       await payment.update({
         status: 'FAILED',
-        description: `${payment.description} - Failed: ${ResultDesc}`
-      });
+        description: `${payment.description || ''} - Failed: ${ResultDesc || 'Unknown error'}`
+      }, { transaction });
     }
+    
+    await transaction.commit();
     
     // Always return success to M-Pesa
     res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
   } catch (error) {
+    await transaction.rollback();
     console.error('M-Pesa callback error:', error);
     // Always return success to M-Pesa even on error
     res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
   }
 };
 
+// Create manual payment (alternative endpoint)
 exports.createManualPayment = async (req, res) => {
-  const transaction = await sequelize.transaction();
-  
+  let transaction;
   try {
+    transaction = await sequelize.transaction();
+    
     const paymentData = req.body;
     
-    // Special handling for special offerings
-    if (paymentData.paymentType?.startsWith('SPECIAL_')) {
-      // Validate special offering requirements
-      if (paymentData.isTemplate) {
-        if (!paymentData.targetGoal || !paymentData.endDate) {
-          await transaction.rollback();
-          return res.status(400).json({
-            message: "Special offerings require targetGoal and endDate"
-          });
-        }
-      } else {
-        // Regular payment to special offering
-        if (!paymentData.userId) {
-          await transaction.rollback();
-          return res.status(400).json({
-            message: "User ID is required for special offering payments"
-          });
-        }
-      }
+    // Validate required fields
+    if (!paymentData?.userId || !paymentData?.amount || !paymentData?.paymentType) {
+      throw new Error("Missing required fields: userId, amount, paymentType");
     }
 
-    // Create the payment with proper tracking
+    // Prevent special offering creation through this endpoint
+    if (String(paymentData.paymentType).startsWith('SPECIAL_')) {
+      throw new Error("Special offerings must be created through /payment/special-offering endpoint");
+    }
+
+    // Get user with transaction
+    const user = await User.findByPk(paymentData.userId, { transaction });
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    // Create payment with safe data
     const payment = await Payment.create({
-      ...paymentData,
-      addedBy: req.user.id,
+      userId: paymentData.userId,
+      amount: parseFloat(paymentData.amount),
+      paymentType: String(paymentData.paymentType),
+      paymentMethod: 'MANUAL',
+      description: String(paymentData.description || ''),
       status: 'COMPLETED',
-      paymentMethod: paymentData.paymentMethod || 'MANUAL'
+      addedBy: req.user?.id,
+      paymentDate: new Date(paymentData.paymentDate || Date.now()),
+      isTemplate: false,
+      platformFee: 0,
+      department: paymentData.department || null,
+      isExpense: paymentData.isExpense || false
     }, { transaction });
 
+    const receiptNumber = generateReceiptNumber(payment.paymentType);
+
+    // Create receipt with safe data
+    await Receipt.create({
+      receiptNumber,
+      paymentId: payment.id,
+      userId: payment.userId,
+      generatedBy: req.user?.id,
+      receiptData: {
+        paymentId: payment.id,
+        amount: payment.amount,
+        paymentType: payment.paymentType,
+        paymentMethod: 'MANUAL',
+        description: payment.description,
+        userDetails: {
+          name: user.fullName || '',
+          phone: user.phone || '',
+          email: user.email || ''
+        },
+        churchDetails: {
+          name: 'TASSIAC Church',
+          address: process.env.CHURCH_ADDRESS || 'Church Address',
+          phone: process.env.CHURCH_PHONE || 'Church Phone',
+          email: process.env.CHURCH_EMAIL || 'church@tassiac.com'
+        },
+        receiptNumber,
+        paymentDate: payment.paymentDate,
+        issuedDate: new Date()
+      }
+    }, { transaction });
+
+    await payment.update({ receiptNumber }, { transaction });
     await transaction.commit();
     
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Payment created successfully',
       payment
     });
+
   } catch (error) {
-    await transaction.rollback();
+    if (transaction) await transaction.rollback();
     console.error('Error creating payment:', error);
-    res.status(400).json({
+    return res.status(400).json({
+      success: false,
       message: error.message || 'Error creating payment'
     });
+  }
+};
+
+// Create special offering
+exports.createSpecialOffering = async (req, res) => {
+  let transaction;
+  try {
+    transaction = await sequelize.transaction();
+    
+    const offeringData = req.body;
+    
+    // Validate required fields
+    if (!offeringData?.name || !offeringData?.targetGoal || !offeringData?.offeringType) {
+      throw new Error("Required fields missing: name, targetGoal, offeringType");
+    }
+
+    // Validate target goal
+    if (parseFloat(offeringData.targetGoal) <= 0) {
+      throw new Error("Target goal must be greater than 0");
+    }
+
+    // Normalize offering type
+    const paymentType = String(offeringData.offeringType).startsWith('SPECIAL_') 
+      ? offeringData.offeringType 
+      : `SPECIAL_${offeringData.offeringType}`;
+
+    // Check for duplicate with transaction
+    const existingOffering = await Payment.findOne({
+      where: {
+        paymentType,
+        isTemplate: true
+      },
+      transaction
+    });
+
+    if (existingOffering) {
+      throw new Error("A special offering with this type already exists");
+    }
+
+    // Validate dates if provided
+    const startDate = offeringData.startDate ? new Date(offeringData.startDate) : new Date();
+    const endDate = offeringData.endDate ? new Date(offeringData.endDate) : null;
+    
+    if (endDate && endDate <= startDate) {
+      throw new Error("End date must be after start date");
+    }
+
+    // Create offering with safe data
+    const specialOffering = await Payment.create({
+      userId: req.user?.id,
+      amount: parseFloat(offeringData.targetGoal),
+      paymentType,
+      paymentMethod: 'MANUAL',
+      description: String(offeringData.name).trim(),
+      status: 'COMPLETED',
+      addedBy: req.user?.id,
+      paymentDate: startDate,
+      targetGoal: parseFloat(offeringData.targetGoal),
+      endDate: endDate,
+      isPromoted: true,
+      isTemplate: true,
+      isExpense: false,
+      platformFee: 0,
+      customFields: JSON.stringify({
+        fullDescription: String(offeringData.description || offeringData.name),
+        fields: Array.isArray(offeringData.customFields) ? offeringData.customFields : []
+      })
+    }, { transaction });
+
+    await transaction.commit();
+    
+    return res.status(201).json({
+      success: true,
+      message: 'Special offering created successfully',
+      specialOffering
+    });
+
+  } catch (error) {
+    if (transaction) await transaction.rollback();
+    console.error('Error creating special offering:', error);
+    return res.status(400).json({
+      success: false,
+      message: error.message || 'Error creating special offering'
+    });
+  }
+};
+
+// Update payment status (admin only)
+exports.updatePaymentStatus = async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    const { status } = req.body;
+    
+    const validStatuses = ['PENDING', 'COMPLETED', 'FAILED', 'CANCELLED'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ 
+        message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` 
+      });
+    }
+    
+    const payment = await Payment.findByPk(paymentId);
+    if (!payment) {
+      return res.status(404).json({ message: 'Payment not found' });
+    }
+    
+    await payment.update({ status });
+    
+    res.json({
+      message: 'Payment status updated successfully',
+      payment
+    });
+  } catch (error) {
+    console.error('Update payment status error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+// Toggle payment promotion (admin only)
+exports.togglePaymentPromotion = async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    
+    const payment = await Payment.findByPk(paymentId);
+    if (!payment) {
+      return res.status(404).json({ message: 'Payment not found' });
+    }
+    
+    await payment.update({ isPromoted: !payment.isPromoted });
+    
+    res.json({
+      message: `Payment ${payment.isPromoted ? 'promoted' : 'unpromoted'} successfully`,
+      payment
+    });
+  } catch (error) {
+    console.error('Toggle payment promotion error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+// Delete payment (admin only)
+exports.deletePayment = async (req, res) => {
+  const transaction = await sequelize.transaction();
+  
+  try {
+    const { paymentId } = req.params;
+    
+    const payment = await Payment.findByPk(paymentId, { transaction });
+    if (!payment) {
+      await transaction.rollback();
+      return res.status(404).json({ message: 'Payment not found' });
+    }
+    
+    // Delete associated receipts
+    await Receipt.destroy({
+      where: { paymentId },
+      transaction
+    });
+    
+    // Delete the payment
+    await payment.destroy({ transaction });
+    
+    await transaction.commit();
+    
+    res.json({ message: 'Payment deleted successfully' });
+  } catch (error) {
+    await transaction.rollback();
+    console.error('Delete payment error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 };
 

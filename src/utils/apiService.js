@@ -241,6 +241,13 @@ export class ApiService {
     
     if (!response.ok) {
       console.error('Error response data:', data);
+      
+      // Handle validation errors specifically
+      if (data.errors && Array.isArray(data.errors)) {
+        const errorMessages = data.errors.map(err => err.msg || err.message).join(', ');
+        throw new Error(errorMessages || 'Validation failed');
+      }
+      
       throw new Error(data.message || 'API request failed');
     }
     
@@ -346,16 +353,16 @@ export class ApiService {
   }
   
   /**
- * Get special offerings - with improved error handling and data normalization
- * @param {boolean} activeOnly - Whether to get only active offerings
- * @returns {Promise} - Special offerings data
- */
+   * Get special offerings - with improved error handling and data normalization
+   * @param {boolean} activeOnly - Whether to get only active offerings
+   * @returns {Promise} - Special offerings data
+   */
   async getSpecialOfferings(activeOnly = false) {
     try {
       console.log('Fetching special offerings, activeOnly:', activeOnly);
       
-      // Direct API call
-      const response = await this.get('/payment/special-offering', { activeOnly });
+      // Use the correct endpoint for special offerings
+      const response = await this.get('/special-offerings', { activeOnly });
       
       // Log the raw response
       console.log('Special offerings API response:', response);
@@ -428,96 +435,97 @@ export class ApiService {
     }
   }
 
-getHumanReadableName(offering) {
-  // First try standard name fields
-  if (offering.name && offering.name.trim() !== '') 
-    return offering.name;
-  
-  if (offering.description && offering.description.trim() !== '') 
-    return offering.description;
-  
-  // Try to extract from customFields
-  try {
-    if (offering.customFields) {
-      const customFields = typeof offering.customFields === 'string'
-        ? JSON.parse(offering.customFields)
-        : offering.customFields;
-        
-      if (customFields.fullDescription && customFields.fullDescription.trim() !== '') {
-        return customFields.fullDescription;
+  getHumanReadableName(offering) {
+    // First try standard name fields
+    if (offering.name && offering.name.trim() !== '') 
+      return offering.name;
+    
+    if (offering.description && offering.description.trim() !== '') 
+      return offering.description;
+    
+    // Try to extract from customFields
+    try {
+      if (offering.customFields) {
+        const customFields = typeof offering.customFields === 'string'
+          ? JSON.parse(offering.customFields)
+          : offering.customFields;
+          
+        if (customFields.fullDescription && customFields.fullDescription.trim() !== '') {
+          return customFields.fullDescription;
+        }
       }
+    } catch (e) {
+      console.warn('Error parsing customFields for name:', e);
     }
-  } catch (e) {
-    console.warn('Error parsing customFields for name:', e);
+    
+    // If we still don't have a name, use "Special Offering" with a cleaner ID
+    const id = this.extractIdFromType(offering.offeringType || offering.paymentType || '');
+    return `Special Offering ${id.replace(/^SO/, '#')}`;
   }
-  
-  // If we still don't have a name, use "Special Offering" with a cleaner ID
-  const id = this.extractIdFromType(offering.offeringType || offering.paymentType || '');
-  return `Special Offering ${id.replace(/^SO/, '#')}`;
-}
 
-/**
- * Helper to extract description from an offering
- * @private
- */
-extractDescription(offering) {
-  if (offering.description) return offering.description;
-  
-  try {
-    // Check for description in customFields
-    if (offering.customFields) {
-      const customFields = typeof offering.customFields === 'string'
-        ? JSON.parse(offering.customFields)
-        : offering.customFields;
-        
-      if (customFields.fullDescription) {
-        return customFields.fullDescription;
-      }
-    }
-  } catch (e) {
-    console.warn('Error parsing customFields for description:', e);
-  }
-  
-  return offering.name || 'Special Offering';
-}
-
-/**
- * Helper to extract custom fields from an offering
- * @private
- */
-extractCustomFields(offering) {
-  try {
-    if (offering.customFields) {
-      // Handle string or object format
-      const customFields = typeof offering.customFields === 'string'
-        ? JSON.parse(offering.customFields)
-        : offering.customFields;
-        
-      return Array.isArray(customFields.fields) ? customFields.fields : [];
-    }
-  } catch (e) {
-    console.warn('Error parsing customFields:', e);
-  }
-  
-  return [];
-}
-
-/**
- * Helper to extract ID from offering type
- * @private
- */
-extractIdFromType(typeString) {
-  if (!typeString) return '';
-  
-  // Extract the ID part after SPECIAL_
-  if (typeString.startsWith('SPECIAL_')) {
-    return typeString.split('SPECIAL_')[1];
-  }
-  
-  return typeString;
-}
   /**
-   * Create a special offering
+   * Helper to extract description from an offering
+   * @private
+   */
+  extractDescription(offering) {
+    if (offering.description) return offering.description;
+    
+    try {
+      // Check for description in customFields
+      if (offering.customFields) {
+        const customFields = typeof offering.customFields === 'string'
+          ? JSON.parse(offering.customFields)
+          : offering.customFields;
+          
+        if (customFields.fullDescription) {
+          return customFields.fullDescription;
+        }
+      }
+    } catch (e) {
+      console.warn('Error parsing customFields for description:', e);
+    }
+    
+    return offering.name || 'Special Offering';
+  }
+
+  /**
+   * Helper to extract custom fields from an offering
+   * @private
+   */
+  extractCustomFields(offering) {
+    try {
+      if (offering.customFields) {
+        // Handle string or object format
+        const customFields = typeof offering.customFields === 'string'
+          ? JSON.parse(offering.customFields)
+          : offering.customFields;
+          
+        return Array.isArray(customFields.fields) ? customFields.fields : [];
+      }
+    } catch (e) {
+      console.warn('Error parsing customFields:', e);
+    }
+    
+    return [];
+  }
+
+  /**
+   * Helper to extract ID from offering type
+   * @private
+   */
+  extractIdFromType(typeString) {
+    if (!typeString) return '';
+    
+    // Extract the ID part after SPECIAL_
+    if (typeString.startsWith('SPECIAL_')) {
+      return typeString.split('SPECIAL_')[1];
+    }
+    
+    return typeString;
+  }
+  
+  /**
+   * Create a special offering - FIXED to use the correct endpoint
    * @param {Object} offeringData - Special offering data
    * @returns {Promise} - Special offering creation response
    */
@@ -525,33 +533,63 @@ extractIdFromType(typeString) {
     try {
       console.log('Creating special offering:', offeringData);
       
-      // Format offering data properly
+      // Validate required fields
+      if (!offeringData.name || !offeringData.offeringType) {
+        throw new Error('Name and offering type are required');
+      }
+      
+      // Convert dates to ISO8601 format
+      const startDate = offeringData.startDate 
+        ? new Date(offeringData.startDate).toISOString()
+        : new Date().toISOString();
+      
+      // Handle endDate - don't send if empty
+      let endDate = null;
+      if (offeringData.endDate && offeringData.endDate.trim() !== '') {
+        endDate = new Date(offeringData.endDate).toISOString();
+      }
+      
+      // Format the request payload for the special offerings endpoint
       const formattedData = {
-        ...offeringData,
-        offeringType: !offeringData.offeringType.startsWith('SPECIAL_') 
-          ? `SPECIAL_${offeringData.offeringType}` 
-          : offeringData.offeringType,
-        isTemplate: true,
-        status: 'COMPLETED',
-        customFields: this.formatCustomFields(offeringData)
+        offeringType: offeringData.offeringType,
+        name: offeringData.name.trim(),
+        description: offeringData.description || offeringData.name, // Description is required
+        startDate: startDate,
+        targetGoal: parseFloat(offeringData.targetGoal || 0),
+        customFields: offeringData.customFields || []
       };
       
-      // Try dedicated endpoint first
-      try {
-        return await this.post('/payment/special-offering', formattedData);
-      } catch (error) {
-        console.warn('Special offering endpoint failed, falling back to manual payment:', error);
-        
-        // Fall back to manual payment creation
-        return await this.post('/payment/manual', {
-          ...formattedData,
-          paymentMethod: 'MANUAL',
-          amount: formattedData.targetGoal || 0,
-          isPromoted: true,
-          isExpense: false,
-          addedBy: this.authService.getUser().id
-        });
+      // Only add endDate if it's not null
+      if (endDate) {
+        formattedData.endDate = endDate;
       }
+      
+      // Add amount if backend expects it
+      if (formattedData.targetGoal > 0) {
+        formattedData.amount = formattedData.targetGoal;
+      }
+      
+      console.log('Special offering request payload:', formattedData);
+      
+      // Use the CORRECT endpoint for creating special offerings
+      const response = await this.post('/special-offerings', formattedData);
+      
+      // Check if response indicates success
+      if (response.specialOffering) {
+        return {
+          success: true,
+          message: response.message || 'Special offering created successfully',
+          specialOffering: response.specialOffering
+        };
+      }
+      
+      // If no specialOffering in response but no error, still consider it successful
+      return {
+        success: true,
+        message: response.message || 'Special offering created successfully',
+        ...response
+      };
+      
     } catch (error) {
       console.error('Error creating special offering:', error);
       throw error;
@@ -565,47 +603,11 @@ extractIdFromType(typeString) {
    */
   async getSpecialOfferingDetails(offeringType) {
     try {
-      // Try the new endpoint first
-      return await this.get(`/payment/special-offering/${offeringType}`);
+      // Use the special offerings endpoint
+      return await this.get(`/special-offerings/${offeringType}`);
     } catch (error) {
-      console.warn('New special offering endpoint failed, falling back to payment search:', error);
-      // Fall back to finding the payment
-      return this.get('/payment/all', {
-        limit: 1,
-        paymentType: offeringType
-      }).then(response => {
-        if (!response.payments || response.payments.length === 0) {
-          throw new Error('Special offering not found');
-        }
-        
-        const payment = response.payments[0];
-        let customFields = [];
-        let fullDescription = payment.description;
-        
-        try {
-          if (payment.customFields && typeof payment.customFields === 'string') {
-            const parsed = JSON.parse(payment.customFields);
-            customFields = parsed.fields || [];
-            fullDescription = parsed.fullDescription || payment.description;
-          }
-        } catch (e) {
-          console.error('Error parsing custom fields:', e);
-        }
-        
-        return {
-          specialOffering: {
-            offeringType: payment.paymentType,
-            name: payment.description,
-            description: fullDescription,
-            startDate: payment.paymentDate,
-            endDate: payment.endDate,
-            targetGoal: payment.targetGoal || 0,
-            customFields,
-            createdAt: payment.createdAt,
-            updatedAt: payment.updatedAt
-          }
-        };
-      });
+      console.error('Error getting special offering details:', error);
+      throw error;
     }
   }
   
@@ -618,44 +620,8 @@ extractIdFromType(typeString) {
     try {
       console.log('Fetching progress for offering:', offeringType);
       
-      // Try the dedicated endpoint first
-      try {
-        return await this.get(`/payment/special-offering/${offeringType}/progress`);
-      } catch (error) {
-        console.warn('Special offering progress endpoint failed, calculating manually:', error);
-        
-        // Fall back to manual calculation
-        // First get the special offering details (template)
-        const offeringDetails = await this.getSpecialOfferingDetails(offeringType);
-        const specialOffering = offeringDetails.specialOffering;
-        
-        // Then get all payments for this offering type (excluding the template)
-        const payments = await this.get('/payment/all', {
-          paymentType: offeringType,
-          isTemplate: false
-        });
-        
-        // Calculate the total amount contributed
-        const totalContributed = payments.payments
-          .filter(payment => payment.isTemplate !== true && payment.status === 'COMPLETED')
-          .reduce((sum, payment) => sum + parseFloat(payment.amount), 0);
-        
-        // Calculate the percentage
-        let percentage = 0;
-        if (specialOffering.targetGoal && specialOffering.targetGoal > 0) {
-          percentage = Math.min(100, (totalContributed / parseFloat(specialOffering.targetGoal)) * 100);
-        }
-        
-        return {
-          offeringType,
-          name: specialOffering.name,
-          targetGoal: specialOffering.targetGoal || 0,
-          totalContributed,
-          percentage,
-          payments: payments.payments.filter(payment => payment.isTemplate !== true),
-          remainingAmount: Math.max(0, (parseFloat(specialOffering.targetGoal) || 0) - totalContributed)
-        };
-      }
+      // Use the special offerings endpoint for progress
+      return await this.get(`/special-offerings/${offeringType}/progress`);
     } catch (error) {
       console.error('Error getting special offering progress:', error);
       throw error;
@@ -670,44 +636,38 @@ extractIdFromType(typeString) {
    */
   async updateSpecialOffering(offeringType, updateData) {
     try {
-      // Try the new endpoint first
-      return await this.put(`/payment/special-offering/${offeringType}`, updateData);
+      return await this.put(`/special-offerings/${offeringType}`, updateData);
     } catch (error) {
-      console.warn('New special offering update endpoint failed, not supported:', error);
-      throw new Error('Updating special offerings is not supported in your current server version. Please upgrade to use this feature.');
+      console.error('Error updating special offering:', error);
+      throw error;
     }
   }
-  // Make a payment to a special offering
-async makeSpecialOfferingPayment(offeringType, paymentData) {
-  try {
-    if (!paymentData.amount) {
-      throw new Error('Payment amount is required');
-    }
-    
-    if (!paymentData.userId) {
-      throw new Error('User ID is required for special offering payments');
-    }
-    
-    const payment = {
-      ...paymentData,
-      paymentType: offeringType,
-      isTemplate: false,
-      status: 'COMPLETED',
-      paymentMethod: paymentData.paymentMethod || 'MANUAL',
-      addedBy: this.authService.getUser().id
-    };
-    
+  
+  /**
+   * Make a payment to a special offering
+   * @param {string} offeringType - Special offering type
+   * @param {Object} paymentData - Payment data
+   * @returns {Promise} - Payment response
+   */
+  async makeSpecialOfferingPayment(offeringType, paymentData) {
     try {
-      return await this.post(`/payment/special-offering/${offeringType}/payment`, payment);
+      if (!paymentData.amount) {
+        throw new Error('Payment amount is required');
+      }
+      
+      const payment = {
+        amount: parseFloat(paymentData.amount),
+        description: paymentData.description || `Payment for special offering`
+      };
+      
+      // Use the special offerings payment endpoint
+      return await this.post(`/special-offerings/${offeringType}/payment`, payment);
     } catch (error) {
-      console.warn('Special offering payment endpoint failed, using manual payment:', error);
-      return await this.post('/payment/manual', payment);
+      console.error('Error making special offering payment:', error);
+      throw error;
     }
-  } catch (error) {
-    console.error('Error making special offering payment:', error);
-    throw error;
   }
-}
+  
   /**
    * Download a file
    * @param {string} endpoint - API endpoint path
@@ -879,6 +839,18 @@ async makeSpecialOfferingPayment(offeringType, paymentData) {
    */
   async generateReport(reportParams) {
     return this.post('/admin/generate-report', reportParams);
+  }
+
+  /**
+   * Format custom fields for special offering
+   * @param {Object} offeringData - Offering data
+   * @returns {string} - Formatted custom fields as JSON string
+   */
+  formatCustomFields(offeringData) {
+    return JSON.stringify({
+      fullDescription: offeringData.description || '',
+      fields: offeringData.customFields || []
+    });
   }
 }
 

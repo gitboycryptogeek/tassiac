@@ -58,11 +58,7 @@ router.post(
     body('department').optional().isString().withMessage('Department must be a string'),
     body('paymentDate').optional().isISO8601().withMessage('Valid date is required'),
     body('titheDistribution').optional().isObject().withMessage('Tithe distribution must be an object'),
-    body('isPromoted').optional().isBoolean().withMessage('isPromoted must be a boolean'),
-    // Add validation for special offering fields
-    body('endDate').optional().isISO8601().withMessage('Valid end date is required'),
-    body('customFields').optional(),
-    body('targetGoal').optional().isFloat({ min: 0 }).withMessage('Target goal must be a positive number')
+    body('isPromoted').optional().isBoolean().withMessage('isPromoted must be a boolean')
   ],
   paymentController.addManualPayment
 );

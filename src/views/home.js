@@ -5,7 +5,7 @@ import { FuturisticStyles } from '../utils/futuristicStyles.js';
 export class HomeView extends BaseComponent {
   constructor() {
     super();
-    this.title = 'Tassia Central SDA Church - Financial Management';
+    this.title = 'Tassia Central SEVENTH DAY ADVENTIST Church - Financial Management';
     this.user = this.authService ? this.authService.getUser() : null;
     this.isAuthenticated = this.authService ? this.authService.isAuthenticated() : false;
     this.isAdmin = this.authService ? this.authService.isAdmin() : false;
@@ -184,7 +184,7 @@ export class HomeView extends BaseComponent {
     greeting.style.display = 'inline-block';
 
     const churchName = document.createElement('h2');
-    churchName.textContent = 'Tassia Central SDA Church';
+    churchName.textContent = 'Tassia Central SEVENTH DAY ADVENTIST Church';
     churchName.style.fontSize = '36px';
     churchName.style.fontWeight = '700';
     churchName.style.marginBottom = '25px';
@@ -1114,7 +1114,7 @@ export class HomeView extends BaseComponent {
 
     const churchName = document.createElement('h2');
     churchName.className = 'text-gradient';
-    churchName.textContent = 'Tassia Central SDA Church';
+    churchName.textContent = 'Tassia Central SEVENTH DAY ADVENTISTS Church';
     churchName.style.fontSize = '28px';
     churchName.style.fontWeight = '800';
     churchName.style.marginBottom = '16px';
@@ -1226,7 +1226,7 @@ export class HomeView extends BaseComponent {
     copyright.appendChild(copyrightBorder);
 
     const copyrightText = document.createElement('p');
-    copyrightText.textContent = `© ${new Date().getFullYear()} Tassia Central SDA Church. All rights reserved.`;
+    copyrightText.textContent = `© ${new Date().getFullYear()} Tassia Central SEVENTH DAY ADVENTIST Church. All rights reserved.`;
     
     copyright.appendChild(copyrightText);
 
