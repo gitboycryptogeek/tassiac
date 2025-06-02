@@ -86,13 +86,16 @@ router.post(
     body('userId').isInt().withMessage('Valid User ID is required.'),
     body('amount').isFloat({ gt: 0 }).withMessage('Amount must be a positive number.'),
     body('paymentType').isString().notEmpty().withMessage('Payment type is required.')
-      .custom(value => {
-        const validTypes = ['TITHE', 'OFFERING', 'DONATION', 'EXPENSE', 'SPECIAL_OFFERING_CONTRIBUTION'];
-        if (!validTypes.includes(value)) {
-          throw new Error(`Invalid payment type. Must be one of: ${validTypes.join(', ')}`);
-        }
-        return true;
-      }),
+  .custom(value => {
+    const validTypes = ['TITHE', 'OFFERING', 'DONATION', 'EXPENSE', 'SPECIAL_OFFERING_CONTRIBUTION'];
+    
+    // Accept SPECIAL_OFFERING_ID format from frontend
+    if (value.startsWith('SPECIAL_OFFERING_') || validTypes.includes(value)) {
+      return true;
+    }
+    
+    throw new Error(`Invalid payment type received: ${value}`);
+  }),
     body('description').optional().isString().trim(),
     body('paymentDate').optional().isISO8601().toDate().withMessage('Valid payment date is required if provided.'),
     body('paymentMethod').optional().isIn(['MANUAL', 'CASH', 'BANK_TRANSFER', 'CHEQUE']).default('MANUAL'),
@@ -107,19 +110,11 @@ router.post(
       .custom((value, { req }) => {
         if (req.body.paymentType === 'TITHE') {
           const requiredKeys = ["campMeetingExpenses", "welfare", "thanksgiving", "stationFund", "mediaMinistry"];
-          let sum = 0;
           for (const key of requiredKeys) {
-            if (typeof value[key] !== 'number' || value[key] < 0) {
-              throw new Error(`Invalid or missing value for tithe category: ${key}. Must be a non-negative number.`);
+            if (typeof value[key] !== 'boolean') {
+              throw new Error(`Invalid tithe category: ${key}. Must be a boolean value.`);
             }
-            sum += value[key];
           }
-          // Ensure the sum matches the payment amount, allowing for minor floating point issues
-          // This validation is now more advisory in the controller, can be made stricter here too.
-          // const paymentAmount = parseFloat(req.body.amount);
-          // if (Math.abs(sum - paymentAmount) > 0.01) {
-          //   throw new Error(`Sum of tithe distribution (${sum}) must equal the payment amount (${paymentAmount}).`);
-          // }
         }
         return true;
       }),

@@ -58,12 +58,9 @@ async function logAdminActivity(actionType, targetId, initiatedBy, actionData = 
       data: {
         actionType,
         targetId: String(targetId),
-        initiatedBy,
+        initiatedById: initiatedBy, // Changed from initiatedBy to initiatedById
         actionData,
         status: 'COMPLETED',
-        initiator: { // Assuming 'initiator' is the relation name to the User model
-          connect: { id: initiatedBy }
-        }
       },
     });
     debugLog(`Admin activity logged: ${actionType} for target ${targetId} by user ${initiatedBy}`);
@@ -71,7 +68,6 @@ async function logAdminActivity(actionType, targetId, initiatedBy, actionData = 
     debugLog(`Error logging admin activity for ${actionType} on ${targetId}:`, error.message);
   }
 }
-
 // Get all payments (admin only)
 exports.getAllPayments = async (req, res) => {
   debugLog('Admin: Get All Payments attempt started');
@@ -337,17 +333,18 @@ exports.initiatePayment = async (req, res) => {
   try {
     const result = await prisma.$transaction(async (tx) => {
       let paymentData = {
-        userId,
-        amount: paymentAmount, 
+        userId: parseInt(userId),
+        amount: paymentAmount,
         paymentType,
-        paymentMethod: 'MPESA',
-        description: description || `${paymentType} Contribution`,
-        status: 'PENDING',
-        platformFee, 
-        paymentDate: new Date(),
-        isExpense: false,
+        paymentMethod,
+        description: description || `${paymentType} (${paymentMethod})`,
+        status: 'COMPLETED',
+        paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+        processedById: processedByAdminId,
+        isExpense: !!isExpense,
+        platformFee: 0,
         isTemplate: false,
-        processedById: userId, // User initiating their own payment
+        reference: reference || null
       };
 
       if (paymentType === 'TITHE' && titheDistributionSDA) {
@@ -369,8 +366,10 @@ exports.initiatePayment = async (req, res) => {
         }
         paymentData.titheDistributionSDA = validatedTitheDistribution;
 
-      } else if (paymentType === 'SPECIAL_OFFERING_CONTRIBUTION' && specialOfferingId) {
-        const offering = await tx.specialOffering.findUnique({ where: { id: parseInt(specialOfferingId) } });
+      } else if (processedPaymentType === 'SPECIAL_OFFERING_CONTRIBUTION' && processedSpecialOfferingId) {
+        const offering = await prisma.specialOffering.findUnique({ 
+          where: { id: processedSpecialOfferingId } 
+        });
         if (!offering || !offering.isActive) {
           throw new Error('Selected special offering is not available or not active.');
         }
@@ -440,6 +439,14 @@ exports.addManualPayment = async (req, res) => {
     department, isExpense = false, titheDistributionSDA, specialOfferingId,
     paymentMethod = 'MANUAL', expenseReceiptUrl, reference,
   } = req.body;
+    // Convert frontend special offering format to backend format
+let processedPaymentType = paymentType;
+let processedSpecialOfferingId = specialOfferingId;
+
+if (paymentType.startsWith('SPECIAL_OFFERING_')) {
+  processedSpecialOfferingId = parseInt(paymentType.replace('SPECIAL_OFFERING_', ''));
+  processedPaymentType = 'SPECIAL_OFFERING_CONTRIBUTION';
+}
   const processedByAdminId = req.user.id;
 
   const paymentAmount = parseFloat(amount);
@@ -448,115 +455,103 @@ exports.addManualPayment = async (req, res) => {
   }
 
   try {
-    const payment = await prisma.$transaction(async (tx) => {
-      const user = await tx.user.findUnique({ 
-        where: { id: parseInt(userId) },
-        select: { id: true, fullName: true, phone: true, email: true }
-      });
-      if (!user) throw new Error('User not found.');
+    const user = await prisma.user.findUnique({ 
+      where: { id: parseInt(userId) },
+      select: { id: true, fullName: true, phone: true, email: true }
+    });
+    if (!user) throw new Error('User not found.');
 
-      let paymentData = {
-        userId: parseInt(userId),
-        amount: paymentAmount,
-        paymentType,
-        paymentMethod,
-        description: description || `${paymentType} (${paymentMethod})`,
-        status: 'COMPLETED', // Manual payments by admin are typically completed
-        paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
-        processedById: processedByAdminId,
-        isExpense: !!isExpense,
-        platformFee: 0, // No platform fee for manual entries
-        isTemplate: false,
-        reference: reference || null
-      };
+    let paymentData = {
+      userId: parseInt(userId),
+      amount: paymentAmount,
+      paymentType: processedPaymentType, // Use processed type
+      paymentMethod,
+      description: description || `${processedPaymentType} (${paymentMethod})`,
+      status: 'COMPLETED',
+      paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+      processedById: processedByAdminId, // Admin is processing on behalf of user
+      isExpense: !!isExpense,
+      platformFee: 0,
+      isTemplate: false,
+      reference: reference || null
+    };
 
-      if (isExpense) {
-        if (!department) throw new Error('Department is required for expenses.');
-        paymentData.department = department;
-        if (req.file) { 
-          paymentData.expenseReceiptUrl = `/uploads/expense_receipts/${req.file.filename}`;
-        } else if (expenseReceiptUrl) { 
-          paymentData.expenseReceiptUrl = expenseReceiptUrl;
-        }
-      } else if (paymentType === 'TITHE') {
-        // Tithe distribution now expects an object of booleans
-        if (!titheDistributionSDA || typeof titheDistributionSDA !== 'object') {
-          throw new Error('Valid tithe distribution data (object of booleans) is required for tithe payments.');
-        }
-        const sdaCategories = ['campMeetingExpenses', 'welfare', 'thanksgiving', 'stationFund', 'mediaMinistry'];
-        const validatedTitheDistribution = {};
-        let hasAtLeastOneCategory = false;
-        for (const key of sdaCategories) {
-            if (titheDistributionSDA.hasOwnProperty(key) && typeof titheDistributionSDA[key] === 'boolean') {
-                validatedTitheDistribution[key] = titheDistributionSDA[key];
-                if(titheDistributionSDA[key] === true) hasAtLeastOneCategory = true;
-            } else {
-                 // Default to false if not provided or not a boolean
-                validatedTitheDistribution[key] = false;
-            }
-        }
-        // Optionally, require at least one category to be checked if it's a tithe
-        // if (!hasAtLeastOneCategory) {
-        //     throw new Error('At least one tithe category must be designated for tithe payments.');
-        // }
-        paymentData.titheDistributionSDA = validatedTitheDistribution;
+    // Handle special offering payment types
+    if (paymentType.startsWith('SPECIAL_OFFERING_')) {
+      const offeringId = paymentType.replace('SPECIAL_OFFERING_', '');
+      const offering = await prisma.specialOffering.findUnique({ where: { id: parseInt(offeringId) } });
+      if (!offering || !offering.isActive) throw new Error('Selected special offering is not available or not active.');
+      paymentData.specialOfferingId = offering.id;
+      paymentData.paymentType = 'SPECIAL_OFFERING_CONTRIBUTION';
+      paymentData.description = description || `Contribution to ${offering.name}`;
+    }
 
-      } else if (paymentType === 'SPECIAL_OFFERING_CONTRIBUTION') {
-        if (!specialOfferingId) throw new Error('Special Offering ID is required.');
-        const offering = await tx.specialOffering.findUnique({ where: { id: parseInt(specialOfferingId) } });
-        if (!offering || !offering.isActive) throw new Error('Selected special offering is not available or not active.');
-        paymentData.specialOfferingId = offering.id;
-        paymentData.description = description || `Contribution to ${offering.name}`;
+    // Handle tithe distribution
+    if (processedPaymentType === 'TITHE' && titheDistributionSDA) {
+      paymentData.titheDistributionSDA = titheDistributionSDA;
+    }
+
+    // Handle expenses
+    if (isExpense) {
+      if (!department) throw new Error('Department is required for expenses.');
+      paymentData.department = department;
+      if (expenseReceiptUrl) {
+        paymentData.expenseReceiptUrl = expenseReceiptUrl;
       }
+    }
 
-      const createdPayment = await tx.payment.create({ 
-        data: paymentData,
-        include: { user: true } 
+    const createdPayment = await prisma.payment.create({ 
+      data: paymentData,
+      include: { user: true } 
+    });
+    debugLog('Manual payment record created:', createdPayment.id);
+
+    // Generate receipt for non-expense completed payments
+    if (!createdPayment.isExpense && createdPayment.status === 'COMPLETED') {
+      const receiptNumber = generateReceiptNumber(createdPayment.paymentType);
+      await prisma.receipt.create({
+        data: {
+          receiptNumber: receiptNumber,
+          paymentId: createdPayment.id,
+          userId: createdPayment.userId,
+          generatedById: createdPayment.processedById,
+          receiptDate: new Date(),
+          receiptData: {
+            paymentId: createdPayment.id, 
+            amount: createdPayment.amount, 
+            paymentType: createdPayment.paymentType,
+            userName: user.fullName, 
+            paymentDate: createdPayment.paymentDate,
+            description: createdPayment.description,
+            titheDesignations: paymentType === 'TITHE' ? createdPayment.titheDistributionSDA : null 
+          },
+        }
       });
-      debugLog('Manual payment record created:', createdPayment.id);
+      
+      await prisma.payment.update({ 
+        where: { id: createdPayment.id }, 
+        data: { receiptNumber }
+      });
+      debugLog(`Receipt ${receiptNumber} generated for payment ${createdPayment.id}`);
+    }
 
-      if (!createdPayment.isExpense && createdPayment.status === 'COMPLETED') {
-        const receiptNumber = generateReceiptNumber(createdPayment.paymentType);
-        await tx.receipt.create({
-          data: {
-            receiptNumber: receiptNumber,
-            paymentId: createdPayment.id,
-            userId: createdPayment.userId,
-            generatedById: createdPayment.processedById,
-            receiptDate: new Date(),
-            receiptData: { // Store data relevant for receipt generation
-              paymentId: createdPayment.id, amount: createdPayment.amount, paymentType: createdPayment.paymentType,
-              userName: user.fullName, paymentDate: createdPayment.paymentDate,
-              description: createdPayment.description,
-              // If titheDistributionSDA is boolean flags, store that for the receipt
-              titheDesignations: paymentType === 'TITHE' ? createdPayment.titheDistributionSDA : null 
-            },
-          }
-        });
-        const finalPayment = await tx.payment.update({ 
-          where: { id: createdPayment.id }, 
-          data: { receiptNumber },
-          include: { user: true }
-        });
-        debugLog(`Receipt ${receiptNumber} generated for payment ${createdPayment.id}`);
-        await logAdminActivity('ADMIN_ADD_MANUAL_PAYMENT', finalPayment.id, req.user.id, { amount: finalPayment.amount, type: finalPayment.paymentType, userId: finalPayment.userId });
-        return finalPayment;
-      }
-      await logAdminActivity(isExpense ? 'ADMIN_ADD_EXPENSE' : 'ADMIN_ADD_MANUAL_PAYMENT', createdPayment.id, req.user.id, { amount: createdPayment.amount, type: createdPayment.paymentType, userId: createdPayment.userId });
-      return createdPayment;
+    await logAdminActivity(isExpense ? 'ADMIN_ADD_EXPENSE' : 'ADMIN_ADD_MANUAL_PAYMENT', createdPayment.id, req.user.id, { 
+      amount: createdPayment.amount, 
+      type: createdPayment.paymentType, 
+      userId: createdPayment.userId 
     });
 
-    return sendResponse(res, 201, true, { payment }, 'Manual payment added successfully.');
+    return sendResponse(res, 201, true, { payment: createdPayment }, 'Manual payment added successfully.');
+
   } catch (error) {
     debugLog('Error adding manual payment:', error.message);
     console.error(error);
-    return sendResponse(res, error.message.includes('not found') || error.message.includes('not available') ? 404 : (error.message.includes('required for') ? 400 : 500), false, null, error.message || 'Failed to add manual payment.', {
+    return sendResponse(res, 500, false, null, error.message || 'Failed to add manual payment.', {
       code: 'MANUAL_PAYMENT_ERROR',
       details: error.message,
     });
   }
 };
-
 // M-Pesa Callback
 exports.mpesaCallback = async (req, res) => {
   debugLog('M-Pesa Callback received:', JSON.stringify(req.body, null, 2));

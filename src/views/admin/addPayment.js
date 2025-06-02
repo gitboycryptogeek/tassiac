@@ -1,4 +1,4 @@
-// src/views/admin/futuristicAddPayment.js
+// src/views/admin/addPayment.js
 import { BaseComponent } from '../../utils/BaseComponent.js';
 
 export class AdminAddPaymentView extends BaseComponent {
@@ -9,15 +9,15 @@ export class AdminAddPaymentView extends BaseComponent {
     this.user = this.authService ? this.authService.getUser() : null;
     this.apiService = window.apiService;
     
-    // API Request Throttling - Enhanced for robust security
+    // API Request Throttling
     this.apiRequestQueue = [];
     this.isProcessingQueue = false;
-    this.requestThrottleTime = 350; // Slightly increased for better stability
-    this.maxConcurrentRequests = 2; // Limit concurrent requests
+    this.requestThrottleTime = 350;
+    this.maxConcurrentRequests = 2;
     this.requestsInLastMinute = 0;
     this.rateLimitResetTime = Date.now() + 60000;
     
-    // User Data Management
+    // Data Management
     this.users = [];
     this.specialOfferings = [];
     this.filteredUsers = [];
@@ -28,14 +28,12 @@ export class AdminAddPaymentView extends BaseComponent {
       description: '',
       paymentMethod: 'MANUAL',
       status: 'COMPLETED',
-      titheDistribution: {
-        localChurchBudget: 0,
-        worldMissionBudget: 0,
-        churchDevelopment: 0,
-        thanksgivingOffering: 0,
-        thirteenthSabbath: 0,
-        other: 0,
-        otherSpecification: ''
+      titheDistributionSDA: {
+        campMeetingExpenses: false,
+        welfare: false,
+        thanksgiving: false,
+        stationFund: false,
+        mediaMinistry: false
       },
       paymentDate: this.formatDate(new Date())
     };
@@ -82,10 +80,9 @@ export class AdminAddPaymentView extends BaseComponent {
     }
   }
   
-  // Enhanced API Request Throttling with rate limiting
+  // Enhanced API Request Throttling
   queueApiRequest(requestFunction) {
     return new Promise((resolve, reject) => {
-      // Rate limiting
       if (this.requestsInLastMinute >= 60) {
         reject(new Error('Rate limit exceeded. Please try again later.'));
         return;
@@ -112,14 +109,10 @@ export class AdminAddPaymentView extends BaseComponent {
     }
     
     this.isProcessingQueue = true;
-    
-    // Process only up to maxConcurrentRequests
     const activeRequests = this.apiRequestQueue.splice(0, this.maxConcurrentRequests);
     
     activeRequests.forEach(requestData => {
       const { request, resolve, reject } = requestData;
-      
-      // Add jitter to prevent synchronized requests
       const jitter = Math.random() * 50;
       const delay = this.requestThrottleTime + jitter;
       
@@ -143,7 +136,9 @@ export class AdminAddPaymentView extends BaseComponent {
   
   async loadUsers() {
     try {
-      const response = await this.queueApiRequest(() => this.apiService.getAllUsers());
+      const response = await this.queueApiRequest(() => 
+        this.apiService.getAllUsers()
+      );
       this.users = response.users || [];
     } catch (error) {
       console.error('Error loading users:', error);
@@ -154,56 +149,56 @@ export class AdminAddPaymentView extends BaseComponent {
 
   async loadSpecialOfferings() {
     try {
-      console.log('Attempting to load special offerings...');
+      console.log('Loading special offerings...');
       
-      // Show a loading indicator if desired
-      const paymentTypeSelect = document.getElementById('paymentType');
-      if (paymentTypeSelect) {
-        const optGroup = paymentTypeSelect.querySelector('optgroup[label="Special Offerings"]');
-        if (optGroup) {
-          optGroup.innerHTML = '<option value="" disabled>Loading...</option>';
-        }
-      }
-      
-      // Use the enhanced API service to get special offerings
-      const response = await this.queueApiRequest(() => this.apiService.getSpecialOfferings(false));
+      const response = await this.queueApiRequest(() => 
+        this.apiService.getSpecialOfferings({activeOnly: 'false'})
+      );
       
       console.log('Special offerings response:', response);
       
-      // Process and store the offerings
-      if (response && response.specialOfferings && response.specialOfferings.length > 0) {
-        this.specialOfferings = response.specialOfferings.map(offering => ({
-          id: offering.id || offering.offeringType.replace('SPECIAL_', ''),
-          paymentType: offering.offeringType,
-          description: offering.name || 'Special Offering',
-          fullDescription: offering.description || offering.name || '',
-          descriptionSummary: offering.name || 'Special Offering',
+      // Handle direct array response or nested response
+      let offerings = [];
+      if (Array.isArray(response)) {
+        offerings = response;
+      } else if (response?.specialOfferings) {
+        offerings = response.specialOfferings;
+      } else if (response?.data?.specialOfferings) {
+        offerings = response.data.specialOfferings;
+      }
+      
+      if (offerings && offerings.length > 0) {
+        this.specialOfferings = offerings.map(offering => ({
+          id: offering.id,
+          offeringCode: offering.offeringCode,
+          name: offering.name,
+          description: offering.description,
+          fullDescription: offering.description,
           startDate: offering.startDate,
-          endDate: offering.endDate || null,
-          targetGoal: parseFloat(offering.targetGoal || 0),
-          customFields: Array.isArray(offering.customFields) ? offering.customFields : [],
-          isTemplate: true // Always mark as template in our client-side data model
+          endDate: offering.endDate,
+          targetAmount: offering.targetAmount || 0,
+          currentAmount: offering.currentAmount || 0,
+          isActive: offering.isActive,
+          customFields: offering.customFields || []
         }));
         
         console.log('Processed special offerings:', this.specialOfferings);
       } else {
-        console.log('No special offerings found or empty response');
+        console.log('No special offerings found in response structure');
         this.specialOfferings = [];
       }
       
-      // Update the dropdown with the loaded offerings
       this.updateSpecialOfferingsDropdown();
     } catch (error) {
       console.error('Error loading special offerings:', error);
-      this.specialOfferings = []; // Ensure we have an empty array on error
+      this.specialOfferings = [];
     }
   }
-  // New method to update the dropdown
+
   updateSpecialOfferingsDropdown() {
     const paymentTypeSelect = document.getElementById('paymentType');
     if (!paymentTypeSelect) return;
     
-    // Find or create the special offerings optgroup
     let optGroup = paymentTypeSelect.querySelector('optgroup[label="Special Offerings"]');
     if (!optGroup) {
       optGroup = document.createElement('optgroup');
@@ -211,10 +206,8 @@ export class AdminAddPaymentView extends BaseComponent {
       paymentTypeSelect.appendChild(optGroup);
     }
     
-    // Clear existing options
     optGroup.innerHTML = '';
     
-    // Handle empty array
     if (!this.specialOfferings || this.specialOfferings.length === 0) {
       const emptyOption = document.createElement('option');
       emptyOption.disabled = true;
@@ -223,37 +216,28 @@ export class AdminAddPaymentView extends BaseComponent {
       return;
     }
     
-    // Sort offerings by date (most recent first)
     const sortedOfferings = [...this.specialOfferings].sort((a, b) => {
       return new Date(b.startDate) - new Date(a.startDate);
     });
     
-    console.log('Sorted offerings for dropdown:', sortedOfferings);
-    
-    // Add each offering as an option
     sortedOfferings.forEach(offering => {
-      // Skip invalid offerings
-      if (!offering || !offering.paymentType) {
+      if (!offering || !offering.offeringCode) {
         console.warn('Invalid special offering found:', offering);
         return;
       }
       
-      const offeringName = offering.description || offering.name || 'Special Offering';
-      console.log('Adding offering to dropdown:', offering.paymentType, offeringName);
-      
       const optionElement = document.createElement('option');
-      optionElement.value = offering.paymentType;
-      optionElement.textContent = offeringName;
-      optionElement.dataset.description = offering.fullDescription || offering.description || offeringName;
-      optionElement.dataset.target = offering.targetGoal || 0;
+      optionElement.value = offering.id;
+      optionElement.textContent = offering.name;
+      optionElement.dataset.offeringCode = offering.offeringCode;
+      optionElement.dataset.description = offering.description || '';
+      optionElement.dataset.target = offering.targetAmount || 0;
       
-      // Add data attributes for active status
       const now = new Date();
       const endDate = offering.endDate ? new Date(offering.endDate) : null;
-      const isActive = !endDate || endDate > now;
+      const isActive = offering.isActive && (!endDate || endDate > now);
       optionElement.dataset.active = isActive;
       
-      // Visually mark inactive offerings
       if (!isActive) {
         optionElement.style.color = '#64748b';
         optionElement.textContent += ' (Ended)';
@@ -276,34 +260,13 @@ export class AdminAddPaymentView extends BaseComponent {
     return `${currency} ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
   
-  // Helper for hexToRgb conversion
-  hexToRgb(hex) {
-    if (!hex) return '0, 0, 0';
-    
-    // Remove # if present
-    hex = hex.replace('#', '');
-
-    // Handle shorthand hex
-    if (hex.length === 3) {
-      hex = hex.split('').map(c => c + c).join('');
-    }
-
-    // Convert to RGB
-    const r = parseInt(hex.substring(0, 2), 16);
-    const g = parseInt(hex.substring(2, 4), 16);
-    const b = parseInt(hex.substring(4, 6), 16);
-
-    return `${r}, ${g}, ${b}`;
-  }
-  
-  // Update the render method to support async initialization
   render() {
     const container = this.createElement('div', {
       className: 'payment-container',
       style: {
         maxWidth: '1300px',
         margin: '0 auto',
-        padding: '20px 15px', // Reduced padding for mobile
+        padding: '20px 15px',
         color: '#eef2ff',
         fontFamily: 'Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
         position: 'relative',
@@ -311,7 +274,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
 
-    // Add loading state
     const loadingElement = this.createElement('div', {
       className: 'loading-state',
       style: {
@@ -322,15 +284,12 @@ export class AdminAddPaymentView extends BaseComponent {
     
     container.appendChild(loadingElement);
 
-    // Initialize data after render
     Promise.resolve().then(async () => {
       try {
         await this.initialize();
         
-        // Remove loading state
         container.removeChild(loadingElement);
         
-        // Add the rest of the content
         this.addBackgroundElements();
         this.addStyles();
         container.appendChild(this.renderPageHeader());
@@ -341,10 +300,8 @@ export class AdminAddPaymentView extends BaseComponent {
         
         container.appendChild(this.renderPaymentForm());
         
-        // Add modal to document.body
         document.body.appendChild(this.renderSpecialOfferingModal());
         
-        // Attach event listeners
         this.attachEventListeners();
       } catch (error) {
         console.error('Error initializing view:', error);
@@ -359,50 +316,7 @@ export class AdminAddPaymentView extends BaseComponent {
     return container;
   }
   
-  renderUnauthorized() {
-    const unauthorizedDiv = this.createElement('div', {
-      style: {
-        padding: '25px',
-        color: '#fff',
-        background: 'linear-gradient(135deg, rgba(220, 38, 38, 0.8), rgba(153, 27, 27, 0.9))',
-        borderRadius: '20px',
-        boxShadow: '0 20px 30px -10px rgba(220, 38, 38, 0.4), 0 0 15px rgba(0, 0, 0, 0.1)',
-        margin: '30px',
-        backdropFilter: 'blur(15px)',
-        border: '1px solid rgba(255, 255, 255, 0.1)',
-        animation: 'fadeIn 0.5s ease-out',
-        textAlign: 'center'
-      }
-    });
-    
-    const unauthorizedMessage = this.createElement('p', {
-      style: {
-        fontSize: '18px',
-        fontWeight: '500',
-        margin: '0 0 20px 0'
-      }
-    }, 'Unauthorized access. Please log in with an admin account.');
-    
-    const loginButton = this.createElement('button', {
-      className: 'futuristic-button',
-      style: {
-        backgroundColor: 'rgba(255, 255, 255, 0.2)',
-        color: '#fff',
-        margin: '0 auto'
-      },
-      onClick: () => {
-        window.location.href = '/login';
-      }
-    }, 'Go to Login');
-    
-    unauthorizedDiv.appendChild(unauthorizedMessage);
-    unauthorizedDiv.appendChild(loginButton);
-    
-    return unauthorizedDiv;
-  }
-  
   addBackgroundElements() {
-    // Add futuristic background (only if not already present)
     if (!document.querySelector('.gradient-background')) {
       const gradientBackground = this.createElement('div', {
         className: 'gradient-background',
@@ -421,7 +335,6 @@ export class AdminAddPaymentView extends BaseComponent {
       document.body.appendChild(gradientBackground);
     }
 
-    // Add particle overlay (only if not already present)
     if (!document.querySelector('.particle-overlay')) {
       const particleOverlay = this.createElement('div', {
         className: 'particle-overlay',
@@ -447,13 +360,12 @@ export class AdminAddPaymentView extends BaseComponent {
       className: 'page-header animated-item',
       style: {
         display: 'flex',
-        flexDirection: 'column', // Stack elements on mobile
+        flexDirection: 'column',
         gap: '15px',
         marginBottom: '25px'
       }
     });
 
-    // Title container
     const titleContainer = this.createElement('div', {
       style: {
         display: 'flex',
@@ -462,18 +374,16 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
 
-    // Navigation links container
     const navLinks = this.createElement('div', {
       className: 'admin-nav-links',
       style: {
         display: 'flex',
-        flexWrap: 'wrap', // Allow wrapping on mobile
+        flexWrap: 'wrap',
         gap: '12px',
         marginTop: '5px'
       }
     });
     
-    // Left side: Page title with gradient
     const pageTitle = this.createElement('h1', {
       style: {
         fontSize: '28px',
@@ -490,7 +400,6 @@ export class AdminAddPaymentView extends BaseComponent {
     
     titleContainer.appendChild(pageTitle);
     
-    // Admin navigation links
     const navItems = [
       { text: 'Dashboard', href: '/admin/dashboard', icon: '📊' },
       { text: 'Payments', href: '/admin/payments', icon: '💰' },
@@ -528,7 +437,6 @@ export class AdminAddPaymentView extends BaseComponent {
     
     titleContainer.appendChild(navLinks);
     
-    // Right side: Create Special Offering button with futuristic style
     const createSpecialOfferingBtn = this.createElement('button', {
       id: 'create-special-offering-btn',
       className: 'futuristic-button',
@@ -580,7 +488,6 @@ export class AdminAddPaymentView extends BaseComponent {
         }
       });
       
-      // Success icon
       const successIcon = this.createElement('div', {
         style: {
           width: '32px',
@@ -637,7 +544,6 @@ export class AdminAddPaymentView extends BaseComponent {
         }
       });
       
-      // Error icon
       const errorIcon = this.createElement('div', {
         style: {
           width: '32px',
@@ -697,7 +603,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    // Add glow effect
     const formGlow = this.createElement('div', {
       className: 'card-glow',
       style: {
@@ -706,7 +611,6 @@ export class AdminAddPaymentView extends BaseComponent {
     });
     formCard.appendChild(formGlow);
     
-    // Form title with gradient text
     const formTitle = this.createElement('h2', {
       style: {
         fontSize: '20px',
@@ -723,30 +627,24 @@ export class AdminAddPaymentView extends BaseComponent {
     
     formCard.appendChild(formTitle);
     
-    // Create form element
     const form = this.createElement('form', {
       id: 'add-payment-form'
     });
     
-    // User selection and payment type row
     form.appendChild(this.renderFormRow([
       this.renderUserSelectField(),
       this.renderPaymentTypeField()
     ]));
     
-    // Amount and date row
     form.appendChild(this.renderFormRow([
       this.renderAmountField(),
       this.renderDateField()
     ]));
     
-    // Description field
     form.appendChild(this.renderDescriptionField());
     
-    // Tithe distribution section (initially hidden)
     form.appendChild(this.renderTitheDistributionSection());
     
-    // Form actions
     form.appendChild(this.renderFormActions());
     
     formCard.appendChild(form);
@@ -777,7 +675,6 @@ export class AdminAddPaymentView extends BaseComponent {
       className: 'form-group'
     });
     
-    // Label with floating effect
     const fieldLabel = this.createElement('label', {
       htmlFor: 'userSearch',
       style: {
@@ -789,7 +686,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     }, 'Select Member');
     
-    // Custom select container
     const selectContainer = this.createElement('div', {
       className: 'custom-select-container',
       style: {
@@ -797,7 +693,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    // Input with futuristic styling
     const userSearch = this.createElement('input', {
       type: 'text',
       id: 'userSearch',
@@ -806,7 +701,6 @@ export class AdminAddPaymentView extends BaseComponent {
       autoComplete: 'off'
     });
     
-    // Hidden input for the selected user ID
     const userIdInput = this.createElement('input', {
       type: 'hidden',
       id: 'userId',
@@ -814,7 +708,6 @@ export class AdminAddPaymentView extends BaseComponent {
       value: this.formData.userId
     });
     
-    // Dropdown for results
     const userDropdown = this.createElement('div', {
       id: 'userDropdown',
       className: 'custom-select-dropdown',
@@ -850,7 +743,6 @@ export class AdminAddPaymentView extends BaseComponent {
       className: 'form-group'
     });
     
-    // Label
     const fieldLabel = this.createElement('label', {
       htmlFor: 'paymentType',
       style: {
@@ -862,7 +754,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     }, 'Payment Type');
     
-    // Styled select wrapper
     const selectWrapper = this.createElement('div', {
       className: 'select-wrapper',
       style: {
@@ -870,13 +761,11 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    // Select element with futuristic styling
     const paymentTypeSelect = this.createElement('select', {
       id: 'paymentType',
       className: 'futuristic-select'
     });
     
-    // Add initial placeholder option
     const placeholderOption = this.createElement('option', {
       value: '',
       disabled: true,
@@ -884,20 +773,17 @@ export class AdminAddPaymentView extends BaseComponent {
     }, 'Select payment type');
     paymentTypeSelect.appendChild(placeholderOption);
     
-    // Regular payment options
     const regularOptions = [
       { value: 'TITHE', label: 'Tithe' },
       { value: 'OFFERING', label: 'Offering' },
       { value: 'DONATION', label: 'Donation' },
-      { value: 'OTHER', label: 'Other' }
+      { value: 'EXPENSE', label: 'Expense' }
     ];
     
-    // Create basic offerings optgroup
     const basicOptGroup = this.createElement('optgroup', {
       label: 'Standard Payment Types'
     });
     
-    // Add regular options
     regularOptions.forEach(option => {
       const optionElement = this.createElement('option', {
         value: option.value
@@ -908,42 +794,31 @@ export class AdminAddPaymentView extends BaseComponent {
     
     paymentTypeSelect.appendChild(basicOptGroup);
     
-    // Add special offerings if available
     if (this.specialOfferings && this.specialOfferings.length > 0) {
-      // Create optgroup
       const optGroup = this.createElement('optgroup', {
         label: 'Special Offerings'
       });
       
-      console.log('Adding special offerings to dropdown:', this.specialOfferings.length);
-      
-      // Add each special offering
       this.specialOfferings.forEach(offering => {
-        // Ensure we have a valid offering with paymentType
-        if (!offering || !offering.paymentType) {
-          console.warn('Invalid special offering found:', offering);
+        if (!offering || !offering.id) {
           return;
         }
         
-        const offeringName = offering.description || offering.name || 'Special Offering';
-        console.log('Adding offering to dropdown:', offering.paymentType, offeringName);
-        
         const optionElement = this.createElement('option', {
-          value: offering.paymentType,
-          'data-description': offering.fullDescription || offering.description || offeringName,
-          'data-target': offering.targetGoal || 0
-        }, offeringName);
+          value: `SPECIAL_OFFERING_${offering.id}`,
+          'data-offering-id': offering.id,
+          'data-description': offering.description || '',
+          'data-target': offering.targetAmount || 0
+        }, offering.name);
         
         optGroup.appendChild(optionElement);
       });
       
-      // Only add the optgroup if it has children
       if (optGroup.childNodes.length > 0) {
         paymentTypeSelect.appendChild(optGroup);
       }
     }
     
-    // Down arrow icon for select
     const selectArrow = this.createElement('div', {
       className: 'select-arrow',
       style: {
@@ -963,92 +838,6 @@ export class AdminAddPaymentView extends BaseComponent {
     fieldGroup.appendChild(fieldLabel);
     fieldGroup.appendChild(selectWrapper);
     
-    // Create a div for special offering info that will appear when a special offering is selected
-    const specialOfferingInfo = this.createElement('div', {
-      id: 'special-offering-info',
-      style: {
-        marginTop: '10px',
-        padding: '12px 15px',
-        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-        borderRadius: '8px',
-        borderLeft: '3px solid #3b82f6',
-        display: 'none'
-      }
-    });
-    
-    const offeringTitle = this.createElement('div', {
-      id: 'offering-title',
-      style: {
-        fontWeight: '600',
-        marginBottom: '5px',
-        color: '#e0e7ff'
-      }
-    }, '');
-    
-    const offeringDescription = this.createElement('div', {
-      id: 'offering-description',
-      style: {
-        fontSize: '13px',
-        color: '#94a3b8',
-        marginBottom: '8px'
-      }
-    }, '');
-    
-    const offeringProgress = this.createElement('div', {
-      style: {
-        marginTop: '10px'
-      }
-    });
-    
-    const progressLabel = this.createElement('div', {
-      style: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        fontSize: '12px',
-        color: '#94a3b8',
-        marginBottom: '5px'
-      }
-    });
-    
-    const progressLabelText = this.createElement('span', {}, 'Progress:');
-    const progressValue = this.createElement('span', {
-      id: 'offering-progress-value'
-    }, '0%');
-    
-    progressLabel.appendChild(progressLabelText);
-    progressLabel.appendChild(progressValue);
-    
-    const progressBar = this.createElement('div', {
-      style: {
-        height: '6px',
-        backgroundColor: 'rgba(30, 41, 59, 0.5)',
-        borderRadius: '3px',
-        overflow: 'hidden'
-      }
-    });
-    
-    const progressFill = this.createElement('div', {
-      id: 'offering-progress-fill',
-      style: {
-        height: '100%',
-        width: '0%',
-        backgroundColor: '#3b82f6',
-        borderRadius: '3px',
-        transition: 'width 0.5s ease'
-      }
-    });
-    
-    progressBar.appendChild(progressFill);
-    
-    offeringProgress.appendChild(progressLabel);
-    offeringProgress.appendChild(progressBar);
-    
-    specialOfferingInfo.appendChild(offeringTitle);
-    specialOfferingInfo.appendChild(offeringDescription);
-    specialOfferingInfo.appendChild(offeringProgress);
-    
-    fieldGroup.appendChild(specialOfferingInfo);
-    
     return fieldGroup;
   }
   
@@ -1057,7 +846,6 @@ export class AdminAddPaymentView extends BaseComponent {
       className: 'form-group'
     });
     
-    // Label
     const fieldLabel = this.createElement('label', {
       htmlFor: 'amount',
       style: {
@@ -1069,7 +857,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     }, 'Amount');
     
-    // Input group with currency
     const inputGroup = this.createElement('div', {
       className: 'input-group',
       style: {
@@ -1078,7 +865,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    // Currency prefix
     const currencyPrefix = this.createElement('div', {
       className: 'input-group-prefix',
       style: {
@@ -1096,7 +882,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     }, 'KES');
     
-    // Amount input with futuristic styling
     const amountInput = this.createElement('input', {
       type: 'number',
       id: 'amount',
@@ -1124,7 +909,6 @@ export class AdminAddPaymentView extends BaseComponent {
       className: 'form-group'
     });
     
-    // Label
     const fieldLabel = this.createElement('label', {
       htmlFor: 'paymentDate',
       style: {
@@ -1136,7 +920,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     }, 'Payment Date');
     
-    // Date input with futuristic styling
     const dateInput = this.createElement('input', {
       type: 'date',
       id: 'paymentDate',
@@ -1159,7 +942,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    // Label
     const fieldLabel = this.createElement('label', {
       htmlFor: 'description',
       style: {
@@ -1171,7 +953,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     }, 'Description');
     
-    // Textarea with futuristic styling
     const descriptionTextarea = this.createElement('textarea', {
       id: 'description',
       className: 'futuristic-textarea',
@@ -1197,121 +978,21 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    // Title
-    const titleRow = this.createElement('div', {
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: '20px'
-      }
-    });
-    
     const sectionTitle = this.createElement('h3', {
       style: {
         fontSize: '18px',
         fontWeight: '600',
-        margin: '0',
+        margin: '0 0 20px 0',
         background: 'linear-gradient(to right, #ffffff, #e0e7ff)',
         backgroundClip: 'text',
         WebkitBackgroundClip: 'text',
         color: 'transparent',
         WebkitTextFillColor: 'transparent'
       }
-    }, 'Tithe Distribution');
+    }, 'Tithe Distribution Categories');
     
-    // Even distribution toggle
-    const distributionToggle = this.createElement('div', {
-      style: {
-        display: 'flex',
-        alignItems: 'center'
-      }
-    });
+    titheSection.appendChild(sectionTitle);
     
-    const toggleLabel = this.createElement('span', {
-      style: {
-        color: '#94a3b8',
-        fontSize: '14px',
-        marginRight: '10px'
-      }
-    }, 'Even Distribution');
-    
-    const toggleSwitch = this.createElement('label', {
-      className: 'toggle-switch',
-      style: {
-        position: 'relative',
-        display: 'inline-block',
-        width: '46px',
-        height: '24px',
-        margin: '0'
-      }
-    });
-    
-    const toggleInput = this.createElement('input', {
-      type: 'checkbox',
-      id: 'evenDistribution',
-      style: {
-        opacity: '0',
-        width: '0',
-        height: '0'
-      }
-    });
-    
-    const toggleSlider = this.createElement('span', {
-      className: 'toggle-slider',
-      style: {
-        position: 'absolute',
-        cursor: 'pointer',
-        top: '0',
-        left: '0',
-        right: '0',
-        bottom: '0',
-        backgroundColor: 'rgba(30, 41, 59, 0.8)',
-        transition: '.4s',
-        borderRadius: '24px',
-        border: '1px solid rgba(59, 130, 246, 0.2)'
-      }
-    });
-    
-    // Add the toggle slider "knob"
-    const toggleKnob = this.createElement('span', {
-      style: {
-        position: 'absolute',
-        content: '""',
-        height: '18px',
-        width: '18px',
-        left: '3px',
-        bottom: '2px',
-        backgroundColor: '#94a3b8',
-        transition: '.4s',
-        borderRadius: '50%'
-      }
-    });
-    toggleSlider.appendChild(toggleKnob);
-    
-    const equalPercent = this.createElement('span', {
-      id: 'tithe-equal-percent',
-      style: {
-        color: '#3b82f6',
-        fontSize: '14px',
-        fontWeight: '500',
-        marginLeft: '10px'
-      }
-    }, '16.67% each');
-    
-    toggleSwitch.appendChild(toggleInput);
-    toggleSwitch.appendChild(toggleSlider);
-    
-    distributionToggle.appendChild(toggleLabel);
-    distributionToggle.appendChild(toggleSwitch);
-    distributionToggle.appendChild(equalPercent);
-    
-    titleRow.appendChild(sectionTitle);
-    titleRow.appendChild(distributionToggle);
-    
-    titheSection.appendChild(titleRow);
-    
-    // Subtitle
     const subtitle = this.createElement('p', {
       style: {
         color: '#94a3b8',
@@ -1319,259 +1000,85 @@ export class AdminAddPaymentView extends BaseComponent {
         marginTop: '0',
         marginBottom: '25px'
       }
-    }, 'Specify how the tithe should be distributed:');
+    }, 'Select which SDA categories this tithe should be allocated to:');
     
     titheSection.appendChild(subtitle);
     
-    // Tithe category sliders
-    const categoriesContainer = this.createElement('div', {
-      className: 'tithe-category-sliders',
+    const checkboxContainer = this.createElement('div', {
+      className: 'tithe-checkbox-container',
       style: {
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '20px'
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
+        gap: '15px'
       }
     });
     
-    // Define the tithe categories
     const titheCategories = [
-      { id: 'localChurchBudget', label: 'Local Church Budget' },
-      { id: 'worldMissionBudget', label: 'World Mission Budget' },
-      { id: 'churchDevelopment', label: 'Church Development' },
-      { id: 'thanksgivingOffering', label: 'Thanksgiving Offering' },
-      { id: 'thirteenthSabbath', label: '13th Sabbath Offering' },
-      { id: 'other', label: 'Other' }
+      { id: 'campMeetingExpenses', label: 'Camp Meeting Expenses' },
+      { id: 'welfare', label: 'Welfare' },
+      { id: 'thanksgiving', label: 'Thanksgiving' },
+      { id: 'stationFund', label: 'Station Fund' },
+      { id: 'mediaMinistry', label: 'Media Ministry' }
     ];
     
-    // Create sliders for each category
-    titheCategories.forEach((category, index) => {
-      const categoryItem = this.createElement('div', {
-        className: 'tithe-category',
+    titheCategories.forEach(category => {
+      const checkboxItem = this.createElement('div', {
+        className: 'checkbox-item',
         style: {
-          marginBottom: '15px',
-          paddingBottom: index < titheCategories.length - 1 ? '15px' : '0',
-          borderBottom: index < titheCategories.length - 1 ? '1px solid rgba(30, 41, 59, 0.8)' : 'none'
+          padding: '15px',
+          backgroundColor: 'rgba(30, 41, 59, 0.3)',
+          borderRadius: '12px',
+          border: '1px solid rgba(59, 130, 246, 0.1)',
+          transition: 'all 0.2s ease'
         }
       });
       
-      // Header with label and values
-      const categoryHeader = this.createElement('div', {
+      const checkboxLabel = this.createElement('label', {
         style: {
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          marginBottom: '10px'
-        }
-      });
-      
-      // Category label
-      const categoryLabel = this.createElement('label', {
-        htmlFor: category.id,
-        style: {
+          cursor: 'pointer',
           color: '#e0e7ff',
-          fontSize: '14px',
-          fontWeight: '500',
-          margin: '0'
-        }
-      }, category.label);
-      
-      // Value displays
-      const valueDisplay = this.createElement('div', {
-        style: {
-          display: 'flex',
-          alignItems: 'center',
-          gap: '15px'
-        }
-      });
-      
-      // Amount display
-      const amountDisplay = this.createElement('span', {
-        id: `${category.id}-amount`,
-        style: {
-          color: '#3b82f6',
           fontSize: '14px',
           fontWeight: '500'
         }
-      }, 'KES 0.00');
-      
-      // Percentage display
-      const percentDisplay = this.createElement('span', {
-        id: `${category.id}-percent`,
-        style: {
-          color: '#94a3b8',
-          fontSize: '14px',
-          fontWeight: '500',
-          width: '50px',
-          textAlign: 'right'
-        }
-      }, '0%');
-      
-      valueDisplay.appendChild(amountDisplay);
-      valueDisplay.appendChild(percentDisplay);
-      
-      categoryHeader.appendChild(categoryLabel);
-      categoryHeader.appendChild(valueDisplay);
-      
-      // Slider with glow effect
-      const sliderContainer = this.createElement('div', {
-        style: {
-          position: 'relative',
-          marginTop: '15px',
-          marginBottom: '5px'
-        }
       });
       
-      // Slider background track
-      const sliderTrack = this.createElement('div', {
-        style: {
-          position: 'absolute',
-          top: '50%',
-          transform: 'translateY(-50%)',
-          left: '0',
-          right: '0',
-          height: '6px',
-          backgroundColor: 'rgba(30, 41, 59, 0.5)',
-          borderRadius: '3px',
-          overflow: 'hidden'
-        }
-      });
-      
-      // Actual range input
-      const sliderInput = this.createElement('input', {
-        type: 'range',
-        id: `${category.id}-slider`,
-        className: 'neo-slider',
-        min: '0',
-        max: '100',
-        value: '16.67',
-        style: {
-          width: '100%',
-          margin: '0',
-          height: '30px',
-          appearance: 'none',
-          background: 'transparent',
-          outline: 'none',
-          position: 'relative',
-          zIndex: '2'
-        }
-      });
-      
-      sliderContainer.appendChild(sliderTrack);
-      sliderContainer.appendChild(sliderInput);
-      
-      // Hidden numerical input
-      const hiddenInput = this.createElement('input', {
-        type: 'number',
+      const checkbox = this.createElement('input', {
+        type: 'checkbox',
         id: category.id,
-        className: 'tithe-input',
-        value: '0',
-        step: '0.01',
-        min: '0',
+        name: 'titheDistribution',
+        value: category.id,
         style: {
-          display: 'none'
+          width: '18px',
+          height: '18px',
+          marginRight: '12px',
+          accentColor: '#3b82f6',
+          cursor: 'pointer'
         }
       });
       
-      categoryItem.appendChild(categoryHeader);
-      categoryItem.appendChild(sliderContainer);
-      categoryItem.appendChild(hiddenInput);
+      const labelText = document.createTextNode(category.label);
       
-      // Special case for "Other" category
-      if (category.id === 'other') {
-        const otherSpecification = this.createElement('div', {
-          style: {
-            marginTop: '15px'
-          }
-        });
-        
-        const otherLabel = this.createElement('label', {
-          htmlFor: 'otherSpecification',
-          style: {
-            display: 'block',
-            color: '#94a3b8',
-            fontSize: '14px',
-            fontWeight: '500',
-            marginBottom: '10px'
-          }
-        }, 'Other Specification');
-        
-        const otherInput = this.createElement('input', {
-          type: 'text',
-          id: 'otherSpecification',
-          className: 'futuristic-input',
-          placeholder: 'Specify other tithe allocation',
-          style: {
-            marginTop: '5px'
-          }
-        });
-        
-        otherSpecification.appendChild(otherLabel);
-        otherSpecification.appendChild(otherInput);
-        categoryItem.appendChild(otherSpecification);
-      }
+      checkboxLabel.appendChild(checkbox);
+      checkboxLabel.appendChild(labelText);
+      checkboxItem.appendChild(checkboxLabel);
       
-      categoriesContainer.appendChild(categoryItem);
+      // Add hover effect
+      checkboxItem.addEventListener('mouseenter', () => {
+        checkboxItem.style.backgroundColor = 'rgba(59, 130, 246, 0.1)';
+        checkboxItem.style.borderColor = 'rgba(59, 130, 246, 0.2)';
+      });
+      
+      checkboxItem.addEventListener('mouseleave', () => {
+        checkboxItem.style.backgroundColor = 'rgba(30, 41, 59, 0.3)';
+        checkboxItem.style.borderColor = 'rgba(59, 130, 246, 0.1)';
+      });
+      
+      checkboxContainer.appendChild(checkboxItem);
     });
     
-    titheSection.appendChild(categoriesContainer);
-    
-    // Totals section
-    const totalsSection = this.createElement('div', {
-      className: 'tithe-totals',
-      style: {
-        marginTop: '30px',
-        borderTop: '1px solid rgba(30, 41, 59, 0.8)',
-        paddingTop: '20px',
-        textAlign: 'right'
-      }
-    });
-    
-    // Total distribution
-    const totalDistribution = this.createElement('div', {
-      style: {
-        fontSize: '16px',
-        fontWeight: '600',
-        color: '#e0e7ff',
-        marginBottom: '8px'
-      }
-    });
-    
-    const totalLabel = document.createTextNode('Total Distribution: ');
-    const totalValue = this.createElement('span', {
-      id: 'tithe-total',
-      style: {
-        color: '#3b82f6'
-      }
-    }, 'KES 0.00');
-    
-    totalDistribution.appendChild(totalLabel);
-    totalDistribution.appendChild(totalValue);
-    
-    // Remaining amount
-    const remainingAmount = this.createElement('div', {
-      id: 'tithe-remaining',
-      style: {
-        fontSize: '14px',
-        color: '#94a3b8'
-      }
-    });
-    
-    const remainingLabel = document.createTextNode('Remaining to allocate: ');
-    const remainingValue = this.createElement('span', {
-      id: 'remaining-amount',
-      style: {
-        fontWeight: '600',
-        color: '#ef4444'
-      }
-    }, 'KES 0.00');
-    
-    remainingAmount.appendChild(remainingLabel);
-    remainingAmount.appendChild(remainingValue);
-    
-    totalsSection.appendChild(totalDistribution);
-    totalsSection.appendChild(remainingAmount);
-    
-    titheSection.appendChild(totalsSection);
+    titheSection.appendChild(checkboxContainer);
     
     return titheSection;
   }
@@ -1585,7 +1092,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    // Submit button with spinner
     const submitButton = this.createElement('button', {
       type: 'submit',
       id: 'submit-payment-btn',
@@ -1597,7 +1103,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    // Spinner (hidden by default)
     const spinner = this.createElement('span', {
       id: 'submit-spinner',
       className: 'spinner',
@@ -1639,15 +1144,14 @@ export class AdminAddPaymentView extends BaseComponent {
         zIndex: '1000',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '15px' // Add padding for mobile
+        padding: '15px'
       }
     });
 
-    // Modal content
     const modalContent = this.createElement('div', {
       className: 'neo-card',
       style: {
-        width: '100%', // Full width on mobile
+        width: '100%',
         maxWidth: '600px',
         maxHeight: '90vh',
         overflowY: 'auto',
@@ -1655,7 +1159,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    // Modal header
     const modalHeader = this.createElement('div', {
       style: {
         padding: '20px 25px',
@@ -1705,19 +1208,16 @@ export class AdminAddPaymentView extends BaseComponent {
     modalHeader.appendChild(modalTitle);
     modalHeader.appendChild(closeButton);
     
-    // Modal body
     const modalBody = this.createElement('div', {
       style: {
         padding: '25px'
       }
     });
     
-    // Create form for special offering
     const offeringForm = this.createElement('form', {
       id: 'special-offering-form'
     });
     
-    // Offering name field
     const nameField = this.createElement('div', {
       style: {
         marginBottom: '20px'
@@ -1739,13 +1239,13 @@ export class AdminAddPaymentView extends BaseComponent {
       type: 'text',
       id: 'offeringName',
       className: 'futuristic-input',
-      required: true
+      required: true,
+      placeholder: 'Enter offering name'
     });
     
     nameField.appendChild(nameLabel);
     nameField.appendChild(nameInput);
     
-    // Description field
     const descriptionField = this.createElement('div', {
       style: {
         marginBottom: '20px'
@@ -1767,13 +1267,12 @@ export class AdminAddPaymentView extends BaseComponent {
       id: 'offeringDescription',
       className: 'futuristic-textarea',
       rows: '3',
-      required: true
+      placeholder: 'Enter offering description'
     });
     
     descriptionField.appendChild(descriptionLabel);
     descriptionField.appendChild(descriptionTextarea);
     
-    // Date fields in a row
     const dateRow = this.createElement('div', {
       style: {
         display: 'grid',
@@ -1783,7 +1282,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    // Start date field
     const startDateField = this.createElement('div');
     
     const startDateLabel = this.createElement('label', {
@@ -1808,7 +1306,6 @@ export class AdminAddPaymentView extends BaseComponent {
     startDateField.appendChild(startDateLabel);
     startDateField.appendChild(startDateInput);
     
-    // End date field
     const endDateField = this.createElement('div');
     
     const endDateLabel = this.createElement('label', {
@@ -1834,7 +1331,6 @@ export class AdminAddPaymentView extends BaseComponent {
     dateRow.appendChild(startDateField);
     dateRow.appendChild(endDateField);
     
-    // Target goal field
     const targetField = this.createElement('div', {
       style: {
         marginBottom: '25px'
@@ -1864,7 +1360,6 @@ export class AdminAddPaymentView extends BaseComponent {
     targetField.appendChild(targetLabel);
     targetField.appendChild(targetInput);
     
-    // Form actions
     const formActions = this.createElement('div', {
       style: {
         display: 'flex',
@@ -1874,7 +1369,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    // Cancel button
     const cancelButton = this.createElement('button', {
       type: 'button',
       className: 'futuristic-button',
@@ -1885,7 +1379,6 @@ export class AdminAddPaymentView extends BaseComponent {
       onClick: () => this.toggleSpecialOfferingModal(false)
     }, 'Cancel');
     
-    // Submit button
     const submitButton = this.createElement('button', {
       type: 'submit',
       className: 'futuristic-button',
@@ -1898,26 +1391,30 @@ export class AdminAddPaymentView extends BaseComponent {
     formActions.appendChild(cancelButton);
     formActions.appendChild(submitButton);
     
-    // Assemble the form
     offeringForm.appendChild(nameField);
     offeringForm.appendChild(descriptionField);
     offeringForm.appendChild(dateRow);
     offeringForm.appendChild(targetField);
     offeringForm.appendChild(formActions);
     
-    // Add form submit handler
     offeringForm.addEventListener('submit', async (e) => {
       e.preventDefault();
+      e.stopImmediatePropagation();
+      
+      // Immediate submission guard
+      if (this.isSubmitting) {
+        return false;
+      }
+      
       await this.handleSpecialOfferingSubmit(e);
+      return false;
     });
     
-    // Assemble modal content
     modalBody.appendChild(offeringForm);
     modalContent.appendChild(modalHeader);
     modalContent.appendChild(modalBody);
     modal.appendChild(modalContent);
     
-    // Add click handler to close modal when clicking outside
     modal.addEventListener('click', (e) => {
       if (e.target === modal) {
         this.toggleSpecialOfferingModal(false);
@@ -1934,7 +1431,6 @@ export class AdminAddPaymentView extends BaseComponent {
       styleElement.textContent = `
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
         
-        /* Global styles */
         * {
           box-sizing: border-box;
         }
@@ -1947,7 +1443,6 @@ export class AdminAddPaymentView extends BaseComponent {
           background-color: #0f172a;
         }
         
-        /* Neo card design */
         .neo-card {
           position: relative;
           backdrop-filter: blur(16px);
@@ -2000,7 +1495,6 @@ export class AdminAddPaymentView extends BaseComponent {
           opacity: 0.15;
         }
         
-        /* Form elements */
         .futuristic-input, .futuristic-textarea, .futuristic-select {
           width: 100%;
           padding: 15px;
@@ -2034,67 +1528,6 @@ export class AdminAddPaymentView extends BaseComponent {
           min-height: 100px;
         }
         
-        /* Range slider styling */
-        .neo-slider {
-          appearance: none;
-          width: 100%;
-          height: 30px;
-          cursor: pointer;
-        }
-        
-        .neo-slider::-webkit-slider-thumb {
-          appearance: none;
-          width: 22px;
-          height: 22px;
-          border-radius: 50%;
-          background: #3b82f6;
-          cursor: pointer;
-          box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
-          border: 2px solid rgba(15, 23, 42, 0.8);
-          transition: all 0.2s ease;
-        }
-        
-        .neo-slider::-webkit-slider-thumb:hover {
-          transform: scale(1.1);
-          box-shadow: 0 0 15px rgba(59, 130, 246, 0.7);
-        }
-        
-        .neo-slider::-webkit-slider-thumb:active {
-          transform: scale(0.95);
-        }
-        
-        .neo-slider::-moz-range-thumb {
-          width: 22px;
-          height: 22px;
-          border-radius: 50%;
-          background: #3b82f6;
-          cursor: pointer;
-          box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
-          border: 2px solid rgba(15, 23, 42, 0.8);
-          transition: all 0.2s ease;
-        }
-        
-        .neo-slider::-moz-range-thumb:hover {
-          transform: scale(1.1);
-          box-shadow: 0 0 15px rgba(59, 130, 246, 0.7);
-        }
-        
-        .neo-slider::-moz-range-thumb:active {
-          transform: scale(0.95);
-        }
-        
-        /* Toggle switch */
-        input:checked + .toggle-slider {
-          background-color: rgba(59, 130, 246, 0.4);
-          border-color: rgba(59, 130, 246, 0.4);
-        }
-        
-        input:checked + .toggle-slider > span {
-          transform: translateX(22px);
-          background-color: #3b82f6;
-        }
-        
-        /* Buttons */
         .futuristic-button {
           position: relative;
           background: linear-gradient(135deg, rgba(79, 70, 229, 0.2), rgba(79, 70, 229, 0.1));
@@ -2146,7 +1579,6 @@ export class AdminAddPaymentView extends BaseComponent {
           box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) inset;
         }
         
-        /* Custom select dropdown */
         .custom-select-dropdown {
           max-height: 250px;
           overflow-y: auto;
@@ -2168,7 +1600,15 @@ export class AdminAddPaymentView extends BaseComponent {
           color: #3b82f6;
         }
         
-        /* Animations */
+        .checkbox-item {
+          transition: all 0.2s ease;
+        }
+        
+        .checkbox-item:hover {
+          background-color: rgba(59, 130, 246, 0.1) !important;
+          border-color: rgba(59, 130, 246, 0.2) !important;
+        }
+        
         @keyframes fadeIn {
           from { opacity: 0; transform: translateY(10px); }
           to { opacity: 1; transform: translateY(0); }
@@ -2198,7 +1638,6 @@ export class AdminAddPaymentView extends BaseComponent {
           animation: fadeIn 0.6s ease-out forwards;
         }
         
-        /* Responsive design */
         @media (max-width: 768px) {
           .payment-container {
             padding: 20px 15px;
@@ -2221,12 +1660,15 @@ export class AdminAddPaymentView extends BaseComponent {
             margin-top: 15px;
             flex-wrap: wrap;
           }
+          
+          .tithe-checkbox-container {
+            grid-template-columns: 1fr;
+          }
         }
         
-        /* Mobile device optimizations */
         @media (max-width: 480px) {
           .futuristic-input, .futuristic-textarea, .futuristic-select {
-            font-size: 16px; /* Prevents zooming on iOS */
+            font-size: 16px;
             padding: 12px;
           }
           
@@ -2241,118 +1683,8 @@ export class AdminAddPaymentView extends BaseComponent {
             max-height: 85vh;
           }
           
-          /* Make form elements touch-friendly */
-          .neo-slider::-webkit-slider-thumb {
-            width: 26px;
-            height: 26px;
-          }
-          
-          .neo-slider::-moz-range-thumb {
-            width: 26px;
-            height: 26px;
-          }
-          
-          /* Ensure adequate spacing for touch targets */
           .dropdown-item {
             padding: 12px 15px;
-          }
-        }
-        @media (max-width: 768px) {
-          /* Container adjustments */
-          .payment-container {
-            padding: 15px;
-          }
-      
-          /* Form elements */
-          .futuristic-input, 
-          .futuristic-textarea, 
-          .futuristic-select {
-            padding: 12px;
-            font-size: 16px; /* Prevent zoom on iOS */
-          }
-      
-          /* Buttons */
-          .futuristic-button {
-            width: 100%;
-            padding: 14px 20px;
-            margin-top: 10px;
-            font-size: 16px;
-          }
-      
-          /* Tithe distribution section */
-          #tithe-distribution-section {
-            padding: 15px;
-          }
-      
-          /* Modal adjustments */
-          .modal-content {
-            padding: 15px;
-          }
-      
-          /* Navigation */
-          .admin-nav-links a {
-            padding: 8px 12px;
-            font-size: 14px;
-          }
-      
-          /* User dropdown */
-          .custom-select-dropdown {
-            max-height: 200px;
-          }
-      
-          /* Slider controls */
-          .neo-slider::-webkit-slider-thumb {
-            width: 24px;
-            height: 24px;
-          }
-      
-          /* Input groups */
-          .input-group {
-            flex-direction: column;
-          }
-          
-          .input-group-prefix {
-            border-radius: 12px 12px 0 0;
-            width: 100%;
-            justify-content: center;
-          }
-          
-          .input-group .futuristic-input {
-            border-radius: 0 0 12px 12px;
-          }
-        }
-      
-        @media (max-width: 480px) {
-          /* Even smaller screens */
-          .page-header h1 {
-            font-size: 24px;
-          }
-      
-          .form-group {
-            margin-bottom: 20px;
-          }
-      
-          /* Make dropdowns full-width */
-          .custom-select-container {
-            width: 100%;
-          }
-      
-          /* Increase touch targets */
-          .dropdown-item {
-            padding: 12px 15px;
-            min-height: 44px;
-          }
-      
-          /* Notification adjustments */
-          .futuristic-notification {
-            width: calc(100% - 30px);
-            left: 15px;
-            right: 15px;
-          }
-      
-          /* Modal close button */
-          .close-modal {
-            padding: 15px;
           }
         }
       `;
@@ -2375,7 +1707,6 @@ export class AdminAddPaymentView extends BaseComponent {
       </div>
     `).join('');
     
-    // Add click event listeners to dropdown items
     const dropdownItems = userDropdown.querySelectorAll('.dropdown-item');
     dropdownItems.forEach(item => {
       item.addEventListener('click', () => {
@@ -2408,337 +1739,6 @@ export class AdminAddPaymentView extends BaseComponent {
     }
   }
   
-  initializeTitheDistribution() {
-    const titheFields = [
-      'localChurchBudget', 'worldMissionBudget', 'churchDevelopment', 
-      'thanksgivingOffering', 'thirteenthSabbath', 'other'
-    ];
-    
-    // Apply even distribution initially
-    const equalPercent = 100 / titheFields.length;
-    
-    titheFields.forEach(field => {
-      const slider = document.getElementById(`${field}-slider`);
-      if (slider) {
-        slider.value = equalPercent;
-        this.updateSliderValue(field, equalPercent);
-      }
-    });
-    
-    this.updateTitheDistribution();
-  }
-  
-  applyEvenDistribution() {
-    const titheFields = [
-      'localChurchBudget', 'worldMissionBudget', 'churchDevelopment', 
-      'thanksgivingOffering', 'thirteenthSabbath', 'other'
-    ];
-    
-    // Calculate equal percentage with precision control
-    const equalPercent = Math.floor((100 / titheFields.length) * 10) / 10; // 16.6
-    
-    // Apply equal percentage to first 5 fields
-    for (let i = 0; i < titheFields.length - 1; i++) {
-      const field = titheFields[i];
-      const slider = document.getElementById(`${field}-slider`);
-      if (slider) {
-        slider.value = equalPercent;
-        this.updateSliderValue(field, equalPercent);
-      }
-    }
-    
-    // Calculate the remainder for the last field to ensure total is exactly 100%
-    const remainingPercent = 100 - (equalPercent * (titheFields.length - 1));
-    
-    // Apply to the last field
-    const lastField = titheFields[titheFields.length - 1];
-    const lastSlider = document.getElementById(`${lastField}-slider`);
-    if (lastSlider) {
-      lastSlider.value = remainingPercent;
-      this.updateSliderValue(lastField, remainingPercent);
-    }
-    
-    // Update the tithe equal percent display
-    const equalPercentElement = document.getElementById('tithe-equal-percent');
-    if (equalPercentElement) {
-      equalPercentElement.textContent = `~${equalPercent}% each`;
-    }
-    
-    this.updateTitheTotal();
-  }
-  
-  // Also fix the initializeTitheDistribution method
-  initializeTitheDistribution() {
-    // Simply delegate to applyEvenDistribution which now has the correct logic
-    this.applyEvenDistribution();
-  }
-  
-  
-  updateSliderValue(field, percent) {
-    const slider = document.getElementById(`${field}-slider`);
-    const input = document.getElementById(field);
-    const percentElement = document.getElementById(`${field}-percent`);
-    const amountElement = document.getElementById(`${field}-amount`);
-    
-    if (!slider || !input || !percentElement || !amountElement) return;
-    
-    // Round percent to 1 decimal place to avoid tiny floating point errors
-    const roundedPercent = Math.round(percent * 10) / 10;
-    
-    // Update the slider value
-    slider.value = roundedPercent;
-    
-    // Update the percent display
-    percentElement.textContent = `${roundedPercent.toFixed(1)}%`;
-    
-    // Update the amount based on total amount and percentage
-    const amountInput = document.getElementById('amount');
-    const totalAmount = parseFloat(amountInput.value) || 0;
-    
-    // Calculate amount with precise decimal handling to avoid floating point errors
-    const amount = Math.round((totalAmount * (roundedPercent / 100)) * 100) / 100;
-    
-    // Update the amount display
-    amountElement.textContent = `KES ${amount.toFixed(2)}`;
-    
-    // Update the hidden input value
-    input.value = amount;
-    
-    // Recalculate totals
-    this.updateTitheTotal();
-  }
-  
-  updateTitheDistribution() {
-    const titheFields = [
-      'localChurchBudget', 'worldMissionBudget', 'churchDevelopment', 
-      'thanksgivingOffering', 'thirteenthSabbath', 'other'
-    ];
-    
-    const amountInput = document.getElementById('amount');
-    const totalAmount = parseFloat(amountInput.value) || 0;
-    
-    // Apply current percentages to the new amount
-    titheFields.forEach(field => {
-      const slider = document.getElementById(`${field}-slider`);
-      if (slider) {
-        const percent = parseFloat(slider.value);
-        
-        // Calculate amount with precise rounding
-        const amount = Math.round((totalAmount * (percent / 100)) * 100) / 100;
-        
-        const amountElement = document.getElementById(`${field}-amount`);
-        const input = document.getElementById(field);
-        
-        if (amountElement) {
-          amountElement.textContent = `KES ${amount.toFixed(2)}`;
-        }
-        
-        if (input) {
-          input.value = amount;
-        }
-      }
-    });
-    
-    this.updateTitheTotal();
-  }
-  
-  updateTitheTotal() {
-    const titheFields = [
-      'localChurchBudget', 'worldMissionBudget', 'churchDevelopment', 
-      'thanksgivingOffering', 'thirteenthSabbath', 'other'
-    ];
-    
-    let total = 0;
-    let totalPercentage = 0;
-    
-    titheFields.forEach(field => {
-      const input = document.getElementById(field);
-      const slider = document.getElementById(`${field}-slider`);
-      
-      if (input && slider) {
-        total += parseFloat(input.value) || 0;
-        totalPercentage += parseFloat(slider.value) || 0;
-      }
-    });
-    
-    // Round values to avoid floating point issues
-    total = Math.round(total * 100) / 100;
-    totalPercentage = Math.round(totalPercentage * 100) / 100;
-    
-    const titheTotalElement = document.getElementById('tithe-total');
-    const amountInput = document.getElementById('amount');
-    const totalAmount = parseFloat(amountInput.value) || 0;
-    const titheRemainingElement = document.getElementById('tithe-remaining');
-    
-    if (titheTotalElement) {
-      titheTotalElement.textContent = `KES ${total.toFixed(2)}`;
-    }
-    
-    if (titheRemainingElement) {
-      // Calculate remaining with precise rounding
-      const remaining = Math.round((totalAmount - total) * 100) / 100;
-      
-      // Check if percentages add up to 100%
-      const percentageMessage = Math.abs(totalPercentage - 100) > 0.1 ? 
-  `<span style="color: #ef4444; display: block; margin-top: 5px;">Percentages must add up to 100% (currently: ${totalPercentage.toFixed(1)}%)</span>` : '';
-      
-      if (Math.abs(remaining) < 0.01 && Math.abs(totalPercentage - 100) < 0.1) {
-        // Fully allocated (within rounding error) and percentages correct
-        titheRemainingElement.innerHTML = `
-          <span style="color: #10b981; font-weight: 500;">✓ Fully allocated</span>
-        `;
-      } else if (remaining < 0) {
-        // Over-allocated
-        titheRemainingElement.innerHTML = `
-          <span style="color: #ef4444;">Overallocated by: KES ${Math.abs(remaining).toFixed(2)}</span>
-          ${percentageMessage}
-        `;
-      } else {
-        // Under-allocated
-        titheRemainingElement.innerHTML = `
-          Remaining to allocate: <span id="remaining-amount" style="font-weight: 600; color: #ef4444;">KES ${remaining.toFixed(2)}</span>
-          ${percentageMessage}
-        `;
-      }
-    }
-  }
-  
-  redistributeRemainingAmount(changedField, amountDifference) {
-    const titheFields = [
-      'localChurchBudget', 'worldMissionBudget', 'churchDevelopment', 
-      'thanksgivingOffering', 'thirteenthSabbath', 'other'
-    ];
-    
-    // Get all fields except the changed one
-    const otherFields = titheFields.filter(field => field !== changedField);
-    
-    // Get current values of all fields
-    const currentValues = {};
-    titheFields.forEach(field => {
-      const slider = document.getElementById(`${field}-slider`);
-      if (slider) {
-        currentValues[field] = parseFloat(slider.value) || 0;
-      }
-    });
-    
-    // Get the new value for the changed field
-    const changedSlider = document.getElementById(`${changedField}-slider`);
-    const newChangedValue = parseFloat(changedSlider.value) || 0;
-    
-    // Calculate total percentage after the change
-    let totalPercentage = newChangedValue;
-    otherFields.forEach(field => {
-      totalPercentage += currentValues[field];
-    });
-    
-    // If total is 100%, we're done
-    if (Math.abs(totalPercentage - 100) < 0.1) {
-      this.updateSliderValue(changedField, newChangedValue);
-      return;
-    }
-    
-    // First, update the changed field with its new value
-    this.updateSliderValue(changedField, newChangedValue);
-    
-    // Calculate how much to adjust other fields
-    const adjustment = 100 - totalPercentage;
-    
-    // Count fields with non-zero values
-    const nonZeroFields = otherFields.filter(field => currentValues[field] > 0);
-    
-    if (nonZeroFields.length === 0) {
-      // If no other fields have values, distribute evenly
-      const perField = adjustment / otherFields.length;
-      otherFields.forEach(field => {
-        this.updateSliderValue(field, Math.max(0, currentValues[field] + perField));
-      });
-    } else {
-      // Distribute proportionally among non-zero fields
-      const totalNonZero = nonZeroFields.reduce((sum, field) => sum + currentValues[field], 0);
-      
-      if (totalNonZero > 0) {
-        nonZeroFields.forEach(field => {
-          const proportion = currentValues[field] / totalNonZero;
-          const newValue = Math.max(0, currentValues[field] + (adjustment * proportion));
-          this.updateSliderValue(field, newValue);
-        });
-      } else {
-        // Fallback to even distribution
-        const perField = adjustment / nonZeroFields.length;
-        nonZeroFields.forEach(field => {
-          this.updateSliderValue(field, Math.max(0, currentValues[field] + perField));
-        });
-      }
-    }
-    
-    // Final adjustment to ensure exactly 100%
-    this.finalizeDistribution();
-  }
-  
-  // Add this new method to ensure the total is exactly 100%
-  finalizeDistribution() {
-    const titheFields = [
-      'localChurchBudget', 'worldMissionBudget', 'churchDevelopment', 
-      'thanksgivingOffering', 'thirteenthSabbath', 'other'
-    ];
-    
-    // Calculate current total
-    let total = 0;
-    const values = {};
-    
-    titheFields.forEach(field => {
-      const slider = document.getElementById(`${field}-slider`);
-      if (slider) {
-        const value = parseFloat(slider.value) || 0;
-        values[field] = value;
-        total += value;
-      }
-    });
-    
-    // If we're already at 100%, do nothing
-    if (Math.abs(total - 100) < 0.1) {
-      return;
-    }
-    
-    // Find the field with the largest value to adjust
-    let largestField = titheFields[0];
-    let largestValue = values[largestField];
-    
-    titheFields.forEach(field => {
-      if (values[field] > largestValue) {
-        largestValue = values[field];
-        largestField = field;
-      }
-    });
-    
-    // Adjust the largest field to make total exactly 100%
-    const adjustment = 100 - total;
-    const newValue = Math.max(0, values[largestField] + adjustment);
-    
-    // Update the largest field
-    const slider = document.getElementById(`${largestField}-slider`);
-    slider.value = newValue;
-    this.updateSliderValue(largestField, newValue);
-  }
-  
-  getCurrentTitheDistribution() {
-    const titheFields = [
-      'localChurchBudget', 'worldMissionBudget', 'churchDevelopment', 
-      'thanksgivingOffering', 'thirteenthSabbath', 'other'
-    ];
-    
-    const distribution = {};
-    
-    titheFields.forEach(field => {
-      const input = document.getElementById(field);
-      if (input) {
-        distribution[field] = parseFloat(input.value) || 0;
-      }
-    });
-    
-    return distribution;
-  }
-  
   toggleSpecialOfferingModal(show) {
     const modal = document.getElementById('special-offering-modal');
     if (modal) {
@@ -2746,227 +1746,41 @@ export class AdminAddPaymentView extends BaseComponent {
       document.body.style.overflow = show ? 'hidden' : '';
       
       if (show) {
-        // Reset form
         const form = document.getElementById('special-offering-form');
         if (form) form.reset();
         
-        // Clear custom fields
-        const container = document.getElementById('custom-fields-container');
-        if (container) container.innerHTML = '';
-        
-        // Set default dates
-        const startDateInput = document.getElementById('startDate');
-        const endDateInput = document.getElementById('endDate');
+        const startDateInput = document.getElementById('offeringStartDate');
         if (startDateInput) startDateInput.value = this.formatDate(new Date());
-        if (endDateInput) {
-          const endDate = new Date();
-          endDate.setDate(endDate.getDate() + 30); // 30 days from now
-          endDateInput.value = this.formatDate(endDate);
-        }
       }
     }
-  }
-  
-  addCustomField() {
-    const container = document.getElementById('custom-fields-container');
-    if (container) {
-      const fieldId = `custom-field-${Date.now()}`;
-      
-      // Create field container
-      const fieldContainer = this.createElement('div', {
-        id: fieldId,
-        className: 'custom-field',
-        style: {
-          marginBottom: '15px',
-          position: 'relative'
-        }
-      });
-      
-      // Create field row with flex layout
-      const fieldRow = this.createElement('div', {
-        style: {
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr auto',
-          gap: '10px',
-          alignItems: 'flex-start'
-        }
-      });
-      
-      // Field name input
-      const nameContainer = this.createElement('div');
-      const nameInput = this.createElement('input', {
-        type: 'text',
-        className: 'futuristic-input',
-        name: 'customFieldName[]',
-        placeholder: 'Field name',
-        required: true,
-        style: {
-          marginBottom: '0'
-        }
-      });
-      nameContainer.appendChild(nameInput);
-      
-      // Field description input
-      const descContainer = this.createElement('div');
-      const descInput = this.createElement('input', {
-        type: 'text',
-        className: 'futuristic-input',
-        name: 'customFieldDescription[]',
-        placeholder: 'Field description',
-        style: {
-          marginBottom: '0'
-        }
-      });
-      descContainer.appendChild(descInput);
-      
-      // Remove button
-      const removeContainer = this.createElement('div', {
-        style: {
-          display: 'flex',
-          alignItems: 'center'
-        }
-      });
-      
-      const removeButton = this.createElement('button', {
-        type: 'button',
-        className: 'remove-field',
-        'data-field-id': fieldId,
-        style: {
-          width: '36px',
-          height: '36px',
-          borderRadius: '50%',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          background: 'rgba(239, 68, 68, 0.1)',
-          color: '#ef4444',
-          border: '1px solid rgba(239, 68, 68, 0.2)',
-          cursor: 'pointer',
-          fontSize: '18px',
-          padding: '0',
-          transition: 'all 0.2s ease'
-        },
-        onMouseenter: (e) => {
-          e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)';
-        },
-        onMouseleave: (e) => {
-          e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
-        },
-        onClick: () => {
-          document.getElementById(fieldId).remove();
-        }
-      }, '×');
-      
-      removeContainer.appendChild(removeButton);
-      
-      // Add all elements to the row
-      fieldRow.appendChild(nameContainer);
-      fieldRow.appendChild(descContainer);
-      fieldRow.appendChild(removeContainer);
-      
-      // Add row to the container
-      fieldContainer.appendChild(fieldRow);
-      
-      // Add field to the document
-      container.appendChild(fieldContainer);
-    }
-  }
-  
-  getCustomFields() {
-    const customFields = [];
-    const customFieldNames = document.querySelectorAll('input[name="customFieldName[]"]');
-    const customFieldDescriptions = document.querySelectorAll('input[name="customFieldDescription[]"]');
-    
-    for (let i = 0; i < customFieldNames.length; i++) {
-      const name = customFieldNames[i].value.trim();
-      if (name) {
-        customFields.push({
-          name,
-          description: customFieldDescriptions[i]?.value.trim() || '',
-          required: false
-        });
-      }
-    }
-    
-    return customFields;
   }
   
   attachEventListeners() {
-    // Form submission
     const form = document.getElementById('add-payment-form');
     if (form) {
-      form.addEventListener('submit', (e) => this.handleSubmit(e));
-    }
-    
-    // Payment type change
-    const paymentTypeSelect = document.getElementById('paymentType');
-    if (paymentTypeSelect) {
-      paymentTypeSelect.addEventListener('change', async () => {
-        const titheDistributionSection = document.getElementById('tithe-distribution-section');
-        const specialOfferingInfo = document.getElementById('special-offering-info');
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        e.stopImmediatePropagation();
         
-        // Clear any previous special offering info
-        if (specialOfferingInfo) {
-          specialOfferingInfo.style.display = 'none';
+        if (this.isSubmitting) {
+          return false;
         }
         
-        // Handle different payment types
+        this.handleSubmit(e);
+        return false;
+      });
+    }
+    
+    const paymentTypeSelect = document.getElementById('paymentType');
+    if (paymentTypeSelect) {
+      paymentTypeSelect.addEventListener('change', () => {
+        const titheDistributionSection = document.getElementById('tithe-distribution-section');
+        
         if (paymentTypeSelect.value === 'TITHE') {
-          // Show tithe distribution section for tithe payments
           if (titheDistributionSection) {
             titheDistributionSection.style.display = 'block';
-            this.initializeTitheDistribution();
-          }
-        } else if (paymentTypeSelect.value === '') {
-          // Handle the placeholder option - hide all special sections
-          if (titheDistributionSection) {
-            titheDistributionSection.style.display = 'none';
-          }
-        } else if (paymentTypeSelect.value.startsWith('SPECIAL_')) {
-          // It's a special offering - hide tithe section
-          if (titheDistributionSection) {
-            titheDistributionSection.style.display = 'none';
-          }
-          
-          // Show special offering info section
-          if (specialOfferingInfo) {
-            // Get the selected option
-            const selectedOption = paymentTypeSelect.options[paymentTypeSelect.selectedIndex];
-            const offeringTitle = document.getElementById('offering-title');
-            const offeringDescription = document.getElementById('offering-description');
-            const offeringProgressValue = document.getElementById('offering-progress-value');
-            const offeringProgressFill = document.getElementById('offering-progress-fill');
-            
-            if (offeringTitle && offeringDescription) {
-              offeringTitle.textContent = selectedOption.textContent;
-              offeringDescription.textContent = selectedOption.getAttribute('data-description') || '';
-            }
-            
-            // Load progress data for this special offering
-            try {
-              const offeringType = paymentTypeSelect.value;
-              const progressData = await this.queueApiRequest(() => 
-                this.apiService.getSpecialOfferingProgress(offeringType)
-              );
-              
-              if (progressData && offeringProgressValue && offeringProgressFill) {
-                const percent = Math.min(100, Math.round(progressData.percentage || 0));
-                offeringProgressValue.textContent = `${percent}% (${this.formatCurrency(progressData.totalContributed || 0)} of ${this.formatCurrency(progressData.targetGoal || 0)})`;
-                offeringProgressFill.style.width = `${percent}%`;
-              }
-            } catch (error) {
-              console.warn('Could not load special offering progress:', error);
-              // Set a default state even if we couldn't load progress
-              if (offeringProgressValue && offeringProgressFill) {
-                offeringProgressValue.textContent = '0%';
-                offeringProgressFill.style.width = '0%';
-              }
-            }
-            
-            specialOfferingInfo.style.display = 'block';
           }
         } else {
-          // For all other payment types, hide special sections
           if (titheDistributionSection) {
             titheDistributionSection.style.display = 'none';
           }
@@ -2974,17 +1788,14 @@ export class AdminAddPaymentView extends BaseComponent {
       });
     }
     
-    // User search
     const userSearchInput = document.getElementById('userSearch');
     const userDropdown = document.getElementById('userDropdown');
     
     if (userSearchInput && userDropdown) {
-      // Show dropdown on focus
       userSearchInput.addEventListener('focus', () => {
         this.toggleUserDropdown(true);
       });
       
-      // Filter users on input
       userSearchInput.addEventListener('input', () => {
         this.userSearchQuery = userSearchInput.value.toLowerCase();
         this.filteredUsers = this.users.filter(user => 
@@ -2994,7 +1805,6 @@ export class AdminAddPaymentView extends BaseComponent {
         this.renderUserDropdown();
       });
       
-      // Hide dropdown when clicking outside
       document.addEventListener('click', (e) => {
         if (!userSearchInput.contains(e.target) && !userDropdown.contains(e.target)) {
           this.toggleUserDropdown(false);
@@ -3002,18 +1812,6 @@ export class AdminAddPaymentView extends BaseComponent {
       });
     }
     
-    // Amount input
-    const amountInput = document.getElementById('amount');
-    if (amountInput) {
-      amountInput.addEventListener('input', () => {
-        const paymentTypeSelect = document.getElementById('paymentType');
-        if (paymentTypeSelect.value === 'TITHE') {
-          this.updateTitheDistribution();
-        }
-      });
-    }
-    
-    // Special Offering form
     const specialOfferingForm = document.getElementById('special-offering-form');
     if (specialOfferingForm) {
       specialOfferingForm.addEventListener('submit', (e) => {
@@ -3022,7 +1820,6 @@ export class AdminAddPaymentView extends BaseComponent {
       });
     }
     
-    // Close modal buttons
     const closeModalButtons = document.querySelectorAll('.close-modal');
     closeModalButtons.forEach(button => {
       button.addEventListener('click', () => {
@@ -3030,63 +1827,11 @@ export class AdminAddPaymentView extends BaseComponent {
       });
     });
     
-    // Modal click outside to close
     const modal = document.getElementById('special-offering-modal');
     if (modal) {
       modal.addEventListener('click', (e) => {
         if (e.target === modal) {
           this.toggleSpecialOfferingModal(false);
-        }
-      });
-    }
-    
-    // Even distribution toggle
-    const evenDistributionToggle = document.getElementById('evenDistribution');
-    if (evenDistributionToggle) {
-      evenDistributionToggle.addEventListener('change', () => {
-        if (evenDistributionToggle.checked) {
-          this.applyEvenDistribution();
-        }
-      });
-      
-      // Set up tithe sliders
-      const titheFields = [
-        'localChurchBudget', 'worldMissionBudget', 'churchDevelopment', 
-        'thanksgivingOffering', 'thirteenthSabbath', 'other'
-      ];
-      
-      titheFields.forEach(field => {
-        const slider = document.getElementById(`${field}-slider`);
-        if (slider) {
-          slider.addEventListener('input', () => {
-            // Save current distribution before changes
-            const prevDistribution = this.getCurrentTitheDistribution();
-            
-            // Get the new value for this field
-            const newPercent = parseFloat(slider.value);
-            const totalAmount = parseFloat(document.getElementById('amount').value) || 0;
-            const newAmount = Math.round((totalAmount * (newPercent / 100)) * 100) / 100;
-            
-            // Get the old value for this field
-            const oldAmount = prevDistribution[field] || 0;
-            
-            // Calculate difference to distribute among other fields
-            const amountDifference = newAmount - oldAmount;
-            
-            // Check if there's a meaningful difference to adjust
-            if (Math.abs(amountDifference) > 0.01) {
-              this.redistributeRemainingAmount(field, amountDifference);
-            } else {
-              // Just update this field if the difference is negligible
-              this.updateSliderValue(field, newPercent);
-            }
-            
-            // Turn off even distribution when a slider is manually adjusted
-            const evenDistributionToggle = document.getElementById('evenDistribution');
-            if (evenDistributionToggle && evenDistributionToggle.checked) {
-              evenDistributionToggle.checked = false;
-            }
-          });
         }
       });
     }
@@ -3106,7 +1851,6 @@ export class AdminAddPaymentView extends BaseComponent {
         submitSpinner.style.display = 'inline-block';
       }
       
-      // Get form values
       const form = e.target;
       const userId = form.querySelector('#userId').value;
       const paymentType = form.querySelector('#paymentType').value;
@@ -3118,73 +1862,60 @@ export class AdminAddPaymentView extends BaseComponent {
       if (!paymentType) throw new Error('Please select a payment type');
       if (isNaN(amount) || amount <= 0) throw new Error('Please enter a valid amount');
 
-      // Create base payment data
-      const paymentData = {
-        userId: userId,           
-        processedBy: this.user.id,
+      let paymentData = {
+        userId: parseInt(userId),
         amount: amount,
         paymentType: paymentType,
         description: description,
         paymentDate: paymentDate,
         paymentMethod: 'MANUAL',
-        status: 'COMPLETED',
-        metadata: {
-          processedByAdmin: true,
-          originalPaymentDate: paymentDate,
-          processedDate: new Date().toISOString()
-        }
+        isExpense: paymentType === 'EXPENSE'
       };
 
-      let response;
-
-      if (paymentType.startsWith('SPECIAL_')) {
-        response = await this.queueApiRequest(() => 
-          this.apiService.post(`/special-offerings/${paymentType}/payment`, {
-            ...paymentData,
-            contributorId: userId,
-            processedBy: this.user.id
-          })
-        );
-      } else if (paymentType === 'TITHE') {
-        const titheDistribution = {};
-        const fields = ['localChurchBudget', 'worldMissionBudget', 'churchDevelopment', 
-                       'thanksgivingOffering', 'thirteenthSabbath', 'other'];
+      if (paymentType === 'TITHE') {
+        const titheDistributionSDA = {
+          campMeetingExpenses: false,
+          welfare: false,
+          thanksgiving: false,
+          stationFund: false,
+          mediaMinistry: false
+        };
         
-        fields.forEach(field => {
-          const input = document.getElementById(field);
-          if (input) {
-            titheDistribution[field] = parseFloat(input.value) || 0;
+        const checkboxes = form.querySelectorAll('input[name="titheDistribution"]:checked');
+        checkboxes.forEach(checkbox => {
+          if (titheDistributionSDA.hasOwnProperty(checkbox.value)) {
+            titheDistributionSDA[checkbox.value] = true;
           }
         });
-
-        const otherSpec = document.getElementById('otherSpecification');
-        if (otherSpec && otherSpec.value) {
-          titheDistribution.otherSpecification = otherSpec.value;
-        }
-
-        paymentData.titheDistribution = titheDistribution;
-        response = await this.queueApiRequest(() => 
-          this.apiService.post('/payment/manual', paymentData)
-        );
-      } else {
-        response = await this.queueApiRequest(() => 
-          this.apiService.post('/payment/manual', paymentData)
-        );
+        
+        paymentData.titheDistributionSDA = titheDistributionSDA;
+        paymentData.paymentType = 'TITHE';
+      } else if (paymentType.startsWith('SPECIAL_OFFERING_')) {
+        const offeringId = paymentType.replace('SPECIAL_OFFERING_', '');
+        paymentData.specialOfferingId = parseInt(offeringId);
+        paymentData.paymentType = 'SPECIAL_OFFERING_CONTRIBUTION';
+      } else if (paymentType === 'EXPENSE') {
+        paymentData.isExpense = true;
+        paymentData.department = 'General';
       }
 
-      if (!response || !response.success) {
+      const response = await this.queueApiRequest(() => 
+        this.apiService.addManualPayment(paymentData)
+      );
+
+      if (!response?.success) {
         throw new Error(response?.message || 'Failed to process payment');
       }
 
-      // Show success message
       this.successMessage = 'Payment processed successfully!';
       this.errorMessage = '';
       this.hasSubmitted = true;
 
-      // Reset form
-      form.reset();
+      // Force complete view refresh
+      setTimeout(() => {
+        window.location.reload();
+      }, 1500);
 
-      // Show notification
       this.showNotification('Payment processed successfully!', 'success');
 
     } catch (error) {
@@ -3202,7 +1933,6 @@ export class AdminAddPaymentView extends BaseComponent {
         submitSpinner.style.display = 'none';
       }
 
-      // Refresh the view to show messages
       const appContainer = document.getElementById('app');
       if (appContainer) {
         appContainer.innerHTML = '';
@@ -3213,6 +1943,7 @@ export class AdminAddPaymentView extends BaseComponent {
   
   async handleSpecialOfferingSubmit(e) {
     e.preventDefault();
+    e.stopPropagation();
     
     try {
       if (this.isSubmitting) return;
@@ -3220,88 +1951,81 @@ export class AdminAddPaymentView extends BaseComponent {
       
       const form = e.target;
       
-      // Generate a unique ID for the special offering
-      const timestamp = Date.now();
-      const offeringId = `SO${timestamp}`;
+      // Disable submit button immediately
+      const submitBtn = form.querySelector('button[type="submit"]');
+      if (submitBtn) {
+        submitBtn.disabled = true;
+      }
       
-      // Get form values - Fix incorrect field IDs
       const offeringName = form.querySelector('#offeringName').value;
       const offeringDescription = form.querySelector('#offeringDescription').value;
-      const startDate = form.querySelector('#offeringStartDate').value; // Fixed ID
-      const endDate = form.querySelector('#offeringEndDate').value;     // Fixed ID
-      const targetGoal = parseFloat(form.querySelector('#offeringTarget').value) || 0; // Fixed ID
+      const startDate = form.querySelector('#offeringStartDate').value;
+      const endDate = form.querySelector('#offeringEndDate').value;
+      const targetAmount = parseFloat(form.querySelector('#offeringTarget').value) || null;
       
-      // Validate offering name
       if (!offeringName) {
         throw new Error('Enter a valid offering name');
       }
       
-      // Validate dates
       const startDateObj = new Date(startDate);
-      const endDateObj = new Date(endDate);
+      const endDateObj = endDate ? new Date(endDate) : null;
       
       if (isNaN(startDateObj.getTime())) {
         throw new Error('Enter a valid start date');
       }
       
-      if (endDateObj < startDateObj) {
+      if (endDateObj && endDateObj <= startDateObj) {
         throw new Error('End date must be after start date');
       }
       
-      // Get custom fields
-      const customFields = this.getCustomFields();
-      
-      // Create the offering data object
       const offeringData = {
-        offeringType: `SPECIAL_${offeringId}`,
         name: offeringName,
         description: offeringDescription,
         startDate,
-        endDate,
-        targetGoal,
-        customFields,
-        createdBy: this.user.id,
-        createdAt: new Date().toISOString()
+        endDate: endDate || null,
+        targetAmount,
+        isActive: true
       };
       
-      // Submit to API
+      console.log('Submitting offering data:', offeringData);
+      
       const response = await this.queueApiRequest(() => 
         this.apiService.createSpecialOffering(offeringData)
       );
       
-      if (!response || !response.success) {
-        throw new Error(response?.message || 'Failed to create special offering');
-      }
-
-      // Show success and reset form
+      console.log('Special offering creation response:', response);
+      
       this.successMessage = `Special offering "${offeringName}" created successfully!`;
       this.errorMessage = '';
       form.reset();
       this.toggleSpecialOfferingModal(false);
       this.showNotification(this.successMessage, 'success');
 
-      // Reload special offerings
-      await this.loadSpecialOfferings();
-      this.updateSpecialOfferingsDropdown();
+      // Force complete reload to show new offering
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
 
     } catch (error) {
       console.error('Error creating special offering:', error);
       this.errorMessage = error.message || 'Failed to create special offering';
       this.showNotification(this.errorMessage, 'error');
+      await this.loadSpecialOfferings();
     } finally {
       this.isSubmitting = false;
-      const submitBtn = document.getElementById('create-offering-btn');
-      const offeringSpinner = document.getElementById('offering-spinner');
-      if (submitBtn && offeringSpinner) {
-        submitBtn.disabled = false;
-        offeringSpinner.style.display = 'none';
+      
+      // Re-enable submit button
+      const form = document.getElementById('special-offering-form');
+      if (form) {
+        const submitBtn = form.querySelector('button[type="submit"]');
+        if (submitBtn) {
+          submitBtn.disabled = false;
+        }
       }
     }
   }
   
-  // Show a notification toast
   showNotification(message, type = 'success') {
-    // Remove any existing notifications
     const existingNotifications = document.querySelectorAll('.futuristic-notification');
     existingNotifications.forEach(notification => {
       document.body.removeChild(notification);
@@ -3322,10 +2046,8 @@ export class AdminAddPaymentView extends BaseComponent {
         maxWidth: '90%',
         width: '350px',
         animation: 'fadeIn 0.3s ease-out',
-        background: type === 'success' ? 'rgba(16, 185, 129, 0.9)' : 
-                     type === 'error' ? 'rgba(239, 68, 68, 0.9)' : 'rgba(59, 130, 246, 0.9)',
-        border: `1px solid ${type === 'success' ? 'rgba(16, 185, 129, 0.2)' : 
-                                 type === 'error' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(59, 130, 246, 0.2)'}`,
+        background: type === 'success' ? 'rgba(16, 185, 129, 0.9)' : 'rgba(239, 68, 68, 0.9)',
+        border: `1px solid ${type === 'success' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`,
         display: 'flex',
         alignItems: 'center',
         gap: '12px',
@@ -3333,7 +2055,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    // Icon
     const icon = this.createElement('div', {
       style: {
         flexShrink: '0',
@@ -3348,7 +2069,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     }, type === 'success' ? '✓' : '!');
     
-    // Message text
     const messageText = this.createElement('div', {
       style: {
         flex: '1',
@@ -3357,7 +2077,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     }, message);
     
-    // Close button
     const closeButton = this.createElement('button', {
       style: {
         background: 'none',
@@ -3394,7 +2113,6 @@ export class AdminAddPaymentView extends BaseComponent {
     
     document.body.appendChild(notification);
     
-    // Auto-remove the notification after 5 seconds
     setTimeout(() => {
       if (notification.parentNode) {
         notification.style.animation = 'fadeOut 0.3s ease-out';
@@ -3405,84 +2123,5 @@ export class AdminAddPaymentView extends BaseComponent {
         }, 300);
       }
     }, 5000);
-  }
-}
-
-async function handleRoute() {
-  try {
-    const path = window.location.pathname;
-    const view = await resolveView(path);
-    
-    if (!view) {
-      throw new Error('View not found');
-    }
-    
-    const appContainer = document.getElementById('app');
-    if (appContainer) {
-      // Clear existing content
-      appContainer.innerHTML = '';
-      // Render new view
-      appContainer.appendChild(view.render());
-    }
-  } catch (error) {
-    console.error('Route handling error:', error);
-    // Show error view or fallback content
-    const errorView = createErrorView(error);
-    const appContainer = document.getElementById('app');
-    if (appContainer) {
-      appContainer.innerHTML = '';
-      appContainer.appendChild(errorView);
-    }
-  }
-}
-
-function createErrorView(error) {
-  const errorContainer = document.createElement('div');
-  errorContainer.style.cssText = `
-    padding: 2rem;
-    margin: 2rem auto;
-    max-width: 600px;
-    text-align: center;
-    background: rgba(239, 68, 68, 0.1);
-    border-radius: 12px;
-    border: 1px solid rgba(239, 68, 68, 0.2);
-  `;
-
-  const errorTitle = document.createElement('h2');
-  errorTitle.textContent = 'Something went wrong';
-  errorTitle.style.color = '#ef4444';
-
-  const errorMessage = document.createElement('p');
-  errorMessage.textContent = error.message || 'An unexpected error occurred';
-  errorMessage.style.color = '#94a3b8';
-
-  const retryButton = document.createElement('button');
-  retryButton.textContent = 'Retry';
-  retryButton.onclick = () => window.location.reload();
-  retryButton.style.cssText = `
-    margin-top: 1rem;
-    padding: 0.5rem 1rem;
-    background: rgba(239, 68, 68, 0.2);
-    border: none;
-    border-radius: 6px;
-    color: #ef4444;
-    cursor: pointer;
-  `;
-
-  errorContainer.appendChild(errorTitle);
-  errorContainer.appendChild(errorMessage);
-  errorContainer.appendChild(retryButton);
-
-  return errorContainer;
-}
-
-// Initialize the app with error handling
-async function init() {
-  try {
-    await handleRoute();
-    // Add event listener for route changes
-    window.addEventListener('popstate', handleRoute);
-  } catch (error) {
-    console.error('Initialization error:', error);
   }
 }
