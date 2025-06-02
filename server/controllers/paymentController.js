@@ -1,839 +1,713 @@
 // server/controllers/paymentController.js
-const { Op } = require('sequelize');
-const { models } = require('../models');
+const { PrismaClient, Prisma } = require('@prisma/client');
 const { validationResult } = require('express-validator');
-const { generateReceiptNumber } = require('../utils/receiptUtils');
-const { sendSmsNotification } = require('../utils/notificationUtils');
-const { initiateMpesaPayment } = require('../utils/paymentUtils');
-const sequelize = require('../config/database');
+const fs = require('fs');
+const path = require('path');
+const { generateReceiptNumber } = require('../utils/receiptUtils.js');
+const { sendSmsNotification } = require('../utils/notificationUtils.js');
+const { initiateMpesaPayment } = require('../utils/paymentUtils.js');
 
-const User = models.User;
-const Payment = models.Payment;
-const Receipt = models.Receipt;
-const Notification = models.Notification;
+const prisma = new PrismaClient();
+
+// Setup debug log file
+const LOG_DIR = path.join(__dirname, '..', 'logs');
+if (!fs.existsSync(LOG_DIR)) {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+const LOG_FILE = path.join(LOG_DIR, 'payment-controller-debug.log');
+
+function debugLog(message, data = null) {
+  const timestamp = new Date().toISOString();
+  let logMessage = `[${timestamp}] PAYMENT_CTRL: ${message}`;
+  if (data !== null) {
+    try {
+      const dataStr = JSON.stringify(data);
+      logMessage += ` | Data: ${dataStr}`;
+    } catch (err) {
+      logMessage += ` | Data: [Failed to stringify: ${err.message}]`;
+    }
+  }
+  console.log(logMessage);
+  try {
+    fs.appendFileSync(LOG_FILE, logMessage + '\n');
+  } catch (err) {
+    // console.error('Failed to write to debug log file:', err);
+  }
+  return logMessage;
+}
+
+// Helper for sending standardized responses
+const sendResponse = (res, statusCode, success, data, message, errorDetails = null) => {
+  const responsePayload = { success, message };
+  if (data !== null && data !== undefined) {
+    responsePayload.data = data;
+  }
+  if (errorDetails) {
+    responsePayload.error = errorDetails;
+  }
+  return res.status(statusCode).json(responsePayload);
+};
+
+// Helper to check for view-only admin
+const isViewOnlyAdmin = (user) => {
+  if (!user || !user.isAdmin) return false;
+  const viewOnlyUsernames = ['admin3', 'admin4', 'admin5']; // ADAPT THIS
+  return viewOnlyUsernames.includes(user.username);
+};
+
+// Log Admin Activity
+async function logAdminActivity(actionType, targetId, initiatedBy, actionData = {}) {
+  try {
+    await prisma.adminAction.create({
+      data: {
+        actionType,
+        targetId: String(targetId),
+        initiatedBy,
+        actionData,
+        status: 'COMPLETED',
+      },
+    });
+    debugLog(`Admin activity logged: ${actionType} for target ${targetId} by user ${initiatedBy}`);
+  } catch (error) {
+    debugLog(`Error logging admin activity for ${actionType} on ${targetId}:`, error.message);
+  }
+}
 
 // Get all payments (admin only)
 exports.getAllPayments = async (req, res) => {
+  debugLog('Admin: Get All Payments attempt started');
   try {
-    const { 
-      page = 1, 
-      limit = 20, 
-      startDate, 
-      endDate, 
-      paymentType, 
-      userId, 
-      department, 
-      isPromoted 
+    const {
+      page = 1,
+      limit = 20,
+      startDate,
+      endDate,
+      paymentType,
+      userId,
+      department,
+      status,
+      search,
     } = req.query;
-    
-    const offset = (page - 1) * limit;
-    
-    // Build filter conditions
-    const whereConditions = {
-      isTemplate: false  // Exclude special offering templates
-    };
-    
-    if (startDate && endDate) {
-      whereConditions.paymentDate = {
-        [Op.between]: [new Date(startDate), new Date(endDate)]
-      };
+
+    const take = parseInt(limit);
+    const skip = (parseInt(page) - 1) * take;
+
+    const whereConditions = { isTemplate: false }; // Exclude special offering definitions
+
+    if (startDate) whereConditions.paymentDate = { ...whereConditions.paymentDate, gte: new Date(startDate) };
+    if (endDate) whereConditions.paymentDate = { ...whereConditions.paymentDate, lte: new Date(new Date(endDate).setHours(23, 59, 59, 999)) };
+    if (userId) whereConditions.userId = parseInt(userId);
+    if (department) whereConditions.department = { contains: department, mode: 'insensitive' }; // Case-insensitive search for department
+    if (status) whereConditions.status = status;
+
+    if (paymentType && paymentType !== 'ALL') {
+      whereConditions.paymentType = paymentType; // Includes TITHE, OFFERING, DONATION, EXPENSE, SPECIAL_OFFERING_CONTRIBUTION
     }
-    
-    if (paymentType) {
-      if (paymentType === 'SPECIAL') {
-        // Handle special offerings (paymentType starts with SPECIAL_)
-        whereConditions.paymentType = {
-          [Op.like]: 'SPECIAL_%'
-        };
+
+    if (search) {
+      const searchClauses = [
+        { description: { contains: search, mode: 'insensitive' } },
+        { reference: { contains: search, mode: 'insensitive' } },
+        { transactionId: { contains: search, mode: 'insensitive' } },
+        { receiptNumber: { contains: search, mode: 'insensitive' } },
+        { user: { fullName: { contains: search, mode: 'insensitive' } } },
+        { user: { username: { contains: search, mode: 'insensitive' } } },
+      ];
+      const searchAmount = parseFloat(search);
+      if (!isNaN(searchAmount)) {
+        searchClauses.push({ amount: searchAmount });
+      }
+      if (whereConditions.OR) {
+        whereConditions.AND = [ {OR: whereConditions.OR }, {OR: searchClauses}];
+        delete whereConditions.OR;
       } else {
-        whereConditions.paymentType = paymentType;
+        whereConditions.OR = searchClauses;
       }
     }
-    
-    if (userId) {
-      whereConditions.userId = userId;
-    }
-    
-    if (department) {
-      whereConditions.department = department;
-    }
-    
-    if (isPromoted === 'true' || isPromoted === true) {
-      whereConditions.isPromoted = true;
-    }
-    
-    // Get payments with pagination
-    const payments = await Payment.findAndCountAll({
+
+    const payments = await prisma.payment.findMany({
       where: whereConditions,
-      include: [
-        { 
-          model: User,
-          attributes: ['id', 'username', 'fullName', 'phone'] 
-        },
-        {
-          model: User,
-          as: 'AdminUser',
-          attributes: ['id', 'username', 'fullName'],
-          required: false
-        }
-      ],
-      order: [['paymentDate', 'DESC']],
-      limit: parseInt(limit),
-      offset: parseInt(offset)
+      include: {
+        user: { select: { id: true, username: true, fullName: true, phone: true } },
+        processor: { select: { id: true, username: true, fullName: true } },
+        specialOffering: { select: { id: true, name: true, offeringCode: true } }
+      },
+      orderBy: { paymentDate: 'desc' },
+      skip,
+      take,
     });
-    
-    res.json({
-      total: payments.count,
-      totalPages: Math.ceil(payments.count / limit),
+
+    const totalPayments = await prisma.payment.count({ where: whereConditions });
+
+    debugLog(`Admin: Retrieved ${payments.length} of ${totalPayments} payments.`);
+    return sendResponse(res, 200, true, {
+      payments,
+      totalPages: Math.ceil(totalPayments / take),
       currentPage: parseInt(page),
-      payments: payments.rows
-    });
+      totalPayments,
+    }, 'Payments retrieved successfully.');
+
   } catch (error) {
-    console.error('Get all payments error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    debugLog('Admin: Error getting all payments:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error fetching payments.', { code: 'SERVER_ERROR', details: error.message });
   }
 };
 
-// Get user payments
+// Get payments for a specific user (or the logged-in user)
 exports.getUserPayments = async (req, res) => {
+  debugLog('Get User Payments attempt started');
   try {
-    const userId = req.params.userId || req.user.id;
-    const { 
-      page = 1, 
-      limit = 10, 
-      startDate, 
-      endDate, 
-      paymentType 
-    } = req.query;
-    
-    const offset = (page - 1) * limit;
-    
-    // Build filter conditions
-    const whereConditions = { 
-      userId,
-      isTemplate: false  // Exclude templates
-    };
-    
-    if (startDate && endDate) {
-      whereConditions.paymentDate = {
-        [Op.between]: [new Date(startDate), new Date(endDate)]
-      };
+    const requestingUserId = req.user.id;
+    const targetUserIdParam = req.params.userId;
+    const userIdToFetch = targetUserIdParam ? parseInt(targetUserIdParam) : requestingUserId;
+
+    if (!req.user.isAdmin && requestingUserId !== userIdToFetch) {
+      debugLog(`Forbidden: User ${requestingUserId} trying to access payments for ${userIdToFetch}`);
+      return sendResponse(res, 403, false, null, 'Forbidden. You can only access your own payments.', { code: 'FORBIDDEN' });
     }
+
+    const { page = 1, limit = 10, startDate, endDate, paymentType, status, search } = req.query;
+    const take = parseInt(limit);
+    const skip = (parseInt(page) - 1) * take;
+
+    const whereConditions = { userId: userIdToFetch, isTemplate: false };
+
+    if (startDate) whereConditions.paymentDate = { ...whereConditions.paymentDate, gte: new Date(startDate) };
+    if (endDate) whereConditions.paymentDate = { ...whereConditions.paymentDate, lte: new Date(new Date(endDate).setHours(23, 59, 59, 999)) };
+    if (status) whereConditions.status = status;
     
-    if (paymentType) {
-      if (paymentType === 'SPECIAL') {
-        // Handle special offerings (paymentType starts with SPECIAL_)
-        whereConditions.paymentType = {
-          [Op.like]: 'SPECIAL_%'
-        };
-      } else {
+    if (paymentType && paymentType !== 'ALL') {
         whereConditions.paymentType = paymentType;
+    }
+
+    if (search) {
+      const searchClauses = [
+        { description: { contains: search, mode: 'insensitive' } },
+        { reference: { contains: search, mode: 'insensitive' } },
+        { transactionId: { contains: search, mode: 'insensitive' } },
+        { receiptNumber: { contains: search, mode: 'insensitive' } },
+      ];
+      const searchAmount = parseFloat(search);
+      if (!isNaN(searchAmount)) {
+        searchClauses.push({ amount: searchAmount });
+      }
+       if (whereConditions.OR) {
+        whereConditions.AND = [ {OR: whereConditions.OR }, {OR: searchClauses}];
+        delete whereConditions.OR;
+      } else {
+        whereConditions.OR = searchClauses;
       }
     }
-    
-    // Get user's payments with pagination
-    const payments = await Payment.findAndCountAll({
+
+    const payments = await prisma.payment.findMany({
       where: whereConditions,
-      order: [['paymentDate', 'DESC']],
-      limit: parseInt(limit),
-      offset: parseInt(offset)
+      orderBy: { paymentDate: 'desc' },
+      include: { specialOffering: { select: { id: true, name: true, offeringCode: true } } },
+      skip,
+      take,
     });
-    
-    res.json({
-      total: payments.count,
-      totalPages: Math.ceil(payments.count / limit),
+    const totalPayments = await prisma.payment.count({ where: whereConditions });
+
+    debugLog(`Retrieved ${payments.length} payments for user ${userIdToFetch}.`);
+    return sendResponse(res, 200, true, {
+      payments,
+      totalPages: Math.ceil(totalPayments / take),
       currentPage: parseInt(page),
-      payments: payments.rows
-    });
+      totalPayments,
+    }, 'User payments retrieved successfully.');
+
   } catch (error) {
-    console.error('Get user payments error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    debugLog('Error getting user payments:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error fetching user payments.', { code: 'SERVER_ERROR', details: error.message });
   }
 };
 
 // Get payment statistics (admin only)
 exports.getPaymentStats = async (req, res) => {
+  debugLog('Admin: Get Payment Stats attempt started');
   try {
-    // Get total revenue (non-expenses)
-    const revenueTotal = await Payment.sum('amount', {
-      where: {
-        isExpense: false,
-        isTemplate: false,  // Exclude templates
-        status: 'COMPLETED'
-      }
+    const commonWhere = { status: 'COMPLETED', isTemplate: false };
+
+    const totalRevenueResult = await prisma.payment.aggregate({ _sum: { amount: true }, where: { ...commonWhere, isExpense: false } });
+    const totalExpensesResult = await prisma.payment.aggregate({ _sum: { amount: true }, where: { ...commonWhere, isExpense: true } });
+    const platformFeesResult = await prisma.payment.aggregate({ _sum: { platformFee: true }, where: commonWhere });
+
+    const totalRevenue = totalRevenueResult._sum.amount || new Prisma.Decimal(0);
+    const totalExpenses = totalExpensesResult._sum.amount || new Prisma.Decimal(0);
+    const totalPlatformFees = platformFeesResult._sum.platformFee || new Prisma.Decimal(0);
+
+    let monthlyData = [];
+    // Prisma does not directly support date part extraction in a portable way for group by like strftime or TO_CHAR without raw queries.
+    // For simplicity here, we fetch last 12 months of data and aggregate in JS, or use $queryRaw.
+    // Using $queryRaw for better performance and DB-side aggregation:
+     if (prisma.$queryRawUnsafe) { // Check if available (depends on Prisma version and preview features)
+        monthlyData = await prisma.$queryRawUnsafe(`
+            SELECT
+              strftime('%Y-%m', "paymentDate") as month,
+              SUM(CASE WHEN "isExpense" = 0 THEN amount ELSE 0 END) as revenue,
+              SUM(CASE WHEN "isExpense" = 1 THEN amount ELSE 0 END) as expenses
+            FROM "Payments"
+            WHERE status = 'COMPLETED' AND "isTemplate" = 0
+            AND "paymentDate" >= strftime('%Y-%m-%d', date('now', '-12 months'))
+            GROUP BY month
+            ORDER BY month ASC;
+        `); // SQLite version
+        // For PostgreSQL:
+        // TO_CHAR("paymentDate", 'YYYY-MM') as month, ... WHERE "paymentDate" >= date_trunc('month', NOW() - INTERVAL '11 months') ...
+    } else {
+        debugLog("prisma.$queryRawUnsafe not available, monthly data aggregation will be less efficient or omitted.");
+        // Fallback or alternative logic if raw query is not an option or desired
+    }
+
+
+    const paymentsByType = await prisma.payment.groupBy({
+      by: ['paymentType'],
+      _sum: { amount: true },
+      where: { ...commonWhere, isExpense: false },
+    });
+    const expensesByDepartment = await prisma.payment.groupBy({
+      by: ['department'],
+      _sum: { amount: true },
+      where: { ...commonWhere, isExpense: true, department: { not: null } },
     });
     
-    // Get total expenses
-    const expensesTotal = await Payment.sum('amount', {
-      where: {
-        isExpense: true,
-        isTemplate: false,  // Exclude templates
-        status: 'COMPLETED'
-      }
-    });
-    
-    // Get total platform fees
-    const platformFeesTotal = await Payment.sum('platformFee', {
-      where: {
-        status: 'COMPLETED',
-        isTemplate: false  // Exclude templates
-      }
-    });
-    
-    // Get expense breakdown by department
-    const expensesByDepartment = await Payment.findAll({
-      attributes: [
-        'department', 
-        [sequelize.fn('SUM', sequelize.col('amount')), 'total']
-      ],
-      where: {
-        isExpense: true,
-        isTemplate: false,  // Exclude templates
-        status: 'COMPLETED',
-        department: {
-          [Op.ne]: null
-        }
-      },
-      group: ['department'],
-      raw: true
-    });
-    
-    // Get payment breakdown by type
-    const paymentsByType = await Payment.findAll({
-      attributes: [
-        'paymentType', 
-        [sequelize.fn('SUM', sequelize.col('amount')), 'total']
-      ],
-      where: {
-        isExpense: false,
-        isTemplate: false,  // Exclude templates
-        status: 'COMPLETED'
-      },
-      group: ['paymentType'],
-      raw: true
-    });
-    
-    res.json({
-      revenue: revenueTotal || 0,
-      expenses: expensesTotal || 0,
-      platformFees: platformFeesTotal || 0,
-      netBalance: (revenueTotal || 0) - (expensesTotal || 0),
-      expensesByDepartment: expensesByDepartment || [],
-      paymentsByType: paymentsByType || []
-    });
+    const stats = {
+      revenue: parseFloat(totalRevenue.toString()),
+      expenses: parseFloat(totalExpenses.toString()),
+      netBalance: parseFloat(totalRevenue.minus(totalExpenses).toString()),
+      platformFees: parseFloat(totalPlatformFees.toString()),
+      monthlyData: monthlyData.map(m => ({...m, revenue: Number(m.revenue), expenses: Number(m.expenses) })),
+      paymentsByType: paymentsByType.map(p => ({ type: p.paymentType, total: parseFloat((p._sum.amount || 0).toString()) })),
+      expensesByDepartment: expensesByDepartment.map(d => ({ department: d.department, total: parseFloat((d._sum.amount || 0).toString()) })),
+    };
+
+    debugLog('Admin: Payment stats retrieved.');
+    return sendResponse(res, 200, true, stats, 'Payment statistics retrieved successfully.');
+
   } catch (error) {
-    console.error('Get payment stats error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    debugLog('Admin: Error getting payment stats:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error fetching payment statistics.', { code: 'SERVER_ERROR', details: error.message });
   }
 };
 
-// Initiate a payment
+// Initiate an M-Pesa payment (User action)
 exports.initiatePayment = async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-    
-    const { 
-      amount, 
-      paymentType, 
-      description, 
-      titheDistribution 
-    } = req.body;
-    
-    const userId = req.user.id;
-    
-    // Validate amount
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ message: 'Invalid amount' });
-    }
-    
-    // Calculate platform fee (2% for M-Pesa)
-    const platformFee = parseFloat((amount * 0.02).toFixed(2));
-    
-    // Create a pending payment record
-    const payment = await Payment.create({
-      userId,
-      amount: parseFloat(amount),
-      paymentType,
-      paymentMethod: 'MPESA',
-      description: description || '',
-      status: 'PENDING',
-      platformFee,
-      titheDistribution: paymentType === 'TITHE' ? titheDistribution : null,
-      isTemplate: false,  // Explicitly mark as not a template
-      paymentDate: new Date()
+  debugLog('Initiate M-Pesa Payment attempt started');
+  const validationErrors = validationResult(req);
+  if (!validationErrors.isEmpty()) {
+    debugLog('Validation errors:', validationErrors.array());
+    return sendResponse(res, 400, false, null, 'Validation failed', {
+      code: 'VALIDATION_ERROR',
+      details: validationErrors.array().map(err => ({ field: err.path, message: err.msg })),
     });
-    
-    // Get user phone number
-    const user = await User.findByPk(userId);
-    if (!user) {
-      await payment.destroy();
-      return res.status(404).json({ message: 'User not found' });
-    }
-    
-    if (!user.phone) {
-      await payment.destroy();
-      return res.status(400).json({ message: 'User phone number not found' });
-    }
-    
-    try {
-      // Initiate M-Pesa payment (include platform fee in amount)
-      const totalAmount = parseFloat(amount) + platformFee;
-      const paymentResponse = await initiateMpesaPayment(
-        payment.id,
-        totalAmount,
-        user.phone,
-        `TASSIAC ${paymentType}`
+  }
+
+  const { amount, paymentType, description, titheDistributionSDA, specialOfferingId, phoneNumber } = req.body;
+  const userId = req.user.id;
+  const userPhoneForMpesa = phoneNumber || req.user.phone;
+
+  if (!userPhoneForMpesa) {
+      return sendResponse(res, 400, false, null, 'Phone number is required for M-Pesa payment.', {code: 'PHONE_REQUIRED'});
+  }
+
+  const paymentAmount = parseFloat(amount);
+  if (isNaN(paymentAmount) || paymentAmount <= 0) {
+    return sendResponse(res, 400, false, null, 'Invalid payment amount.', { code: 'INVALID_AMOUNT' });
+  }
+
+  let platformFee = 5.00; // Example flat fee
+  if (paymentAmount > 500) { // Example tiered fee
+    platformFee = Math.max(5.00, parseFloat((paymentAmount * 0.01).toFixed(2)));
+  }
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      let paymentData = {
+        userId,
+        amount: paymentAmount, // Store the actual amount for the church
+        paymentType,
+        paymentMethod: 'MPESA',
+        description: description || `${paymentType} Contribution`,
+        status: 'PENDING',
+        platformFee, // Store the calculated platform fee
+        paymentDate: new Date(),
+        isExpense: false,
+        isTemplate: false,
+        processedBy: userId,
+      };
+
+      if (paymentType === 'TITHE' && titheDistributionSDA) {
+        paymentData.titheDistributionSDA = titheDistributionSDA;
+      } else if (paymentType === 'SPECIAL_OFFERING_CONTRIBUTION' && specialOfferingId) {
+        const offering = await tx.specialOffering.findUnique({ where: { id: parseInt(specialOfferingId) } });
+        if (!offering || !offering.isActive) {
+          throw new Error('Selected special offering is not available or not active.');
+        }
+        paymentData.specialOfferingId = offering.id;
+        paymentData.description = description || `Contribution to ${offering.name}`;
+      }
+
+      const payment = await tx.payment.create({ data: paymentData });
+      debugLog('Pending payment record created:', payment.id);
+
+      const mpesaAmountForStk = paymentAmount; // The amount to be charged to user via M-Pesa
+
+      const mpesaResponse = await initiateMpesaPayment(
+        payment.id.toString(),
+        mpesaAmountForStk,
+        userPhoneForMpesa,
+        paymentData.description
       );
-      
-      // Update payment with response data
-      await payment.update({
-        reference: paymentResponse.reference || null,
-        transactionId: paymentResponse.transactionId || null
+
+      await tx.payment.update({
+        where: { id: payment.id },
+        data: {
+          reference: mpesaResponse.reference,
+          transactionId: mpesaResponse.transactionId,
+        },
       });
-      
-      res.json({
-        message: 'Payment initiated successfully',
-        payment,
-        paymentDetails: paymentResponse
-      });
-    } catch (mpesaError) {
-      // If M-Pesa initiation fails, update payment status
-      await payment.update({
-        status: 'FAILED',
-        description: `${description || ''} - Failed to initiate M-Pesa payment`
-      });
-      throw mpesaError;
-    }
+      debugLog(`M-Pesa STK push initiated for payment ${payment.id}. Ref: ${mpesaResponse.reference}`);
+      return { payment, mpesaResponse };
+    });
+
+    return sendResponse(res, 200, true,
+      { paymentId: result.payment.id, mpesaCheckoutID: result.mpesaResponse.reference },
+      result.mpesaResponse.message || 'M-Pesa payment initiated. Check your phone.'
+    );
   } catch (error) {
-    console.error('Initiate payment error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    debugLog('Error in initiatePayment controller:', error.message);
+    console.error(error);
+    // If it's an error thrown from the transaction block with specific details
+    if (error.message === 'Selected special offering is not available or not active.') {
+        return sendResponse(res, 400, false, null, error.message, { code: 'OFFERING_NOT_AVAILABLE' });
+    }
+    return sendResponse(res, 500, false, null, error.message || 'Failed to initiate M-Pesa payment.', {
+      code: 'MPESA_INIT_ERROR',
+      details: error.message,
+    });
   }
 };
 
 // Add manual payment (admin only)
 exports.addManualPayment = async (req, res) => {
-  const transaction = await sequelize.transaction();
-  
-  try {
-    const { 
-      userId, 
-      amount, 
-      paymentType, 
-      description,
-      paymentDate,
-      department,
-      isExpense
-    } = req.body;
-
-    // Validate required fields
-    if (!userId || !amount || !paymentType) {
-      await transaction.rollback();
-      return res.status(400).json({ 
-        message: 'Missing required fields: userId, amount, paymentType' 
-      });
-    }
-
-    // Validate amount
-    if (amount <= 0) {
-      await transaction.rollback();
-      return res.status(400).json({ message: 'Invalid amount' });
-    }
-
-    // Validate that specified user exists
-    const user = await User.findByPk(userId, { transaction });
-    if (!user) {
-      await transaction.rollback();
-      return res.status(400).json({ message: 'Invalid user ID specified' });
-    }
-
-    // Create payment with correct user and admin tracking
-    const payment = await Payment.create({
-      userId: userId, // Use the specified user ID (person who paid)
-      amount: parseFloat(amount),
-      paymentType,
-      paymentMethod: 'MANUAL',
-      description: description || '',
-      status: 'COMPLETED',
-      addedBy: req.user.id, // Track the admin who added it
-      paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
-      department: department || null,
-      isExpense: isExpense || false,
-      isTemplate: false,
-      platformFee: 0 // No platform fee for manual payments
-    }, { transaction });
-
-    // Generate receipt for non-expense payments
-    if (!isExpense) {
-      const receiptNumber = generateReceiptNumber(payment.paymentType);
-      
-      await Receipt.create({
-        receiptNumber,
-        paymentId: payment.id,
-        userId: payment.userId,
-        generatedBy: req.user.id,
-        receiptData: {
-          paymentId: payment.id,
-          amount: payment.amount,
-          paymentType: payment.paymentType,
-          paymentMethod: 'MANUAL',
-          description: payment.description,
-          userDetails: {
-            name: user.fullName || '',
-            phone: user.phone || '',
-            email: user.email || ''
-          },
-          churchDetails: {
-            name: 'TASSIAC Church',
-            address: process.env.CHURCH_ADDRESS || 'Church Address',
-            phone: process.env.CHURCH_PHONE || 'Church Phone',
-            email: process.env.CHURCH_EMAIL || 'church@tassiac.com'
-          },
-          receiptNumber,
-          paymentDate: payment.paymentDate,
-          issuedDate: new Date()
-        }
-      }, { transaction });
-      
-      await payment.update({ receiptNumber }, { transaction });
-    }
-
-    await transaction.commit();
-
-    res.json({
-      message: 'Manual payment added successfully',
-      payment
-    });
-
-  } catch (error) {
-    await transaction.rollback();
-    console.error('Error adding manual payment:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+  debugLog('Admin: Add Manual Payment attempt started');
+  if (isViewOnlyAdmin(req.user)) {
+    debugLog(`View-only admin ${req.user.username} (ID: ${req.user.id}) attempted to add manual payment.`);
+    return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot add payments.", { code: 'FORBIDDEN_VIEW_ONLY' });
   }
-};
 
-// Get promoted payments
-exports.getPromotedPayments = async (req, res) => {
-  try {
-    const promotedPayments = await Payment.findAll({
-      where: {
-        isPromoted: true,
-        isExpense: false,
-        isTemplate: false,  // Exclude templates
-        status: 'COMPLETED'
-      },
-      include: [{
-        model: User,
-        attributes: ['id', 'username', 'fullName']
-      }],
-      order: [['createdAt', 'DESC']],
-      limit: 5
-    });
-    
-    res.json({ promotedPayments });
-  } catch (error) {
-    console.error('Get promoted payments error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-};
-
-// Get special offerings (redirects to special offering controller)
-exports.getSpecialOfferings = async (req, res) => {
-  try {
-    // Import the special offering controller
-    const specialOfferingController = require('./specialOfferingController');
-    
-    // Delegate to the special offering controller
-    return specialOfferingController.getAllSpecialOfferings(req, res);
-  } catch (error) {
-    console.error('Error getting special offerings:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-};
-
-// Payment callback (for M-Pesa)
-exports.mpesaCallback = async (req, res) => {
-  const transaction = await sequelize.transaction();
-  
-  try {
-    const { 
-      Body: { 
-        stkCallback: { 
-          MerchantRequestID, 
-          CheckoutRequestID,
-          ResultCode,
-          ResultDesc,
-          CallbackMetadata 
-        } 
-      } 
-    } = req.body;
-    
-    // Find the payment by the reference ID
-    const payment = await Payment.findOne({ 
-      where: { 
-        [Op.or]: [
-          { reference: CheckoutRequestID },
-          { reference: MerchantRequestID }
-        ]
-      },
-      transaction
-    });
-    
-    if (!payment) {
-      await transaction.rollback();
-      return res.status(404).json({ message: 'Payment not found' });
-    }
-    
-    // Process the payment result
-    if (ResultCode === 0) {
-      // Payment successful
-      const metadata = CallbackMetadata?.Item?.reduce((acc, item) => {
-        if (item.Name && item.Value !== undefined) {
-          acc[item.Name] = item.Value;
-        }
-        return acc;
-      }, {}) || {};
-      
-      // Generate receipt number
-      const receiptNumber = generateReceiptNumber(payment.paymentType);
-      
-      // Update payment
-      await payment.update({
-        status: 'COMPLETED',
-        transactionId: metadata.MpesaReceiptNumber || metadata.TransactionID || null,
-        receiptNumber,
-        isTemplate: false // Ensure it's never marked as template
-      }, { transaction });
-      
-      // Create receipt
-      const user = await User.findByPk(payment.userId, { transaction });
-      
-      if (user) {
-        const receiptData = {
-          paymentId: payment.id,
-          amount: payment.amount,
-          paymentType: payment.paymentType,
-          paymentMethod: 'MPESA',
-          description: payment.description,
-          userDetails: {
-            name: user.fullName || '',
-            phone: user.phone || '',
-            email: user.email || ''
-          },
-          churchDetails: {
-            name: 'TASSIAC Church',
-            address: process.env.CHURCH_ADDRESS || 'Church Address',
-            phone: process.env.CHURCH_PHONE || 'Church Phone',
-            email: process.env.CHURCH_EMAIL || 'church@tassiac.com'
-          },
-          transactionDetails: {
-            mpesaReceiptNumber: metadata.MpesaReceiptNumber || '',
-            transactionDate: metadata.TransactionDate || new Date()
-          },
-          receiptNumber,
-          paymentDate: payment.paymentDate || new Date(),
-          issuedDate: new Date(),
-          titheDistribution: payment.titheDistribution
-        };
-        
-        await Receipt.create({
-          receiptNumber,
-          paymentId: payment.id,
-          userId: payment.userId,
-          receiptData
-        }, { transaction });
-        
-        // Send SMS notification if enabled
-        try {
-          await sendSmsNotification(
-            user.phone,
-            `Dear ${user.fullName}, your ${payment.paymentType} payment of KES ${payment.amount} has been received. Receipt: ${receiptNumber}. Thank you!`
-          );
-        } catch (smsError) {
-          console.error('SMS notification error:', smsError);
-          // Don't fail the transaction for SMS errors
-        }
-      }
-      
-    } else {
-      // Payment failed
-      await payment.update({
-        status: 'FAILED',
-        description: `${payment.description || ''} - Failed: ${ResultDesc || 'Unknown error'}`
-      }, { transaction });
-    }
-    
-    await transaction.commit();
-    
-    // Always return success to M-Pesa
-    res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
-  } catch (error) {
-    await transaction.rollback();
-    console.error('M-Pesa callback error:', error);
-    // Always return success to M-Pesa even on error
-    res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
-  }
-};
-
-// Create manual payment (alternative endpoint)
-exports.createManualPayment = async (req, res) => {
-  let transaction;
-  try {
-    transaction = await sequelize.transaction();
-    
-    const paymentData = req.body;
-    
-    // Validate required fields
-    if (!paymentData?.userId || !paymentData?.amount || !paymentData?.paymentType) {
-      throw new Error("Missing required fields: userId, amount, paymentType");
-    }
-
-    // Prevent special offering creation through this endpoint
-    if (String(paymentData.paymentType).startsWith('SPECIAL_')) {
-      throw new Error("Special offerings must be created through /payment/special-offering endpoint");
-    }
-
-    // Get user with transaction
-    const user = await User.findByPk(paymentData.userId, { transaction });
-    if (!user) {
-      throw new Error('User not found');
-    }
-
-    // Create payment with safe data
-    const payment = await Payment.create({
-      userId: paymentData.userId,
-      amount: parseFloat(paymentData.amount),
-      paymentType: String(paymentData.paymentType),
-      paymentMethod: 'MANUAL',
-      description: String(paymentData.description || ''),
-      status: 'COMPLETED',
-      addedBy: req.user?.id,
-      paymentDate: new Date(paymentData.paymentDate || Date.now()),
-      isTemplate: false,
-      platformFee: 0,
-      department: paymentData.department || null,
-      isExpense: paymentData.isExpense || false
-    }, { transaction });
-
-    const receiptNumber = generateReceiptNumber(payment.paymentType);
-
-    // Create receipt with safe data
-    await Receipt.create({
-      receiptNumber,
-      paymentId: payment.id,
-      userId: payment.userId,
-      generatedBy: req.user?.id,
-      receiptData: {
-        paymentId: payment.id,
-        amount: payment.amount,
-        paymentType: payment.paymentType,
-        paymentMethod: 'MANUAL',
-        description: payment.description,
-        userDetails: {
-          name: user.fullName || '',
-          phone: user.phone || '',
-          email: user.email || ''
-        },
-        churchDetails: {
-          name: 'TASSIAC Church',
-          address: process.env.CHURCH_ADDRESS || 'Church Address',
-          phone: process.env.CHURCH_PHONE || 'Church Phone',
-          email: process.env.CHURCH_EMAIL || 'church@tassiac.com'
-        },
-        receiptNumber,
-        paymentDate: payment.paymentDate,
-        issuedDate: new Date()
-      }
-    }, { transaction });
-
-    await payment.update({ receiptNumber }, { transaction });
-    await transaction.commit();
-    
-    return res.status(201).json({
-      success: true,
-      message: 'Payment created successfully',
-      payment
-    });
-
-  } catch (error) {
-    if (transaction) await transaction.rollback();
-    console.error('Error creating payment:', error);
-    return res.status(400).json({
-      success: false,
-      message: error.message || 'Error creating payment'
+  const validationErrors = validationResult(req);
+  if (!validationErrors.isEmpty()) {
+    debugLog('Validation errors:', validationErrors.array());
+    return sendResponse(res, 400, false, null, 'Validation failed', {
+      code: 'VALIDATION_ERROR',
+      details: validationErrors.array().map(err => ({ field: err.path, message: err.msg })),
     });
   }
-};
 
-// Create special offering
-exports.createSpecialOffering = async (req, res) => {
-  let transaction;
+  const {
+    userId, amount, paymentType, description, paymentDate,
+    department, isExpense = false, titheDistributionSDA, specialOfferingId,
+    paymentMethod = 'MANUAL', expenseReceiptUrl, reference, // Added reference
+  } = req.body;
+  const processedByAdminId = req.user.id;
+
+  const paymentAmount = parseFloat(amount);
+  // Basic validations
+  if (!userId || isNaN(paymentAmount) || paymentAmount <= 0 || !paymentType) {
+    return sendResponse(res, 400, false, null, 'Missing or invalid required fields: userId, amount, paymentType.', { code: 'MISSING_INVALID_FIELDS' });
+  }
+
   try {
-    transaction = await sequelize.transaction();
-    
-    const offeringData = req.body;
-    
-    // Validate required fields
-    if (!offeringData?.name || !offeringData?.targetGoal || !offeringData?.offeringType) {
-      throw new Error("Required fields missing: name, targetGoal, offeringType");
-    }
+    const payment = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUnique({ where: { id: parseInt(userId) } });
+      if (!user) throw new Error('User not found.');
 
-    // Validate target goal
-    if (parseFloat(offeringData.targetGoal) <= 0) {
-      throw new Error("Target goal must be greater than 0");
-    }
-
-    // Normalize offering type
-    const paymentType = String(offeringData.offeringType).startsWith('SPECIAL_') 
-      ? offeringData.offeringType 
-      : `SPECIAL_${offeringData.offeringType}`;
-
-    // Check for duplicate with transaction
-    const existingOffering = await Payment.findOne({
-      where: {
+      let paymentData = {
+        userId: parseInt(userId),
+        amount: paymentAmount,
         paymentType,
-        isTemplate: true
-      },
-      transaction
+        paymentMethod,
+        description: description || `${paymentType} (${paymentMethod})`,
+        status: 'COMPLETED',
+        paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+        processedBy: processedByAdminId,
+        isExpense: !!isExpense,
+        platformFee: 0,
+        isTemplate: false,
+        reference: reference || null
+      };
+
+      if (isExpense) {
+        if (!department) throw new Error('Department is required for expenses.');
+        paymentData.department = department;
+        if (req.file) { // Assuming multer middleware adds 'file' to 'req'
+          paymentData.expenseReceiptUrl = `/uploads/expense_receipts/${req.file.filename}`; // Adjust path as needed
+        } else if (expenseReceiptUrl) { // Allow passing URL directly if already uploaded elsewhere
+          paymentData.expenseReceiptUrl = expenseReceiptUrl;
+        }
+      } else if (paymentType === 'TITHE') {
+        if (!titheDistributionSDA || typeof titheDistributionSDA !== 'object') {
+          throw new Error('Valid tithe distribution data is required for tithe payments.');
+        }
+        const distributedSum = Object.values(titheDistributionSDA).reduce((sum, val) => sum + parseFloat(val), 0);
+        if (Math.abs(distributedSum - paymentAmount) > 0.01) {
+           debugLog(`Warning: Tithe distribution sum (${distributedSum}) != payment amount (${paymentAmount}).`);
+           // Decide if this is a hard error or just a warning to log
+           // For now, allowing it but logging. Consider stricter validation.
+        }
+        paymentData.titheDistributionSDA = titheDistributionSDA;
+      } else if (paymentType === 'SPECIAL_OFFERING_CONTRIBUTION') {
+        if (!specialOfferingId) throw new Error('Special Offering ID is required.');
+        const offering = await tx.specialOffering.findUnique({ where: { id: parseInt(specialOfferingId) } });
+        if (!offering || !offering.isActive) throw new Error('Selected special offering is not available or not active.');
+        paymentData.specialOfferingId = offering.id;
+        paymentData.description = description || `Contribution to ${offering.name}`;
+      }
+
+      const createdPayment = await tx.payment.create({ data: paymentData });
+      debugLog('Manual payment record created:', createdPayment.id);
+
+      if (!createdPayment.isExpense && createdPayment.status === 'COMPLETED') {
+        const receiptNumber = generateReceiptNumber(createdPayment.paymentType);
+        await tx.receipt.create({
+          data: {
+            receiptNumber,
+            paymentId: createdPayment.id,
+            userId: createdPayment.userId,
+            generatedBy: processedByAdminId,
+            receiptDate: new Date(),
+            receiptData: {
+              paymentId: createdPayment.id, amount: createdPayment.amount, paymentType: createdPayment.paymentType,
+              userName: user.fullName, paymentDate: createdPayment.paymentDate, description: createdPayment.description
+            },
+          }
+        });
+        const finalPayment = await tx.payment.update({ where: { id: createdPayment.id }, data: { receiptNumber } });
+        debugLog(`Receipt ${receiptNumber} generated for payment ${createdPayment.id}`);
+        await logAdminActivity('ADMIN_ADD_MANUAL_PAYMENT', finalPayment.id, req.user.id, { amount: finalPayment.amount, type: finalPayment.paymentType, userId: finalPayment.userId });
+        return finalPayment;
+      }
+      await logAdminActivity(isExpense ? 'ADMIN_ADD_EXPENSE' : 'ADMIN_ADD_MANUAL_PAYMENT', createdPayment.id, req.user.id, { amount: createdPayment.amount, type: createdPayment.paymentType, userId: createdPayment.userId });
+      return createdPayment;
     });
 
-    if (existingOffering) {
-      throw new Error("A special offering with this type already exists");
-    }
-
-    // Validate dates if provided
-    const startDate = offeringData.startDate ? new Date(offeringData.startDate) : new Date();
-    const endDate = offeringData.endDate ? new Date(offeringData.endDate) : null;
-    
-    if (endDate && endDate <= startDate) {
-      throw new Error("End date must be after start date");
-    }
-
-    // Create offering with safe data
-    const specialOffering = await Payment.create({
-      userId: req.user?.id,
-      amount: parseFloat(offeringData.targetGoal),
-      paymentType,
-      paymentMethod: 'MANUAL',
-      description: String(offeringData.name).trim(),
-      status: 'COMPLETED',
-      addedBy: req.user?.id,
-      paymentDate: startDate,
-      targetGoal: parseFloat(offeringData.targetGoal),
-      endDate: endDate,
-      isPromoted: true,
-      isTemplate: true,
-      isExpense: false,
-      platformFee: 0,
-      customFields: JSON.stringify({
-        fullDescription: String(offeringData.description || offeringData.name),
-        fields: Array.isArray(offeringData.customFields) ? offeringData.customFields : []
-      })
-    }, { transaction });
-
-    await transaction.commit();
-    
-    return res.status(201).json({
-      success: true,
-      message: 'Special offering created successfully',
-      specialOffering
-    });
-
+    return sendResponse(res, 201, true, { payment }, 'Manual payment added successfully.');
   } catch (error) {
-    if (transaction) await transaction.rollback();
-    console.error('Error creating special offering:', error);
-    return res.status(400).json({
-      success: false,
-      message: error.message || 'Error creating special offering'
+    debugLog('Error adding manual payment:', error.message);
+    console.error(error);
+    return sendResponse(res, error.message === 'User not found.' ? 404 : (error.message.includes('required for') ? 400 : 500), false, null, error.message || 'Failed to add manual payment.', {
+      code: 'MANUAL_PAYMENT_ERROR',
+      details: error.message,
     });
   }
+};
+
+// M-Pesa Callback
+exports.mpesaCallback = async (req, res) => {
+  debugLog('M-Pesa Callback received:', JSON.stringify(req.body, null, 2));
+  const callbackData = req.body.Body?.stkCallback;
+
+  if (!callbackData) {
+    debugLog('Invalid M-Pesa callback structure.');
+    return res.status(400).json({ ResultCode: 1, ResultDesc: 'Invalid callback data' }); // Bad request for invalid structure
+  }
+
+  const { MerchantRequestID, CheckoutRequestID, ResultCode, ResultDesc, CallbackMetadata } = callbackData;
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.findFirst({
+        where: {
+          OR: [
+            { reference: CheckoutRequestID }, // Safaricom uses CheckoutRequestID
+            { transactionId: MerchantRequestID } // And MerchantRequestID for internal tracking
+          ],
+          status: 'PENDING', // Important: Only process PENDING payments
+        },
+        include: { user: true }
+      });
+
+      if (!payment) {
+        debugLog(`No matching PENDING payment found for CheckoutRequestID: ${CheckoutRequestID} or MerchantRequestID: ${MerchantRequestID}. It might have already been processed, does not exist, or is not PENDING.`);
+        return { alreadyProcessedOrNotFound: true }; // Indicate special handling needed
+      }
+
+      debugLog(`Processing callback for payment ID: ${payment.id}`);
+      let updatedPaymentData = {};
+
+      if (String(ResultCode) === "0") { // Successful M-Pesa transaction
+        const metadataItems = CallbackMetadata?.Item;
+        let mpesaReceiptNumber = null;
+        let transactionDate = payment.paymentDate; // Default to original paymentDate
+
+        if (metadataItems && Array.isArray(metadataItems)) {
+          mpesaReceiptNumber = metadataItems.find(item => item.Name === 'MpesaReceiptNumber')?.Value;
+          const mpesaTransactionDateStr = metadataItems.find(item => item.Name === 'TransactionDate')?.Value;
+          if (mpesaTransactionDateStr) {
+            try { // Format is YYYYMMDDHHMMSS
+              const year = mpesaTransactionDateStr.substring(0, 4);
+              const month = mpesaTransactionDateStr.substring(4, 6);
+              const day = mpesaTransactionDateStr.substring(6, 8);
+              const hour = mpesaTransactionDateStr.substring(8, 10);
+              const minute = mpesaTransactionDateStr.substring(10, 12);
+              const second = mpesaTransactionDateStr.substring(12, 14);
+              transactionDate = new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`);
+            } catch (e) { debugLog("Error parsing M-Pesa transaction date from callback", e); }
+          }
+        }
+
+        const internalReceiptNumber = generateReceiptNumber(payment.paymentType);
+        updatedPaymentData = {
+          status: 'COMPLETED',
+          transactionId: mpesaReceiptNumber || payment.transactionId,
+          receiptNumber: internalReceiptNumber,
+          paymentDate: transactionDate, // Update with M-Pesa's transaction date
+        };
+
+        await tx.payment.update({ where: { id: payment.id }, data: updatedPaymentData });
+
+        if (payment.user) { // Ensure user exists
+            await tx.receipt.create({
+                data: {
+                receiptNumber: internalReceiptNumber,
+                paymentId: payment.id,
+                userId: payment.userId,
+                generatedBy: null, // System generated
+                receiptDate: new Date(),
+                receiptData: {
+                    paymentId: payment.id, amount: payment.amount, paymentType: payment.paymentType,
+                    userName: payment.user.fullName, paymentDate: transactionDate,
+                    description: payment.description, mpesaReceipt: mpesaReceiptNumber
+                },
+                },
+            });
+            debugLog(`Payment ${payment.id} COMPLETED. M-Pesa Receipt: ${mpesaReceiptNumber}. Internal Receipt: ${internalReceiptNumber}`);
+
+            if (payment.user.phone) {
+                try {
+                await sendSmsNotification(
+                    payment.user.phone,
+                    `Dear ${payment.user.fullName}, your payment of KES ${payment.amount.toFixed(2)} for ${payment.paymentType} was successful. Receipt No: ${internalReceiptNumber}. Thank you.`
+                );
+                debugLog(`SMS notification sent for payment ${payment.id}`);
+                } catch (smsError) {
+                debugLog(`SMS notification failed for payment ${payment.id}:`, smsError.message);
+                }
+            }
+        } else {
+            debugLog(`User not found for payment ID ${payment.id}, cannot create receipt or send SMS.`);
+        }
+         return { success: true, paymentId: payment.id };
+      } else { // M-Pesa transaction failed
+        updatedPaymentData = {
+          status: 'FAILED',
+          description: `${payment.description || ''} (M-Pesa Callback Failed: ${ResultDesc})`,
+        };
+        await tx.payment.update({ where: { id: payment.id }, data: updatedPaymentData });
+        debugLog(`Payment ${payment.id} FAILED. Reason: ${ResultDesc}`);
+        return { success: false, reason: ResultDesc, paymentId: payment.id };
+      }
+    });
+    // If result.alreadyProcessedOrNotFound, it means we acknowledged to M-Pesa but didn't find a PENDING payment.
+    // This is fine, no further action here.
+  } catch (error) {
+    debugLog('Critical error in M-Pesa callback processing:', error.message);
+    console.error(error);
+    // The transaction will be rolled back by Prisma if an error is thrown from within it.
+  }
+  
+  // Always acknowledge the callback to M-Pesa to prevent retries from their end
+  return res.status(200).json({ ResultCode: 0, ResultDesc: 'Callback received and processed.' });
 };
 
 // Update payment status (admin only)
 exports.updatePaymentStatus = async (req, res) => {
+  debugLog('Admin: Update Payment Status attempt started');
   try {
+    if (isViewOnlyAdmin(req.user)) {
+      debugLog(`View-only admin ${req.user.username} (ID: ${req.user.id}) attempted to update payment status.`);
+      return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot update payment statuses.", { code: 'FORBIDDEN_VIEW_ONLY' });
+    }
+
     const { paymentId } = req.params;
     const { status } = req.body;
-    
-    const validStatuses = ['PENDING', 'COMPLETED', 'FAILED', 'CANCELLED'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({ 
-        message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` 
-      });
-    }
-    
-    const payment = await Payment.findByPk(paymentId);
-    if (!payment) {
-      return res.status(404).json({ message: 'Payment not found' });
-    }
-    
-    await payment.update({ status });
-    
-    res.json({
-      message: 'Payment status updated successfully',
-      payment
-    });
-  } catch (error) {
-    console.error('Update payment status error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-};
+    const numericPaymentId = parseInt(paymentId);
 
-// Toggle payment promotion (admin only)
-exports.togglePaymentPromotion = async (req, res) => {
-  try {
-    const { paymentId } = req.params;
-    
-    const payment = await Payment.findByPk(paymentId);
-    if (!payment) {
-      return res.status(404).json({ message: 'Payment not found' });
+    if (isNaN(numericPaymentId)) {
+      return sendResponse(res, 400, false, null, 'Invalid Payment ID format.', { code: 'INVALID_PAYMENT_ID' });
     }
-    
-    await payment.update({ isPromoted: !payment.isPromoted });
-    
-    res.json({
-      message: `Payment ${payment.isPromoted ? 'promoted' : 'unpromoted'} successfully`,
-      payment
+
+    const validStatuses = ['PENDING', 'COMPLETED', 'FAILED', 'CANCELLED', 'REFUNDED'];
+    if (!status || !validStatuses.includes(status.toUpperCase())) {
+      return sendResponse(res, 400, false, null, `Invalid status. Must be one of: ${validStatuses.join(', ')}.`, { code: 'INVALID_STATUS' });
+    }
+
+    const payment = await prisma.payment.findUnique({ where: { id: numericPaymentId } });
+    if (!payment) {
+      return sendResponse(res, 404, false, null, 'Payment not found.', { code: 'PAYMENT_NOT_FOUND' });
+    }
+
+    const updatedPayment = await prisma.payment.update({
+      where: { id: numericPaymentId },
+      data: { status: status.toUpperCase() },
     });
+
+    await logAdminActivity('ADMIN_UPDATE_PAYMENT_STATUS', updatedPayment.id, req.user.id, { oldStatus: payment.status, newStatus: updatedPayment.status });
+    debugLog(`Payment ${numericPaymentId} status updated to ${status.toUpperCase()} by admin ${req.user.username}`);
+    return sendResponse(res, 200, true, { payment: updatedPayment }, 'Payment status updated successfully.');
+
   } catch (error) {
-    console.error('Toggle payment promotion error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    debugLog('Admin: Error updating payment status:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error updating payment status.', { code: 'SERVER_ERROR', details: error.message });
   }
 };
 
 // Delete payment (admin only)
 exports.deletePayment = async (req, res) => {
-  const transaction = await sequelize.transaction();
+  debugLog('Admin: Delete Payment attempt started');
+  const { paymentId } = req.params;
+  const numericPaymentId = parseInt(paymentId);
+
+  if (isNaN(numericPaymentId)) {
+    return sendResponse(res, 400, false, null, 'Invalid Payment ID format.', { code: 'INVALID_PAYMENT_ID' });
+  }
+
+  if (isViewOnlyAdmin(req.user)) {
+    debugLog(`View-only admin ${req.user.username} (ID: ${req.user.id}) attempted to delete payment.`);
+    return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot delete payments.", { code: 'FORBIDDEN_VIEW_ONLY' });
+  }
   
   try {
-    const { paymentId } = req.params;
-    
-    const payment = await Payment.findByPk(paymentId, { transaction });
-    if (!payment) {
-      await transaction.rollback();
-      return res.status(404).json({ message: 'Payment not found' });
-    }
-    
-    // Delete associated receipts
-    await Receipt.destroy({
-      where: { paymentId },
-      transaction
+    await prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.findUnique({ where: { id: numericPaymentId } });
+      if (!payment) {
+        // Throw an error that will be caught by the outer try-catch and result in a 404
+        const err = new Error('Payment not found.');
+        err.statusCode = 404; // Custom property
+        throw err;
+      }
+
+      // Delete associated receipts first
+      await tx.receipt.deleteMany({ where: { paymentId: numericPaymentId } });
+      debugLog(`Associated receipts for payment ${numericPaymentId} deleted.`);
+
+      await tx.payment.delete({ where: { id: numericPaymentId } });
+      debugLog(`Payment ${numericPaymentId} deleted.`);
+      await logAdminActivity('ADMIN_DELETE_PAYMENT', numericPaymentId, req.user.id, { amount: payment.amount, type: payment.paymentType });
     });
-    
-    // Delete the payment
-    await payment.destroy({ transaction });
-    
-    await transaction.commit();
-    
-    res.json({ message: 'Payment deleted successfully' });
+
+    return sendResponse(res, 200, true, { paymentId: numericPaymentId }, 'Payment and associated receipts deleted successfully.');
   } catch (error) {
-    await transaction.rollback();
-    console.error('Delete payment error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    debugLog('Admin: Error deleting payment:', error.message);
+    console.error(error);
+    if (error.statusCode === 404 || (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025')) {
+        return sendResponse(res, 404, false, null, 'Payment not found.', {code: 'PAYMENT_NOT_FOUND'});
+    }
+    return sendResponse(res, 500, false, null, 'Server error deleting payment.', { code: 'SERVER_ERROR', details: error.message });
   }
 };
-
-// DO NOT CHANGE THIS EXPORT
-module.exports = exports;

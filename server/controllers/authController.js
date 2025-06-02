@@ -1,812 +1,603 @@
 // server/controllers/authController.js
+const { PrismaClient, Prisma } = require('@prisma/client');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const { validationResult } = require('express-validator');
-const sequelize = require('../config/database');
 const fs = require('fs');
 const path = require('path');
-const sqlite3 = require('sqlite3').verbose();
 
-// Add after other requires
-if (process.env.DATABASE_URL) {
-  debugLog('Initializing with PostgreSQL database');
-  // Verify PostgreSQL connection
-  sequelize.authenticate()
-    .then(() => debugLog('PostgreSQL connection established successfully'))
-    .catch(err => {
-      debugLog('PostgreSQL connection error:', err);
-      console.error('Unable to connect to PostgreSQL database:', err);
-    });
-}
+const prisma = new PrismaClient();
 
 // Setup debug log file
 const LOG_DIR = path.join(__dirname, '..', 'logs');
 if (!fs.existsSync(LOG_DIR)) {
   fs.mkdirSync(LOG_DIR, { recursive: true });
 }
-const LOG_FILE = path.join(LOG_DIR, 'auth-debug.log');
-const DB_PATH = path.join(__dirname, '..', '..', 'database.sqlite');
+const LOG_FILE = path.join(LOG_DIR, 'auth-controller-debug.log');
 
 // Helper to write debug logs
 function debugLog(message, data = null) {
   const timestamp = new Date().toISOString();
-  let logMessage = `[${timestamp}] ${message}`;
-  
+  let logMessage = `[${timestamp}] AUTH_CONTROLLER: ${message}`;
+
   if (data !== null) {
     try {
-      const dataStr = typeof data === 'object' ? JSON.stringify(data) : data.toString();
+      const MASK = '[REDACTED]';
+      let sanitizedData = JSON.parse(JSON.stringify(data)); // Deep clone
+      if (typeof sanitizedData === 'object' && sanitizedData !== null) {
+        if (sanitizedData.password) sanitizedData.password = MASK;
+        if (sanitizedData.currentPassword) sanitizedData.currentPassword = MASK;
+        if (sanitizedData.newPassword) sanitizedData.newPassword = MASK;
+        if (sanitizedData.oldPassword) sanitizedData.oldPassword = MASK;
+      }
+      const dataStr = JSON.stringify(sanitizedData);
       logMessage += ` | Data: ${dataStr}`;
     } catch (err) {
-      logMessage += ` | Data: [Failed to stringify: ${err.message}]`;
+      logMessage += ` | Data: [Failed to stringify or sanitize: ${err.message}]`;
     }
   }
-  
   console.log(logMessage);
-  
   try {
     fs.appendFileSync(LOG_FILE, logMessage + '\n');
   } catch (err) {
-    console.error('Failed to write to debug log file:', err);
+    // console.error('Failed to write to debug log file:', err);
   }
-  
   return logMessage;
 }
 
-// Direct database query function based on environment
-function querySqlite(sql, params = []) {
-  if (process.env.DATABASE_URL) {
-    debugLog('POSTGRES ENVIRONMENT DETECTED - Using Sequelize query');
-    
-    // Clean up the SQL for PostgreSQL
-    let modifiedSql = sql
-      // Remove all existing quotes first
-      .replace(/["`]/g, '')
-      // Add proper quotes for ALL table names and column names that need it
-      .replace(/\bUsers\b/g, '"Users"')
-      .replace(/\bPayments\b/g, '"Payments"')
-      .replace(/\b(fullName|isAdmin|lastLogin|createdAt|updatedAt|resetToken|resetTokenExpiry|userId|paymentType|paymentMethod|receiptNumber|transactionId|titheDistribution|platformFee|customFields|targetGoal|isTemplate|endDate)\b/g, 
-        '"$1"'
-      );
-
-    // Convert ? placeholders to $1, $2, etc.
-    let paramCount = 0;
-    modifiedSql = modifiedSql.replace(/\?/g, () => `$${++paramCount}`);
-
-    // Log the transformed query for debugging
-    debugLog('PostgreSQL transformed query:', { 
-      original: sql,
-      modified: modifiedSql,
-      params: params 
-    });
-
-    return sequelize.query(modifiedSql, {
-      bind: params,
-      type: sequelize.QueryTypes.SELECT,
-      raw: true
-    });
+// Helper for sending standardized responses
+const sendResponse = (res, statusCode, success, data, message, errorDetails = null) => {
+  const responsePayload = { success, message };
+  if (data !== null && data !== undefined) {
+    responsePayload.data = data;
   }
-  
-  // Fall back to SQLite for development
-  return new Promise((resolve, reject) => {
-    const db = new sqlite3.Database(DB_PATH, (err) => {
-      if (err) {
-        debugLog('Error opening database:', err);
-        return reject(err);
-      }
+  if (errorDetails) {
+    responsePayload.error = errorDetails;
+  }
+  return res.status(statusCode).json(responsePayload);
+};
+
+// Helper to check for view-only admin (placeholder logic)
+// In a real app, this should check a 'role' field or a list of view-only admin IDs/usernames.
+const isViewOnlyAdmin = (user) => {
+  if (!user || !user.isAdmin) return false;
+  // Example: Check if username is admin3, admin4, or admin5
+  const viewOnlyUsernames = ['admin3', 'admin4', 'admin5'];
+  // Example: Check if ID is one of the view-only IDs (replace with actual IDs)
+  // const viewOnlyIds = [3, 4, 5]; // Replace with actual IDs from your DB after creation
+  // return viewOnlyUsernames.includes(user.username) || viewOnlyIds.includes(user.id);
+  return viewOnlyUsernames.includes(user.username);
+};
+
+// Log Action for Admin Activity
+async function logAdminActivity(actionType, targetId, initiatedBy, actionData = {}) {
+  try {
+    await prisma.adminAction.create({
+      data: {
+        actionType,
+        targetId: String(targetId), // Ensure targetId is a string
+        initiatedBy,
+        actionData,
+        status: 'COMPLETED', // Assuming actions here are completed immediately
+      },
     });
-    
-    debugLog(`Executing SQLite query: ${sql}`, { params });
-    
-    db.all(sql, params, (err, rows) => {
-      if (err) {
-        debugLog('SQLite query error:', err);
-        db.close();
-        return reject(err);
-      }
-      
-      debugLog(`SQLite query returned ${rows ? rows.length : 0} rows`);
-      resolve(rows);
-      
-      db.close((closeErr) => {
-        if (closeErr) debugLog('Error closing database:', closeErr);
-      });
-    });
-  });
+    debugLog(`Admin activity logged: ${actionType} for target ${targetId} by user ${initiatedBy}`);
+  } catch (error) {
+    debugLog(`Error logging admin activity for ${actionType} on ${targetId}:`, error.message);
+    // Do not let logging failure stop the main operation
+  }
 }
 
-// Add after other helper functions
-function normalizeBoolean(value) {
-  if (typeof value === 'boolean') return value;
-  if (value === 1 || value === '1' || value === 'true') return true;
-  if (value === 0 || value === '0' || value === 'false') return false;
-  return false;
-}
 
-function normalizeDate(value) {
-  if (!value) return null;
-  return new Date(value).toISOString();
-}
-
-// Login controller with extensive debugging
+// Login controller
 exports.login = async (req, res) => {
   debugLog('=== LOGIN ATTEMPT STARTED ===');
-  
   try {
-    // Check request body
-    debugLog('Request body received:', { 
-      username: req.body?.username || '[MISSING]',
-      hasPassword: req.body?.password ? 'Yes' : 'No' 
-    });
-    
-    // Log request body for debugging
-    try {
-      debugLog('Complete request body:', req.body);
-    } catch (bodyError) {
-      debugLog('Error logging request body:', bodyError);
-    }
-    
-    // Validate request
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        debugLog('Validation errors:', errors.array());
-        return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
-      }
-    } catch (validationError) {
-      debugLog('Error in validation:', validationError);
-      return res.status(400).json({ message: 'Error validating request' });
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      debugLog('Validation errors:', errors.array());
+      return sendResponse(res, 400, false, null, 'Validation failed', {
+        code: 'VALIDATION_ERROR',
+        details: errors.array().map(err => ({ field: err.path, message: err.msg })),
+      });
     }
 
-    // Extract credentials
-    const username = req.body?.username || '';
-    const password = req.body?.password || '';
-    
+    const { username, password } = req.body;
     if (!username || !password) {
-      debugLog('Missing credentials', { hasUsername: !!username, hasPassword: !!password });
-      return res.status(400).json({ message: 'Username and password are required' });
+      debugLog('Missing credentials');
+      return sendResponse(res, 400, false, null, 'Username and password are required', {
+        code: 'MISSING_CREDENTIALS',
+      });
     }
 
-    debugLog(`Looking up user: ${username}`);
-    
-    // Use direct SQLite for more reliable results
-    let user = null;
-    try {
-      const users = await querySqlite(
-        'SELECT * FROM Users WHERE username = ?',
-        [username]
-      );
-      
-      if (users && users.length > 0) {
-        user = users[0];
-        debugLog(`User found: ${user.username}, ID: ${user.id}`);
-      } else {
-        debugLog(`No user found with username: ${username}`);
-        return res.status(401).json({ message: 'Invalid username or password' });
-      }
-    } catch (queryError) {
-      debugLog('Error querying user:', queryError);
-      
-      // Try to get all users as a diagnostic
-      try {
-        const allUsers = await querySqlite('SELECT username FROM Users LIMIT 5');
-        debugLog('Sample of available users:', allUsers);
-      } catch (allError) {
-        debugLog('Error getting all users:', allError);
-      }
-      
-      return res.status(500).json({ message: 'Database error during authentication' });
-    }
-    
-    // Log user properties for debugging
-    try {
-      debugLog('User object properties:', Object.keys(user));
-    } catch (propsError) {
-      debugLog('Error getting user properties:', propsError);
-    }
+    debugLog(`Prisma: Looking up user: ${username}`);
+    const user = await prisma.user.findUnique({
+      where: { username: username },
+    });
 
-    // Verify password with extensive error handling
-    let isValidPassword = false;
-    try {
-      debugLog('Comparing password...');
-      // Check if we actually have a password hash
-      if (!user.password) {
-        debugLog('User has no password hash stored');
-        return res.status(401).json({ message: 'Account error - please contact admin' });
-      }
-      
-      // Log first few chars of password hash for debugging
-      const hashPreview = user.password.substring(0, 10) + '...';
-      debugLog(`Password hash preview: ${hashPreview}`);
-      
-      isValidPassword = await bcrypt.compare(password, user.password);
-      debugLog(`Password comparison result: ${isValidPassword}`);
-    } catch (passwordError) {
-      debugLog('Error comparing passwords:', passwordError);
-      return res.status(500).json({ message: 'Error verifying credentials' });
+    if (!user || !user.isActive) {
+      debugLog(`Prisma: No active user found or user is inactive: ${username}`);
+      return sendResponse(res, 401, false, null, 'Invalid username or password, or account inactive.', {
+        code: 'AUTH_FAILED_INACTIVE',
+      });
     }
-    
+    debugLog(`Prisma: User found: ${user.username}, ID: ${user.id}, isAdmin: ${user.isAdmin}, isActive: ${user.isActive}`);
+
+    const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
-      debugLog('Invalid password provided');
-      return res.status(401).json({ message: 'Invalid username or password' });
+      debugLog('Prisma: Invalid password provided');
+      return sendResponse(res, 401, false, null, 'Invalid username or password.', {
+        code: 'AUTH_FAILED_PASSWORD',
+      });
     }
 
-    // Update last login time
-    try {
-      debugLog('Updating last login time');
-      await querySqlite(
-        'UPDATE "Users" SET "lastLogin" = ?, "updatedAt" = ? WHERE id = ?',
-        [new Date().toISOString(), new Date().toISOString(), user.id]
-      );
-      debugLog('Last login time updated successfully');
-    } catch (updateError) {
-      // Non-fatal error - log but continue
-      debugLog('Error updating last login time:', updateError);
-    }
-
-    // Check if JWT_SECRET is set
-    if (!process.env.JWT_SECRET) {
-      debugLog('WARNING: JWT_SECRET is not set. Using fallback secret (insecure).');
-    }
-
-    // Create clean user object for token and response
-    let userObj = {};
-    try {
-      userObj = { ...user };
-      delete userObj.password;
-      delete userObj.resetToken;
-      delete userObj.resetTokenExpiry;
-      debugLog('Created clean user object for response');
-    } catch (objError) {
-      debugLog('Error creating clean user object:', objError);
-      // Create a minimal object to continue
-      const isAdminValue = typeof user.isAdmin === 'boolean' ? user.isAdmin : 
-                          (user.isAdmin === 1 || user.isAdmin === '1' || user.isAdmin === 'true');
-      userObj = {
-        id: user.id,
-        username: user.username,
-        isAdmin: isAdminValue
-      };
-    }
-
-    // Generate JWT token
-    let token = '';
-    try {
-      debugLog('Generating JWT token');
-      const isAdminValue = typeof user.isAdmin === 'boolean' ? user.isAdmin : 
-                          (user.isAdmin === 1 || user.isAdmin === '1' || user.isAdmin === 'true');
-      token = jwt.sign(
-        {
-          id: user.id,
-          username: user.username,
-          isAdmin: isAdminValue
-        },
-        process.env.JWT_SECRET || 'default-secret-key',
-        { expiresIn: '8h' }
-      );
-      debugLog('JWT token generated successfully');
-    } catch (tokenError) {
-      debugLog('Error generating token:', tokenError);
-      return res.status(500).json({ message: 'Error creating authentication token' });
-    }
-
-    debugLog('Login successful - sending response');
-    res.json({
-      message: 'Login successful',
-      user: userObj,
-      token
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastLogin: new Date() },
     });
-    
-    debugLog('=== LOGIN ATTEMPT COMPLETED SUCCESSFULLY ===');
+    debugLog('Prisma: Last login time updated successfully');
+
+    const userForToken = {
+      id: user.id,
+      username: user.username,
+      isAdmin: user.isAdmin, // Prisma schema defines this as Boolean
+      fullName: user.fullName,
+      phone: user.phone,
+      email: user.email
+    };
+
+    const token = jwt.sign(
+      userForToken,
+      process.env.JWT_SECRET || 'default-secret-key-for-tassiac-app',
+      { expiresIn: '8h' }
+    );
+    debugLog('Prisma: JWT token generated successfully');
+
+    const { password: _, resetToken: __, resetTokenExpiry: ___, ...userResponse } = user;
+    await logAdminActivity('USER_LOGIN', user.id, user.id, { ip: req.ip }); // Log user login as an "admin" action on their own account
+
+    return sendResponse(res, 200, true, { user: userResponse, token }, 'Login successful');
+
   } catch (error) {
-    debugLog('CRITICAL ERROR in login process:', error);
+    debugLog('CRITICAL ERROR in Prisma login process:', error.message);
     console.error(error);
-    res.status(500).json({ 
-      message: 'Server error during authentication',
-      error: process.env.NODE_ENV === 'production' ? undefined : error.message
+    return sendResponse(res, 500, false, null, 'Server error during authentication.', {
+      code: 'SERVER_ERROR',
+      details: process.env.NODE_ENV === 'production' ? 'An internal error occurred.' : error.message,
     });
+  } finally {
+    debugLog('=== LOGIN ATTEMPT FINISHED ===');
   }
 };
 
 // Register user (admin only)
 exports.registerUser = async (req, res) => {
+  debugLog('=== REGISTER USER ATTEMPT STARTED (ADMIN) ===');
   try {
+    if (isViewOnlyAdmin(req.user)) {
+        debugLog(`View-only admin ${req.user.username} (ID: ${req.user.id}) attempted to register user.`);
+        return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot register new users.", { code: 'FORBIDDEN_VIEW_ONLY' });
+    }
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      debugLog('Validation errors:', errors.array());
+      return sendResponse(res, 400, false, null, 'Validation failed', {
+        code: 'VALIDATION_ERROR',
+        details: errors.array().map(err => ({ field: err.path, message: err.msg })),
+      });
     }
 
-    const { username, password, fullName, phone, email, isAdmin } = req.body;
+    const { username, password, fullName, phone, email, isAdmin = false } = req.body;
 
-    // Check if username already exists
-    let existingUsers;
-    
-    if (process.env.DATABASE_URL) {
-      // Fixed PostgreSQL query with proper parameter binding
-      existingUsers = await sequelize.query(
-        'SELECT id FROM "Users" WHERE username = :username',
-        { 
-          replacements: { username },
-          type: sequelize.QueryTypes.SELECT 
-        }
-      );
-    } else {
-      existingUsers = await querySqlite(
-        'SELECT id FROM Users WHERE username = ?',
-        [username]
-      );
-    }
-    
-    if (existingUsers && existingUsers.length > 0) {
-      return res.status(400).json({ message: 'Username already exists' });
-    }
-
-    // Validate password strength
-    if (password.length < 8) {
-      return res.status(400).json({ message: 'Password must be at least 8 characters long' });
-    }
-
-    // Hash password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    // Create the user
-    const now = new Date().toISOString();
-    let newUser;
-    
-    if (process.env.DATABASE_URL) {
-      // Fixed PostgreSQL insert with named parameters
-      const result = await sequelize.query(
-        `INSERT INTO "Users" (
-          username, 
-          password, 
-          "fullName", 
-          phone, 
-          email, 
-          "isAdmin", 
-          "createdAt", 
-          "updatedAt"
-        ) VALUES (
-          :username, 
-          :password, 
-          :fullName, 
-          :phone, 
-          :email, 
-          :isAdmin, 
-          :createdAt, 
-          :updatedAt
-        ) RETURNING id`,
-        { 
-          replacements: {
-            username,
-            password: hashedPassword,
-            fullName,
-            phone,
-            email: email || null,
-            isAdmin: isAdmin ? true : false,
-            createdAt: now,
-            updatedAt: now
-          },
-          type: sequelize.QueryTypes.INSERT 
-        }
-      );
-      
-      // Get the inserted user with named parameters
-      newUser = await sequelize.query(
-        `SELECT 
-          id, 
-          username, 
-          "fullName", 
-          phone, 
-          email, 
-          "isAdmin", 
-          "createdAt", 
-          "updatedAt" 
-        FROM "Users" 
-        WHERE username = :username`,
-        { 
-          replacements: { username },
-          type: sequelize.QueryTypes.SELECT 
-        }
-      );
-    } else {
-      // SQLite queries remain unchanged
-      await querySqlite(
-        'INSERT INTO Users (username, password, fullName, phone, email, isAdmin, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [username, hashedPassword, fullName, phone, email || null, isAdmin ? 1 : 0, now, now]
-      );
-      
-      newUser = await querySqlite(
-        'SELECT id, username, fullName, phone, email, isAdmin, createdAt, updatedAt FROM Users WHERE username = ?',
-        [username]
-      );
-    }
-
-    res.status(201).json({
-      message: 'User registered successfully',
-      user: newUser[0]
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { username: username },
+          { email: email ? email : undefined },
+          { phone: phone }
+        ],
+      },
     });
-  } catch (error) {
-    console.error('Registration error:', error);
-    res.status(500).json({ 
-      message: 'Server error',
-      error: process.env.NODE_ENV === 'production' ? undefined : error.message
-    });
-  }
-}
 
-// Get user profile with direct SQLite
-exports.getProfile = async (req, res) => {
-  try {
-    if (!req.user || !req.user.id) {
-      return res.status(401).json({ message: 'Authentication required' });
-    }
-    
-    // Get user without sensitive fields
-    const users = await querySqlite(
-      `SELECT id, username, "fullName", phone, email, "isAdmin", "lastLogin", "createdAt", "updatedAt" 
-       FROM "Users" 
-       WHERE id = ?`,
-      [req.user.id]
-    );
-    
-    if (!users || users.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
+    if (existingUser) {
+      let message = 'User already exists.';
+      if (existingUser.username === username) message = 'Username already exists.';
+      else if (email && existingUser.email === email) message = 'Email already registered.';
+      else if (existingUser.phone === phone) message = 'Phone number already registered.';
+      debugLog(`Registration failed: ${message}`, { username, email, phone });
+      return sendResponse(res, 400, false, null, message, { code: 'USER_EXISTS' });
     }
 
-    res.json({ user: users[0] });
-  } catch (error) {
-    console.error('Get profile error:', error);
-    res.status(500).json({ 
-      message: 'Server error', 
-      error: process.env.NODE_ENV === 'production' ? undefined : error.message
-    });
-  }
-};
-
-// Get all users (for admin) with direct SQLite
-exports.getUsers = async (req, res) => {
-  try {
-    let users;
-    
-    if (process.env.DATABASE_URL) {
-      // Ensure consistent double quotes for PostgreSQL identifiers
-      users = await sequelize.query(
-        `SELECT 
-          id, 
-          username, 
-          "fullName", 
-          phone, 
-          email, 
-          "isAdmin", 
-          "lastLogin", 
-          "createdAt", 
-          "updatedAt" 
-        FROM "Users"
-        ORDER BY "createdAt" DESC`,
-        { 
-          type: sequelize.QueryTypes.SELECT,
-          raw: true 
+    if (isAdmin) {
+        const adminCount = await prisma.user.count({ where: { isAdmin: true } });
+        if (adminCount >= 5) {
+            debugLog('Admin limit reached. Cannot create new admin.');
+            return sendResponse(res, 400, false, null, 'Maximum number of admin users (5) reached.', { code: 'ADMIN_LIMIT_REACHED' });
         }
-      );
-    } else {
-      // SQLite query - no quotes needed for column names
-      users = await querySqlite(
-        `SELECT 
-          id, 
-          username, 
-          fullName, 
-          phone, 
-          email, 
-          isAdmin, 
-          lastLogin, 
-          createdAt, 
-          updatedAt 
-        FROM Users 
-        ORDER BY createdAt DESC`
-      );
     }
 
-    res.json({ users });
-  } catch (error) {
-    console.error('Get users error:', error);
-    res.status(500).json({ 
-      message: 'Server error',
-      error: process.env.NODE_ENV === 'production' ? undefined : error.message
-    });
-  }
-};
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-// Update user (admin only) with direct SQLite
-exports.updateUser = async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { fullName, phone, email, isAdmin } = req.body;
-
-    // Input validation
-    if (!fullName || !phone) {
-      return res.status(400).json({ message: 'Full name and phone are required' });
-    }
-
-    // Check if user exists
-    const users = await querySqlite(
-      'SELECT id, "isAdmin" FROM "Users" WHERE id = ?',
-      [userId]
-    );
-    
-    if (!users || users.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    // Count total admins if we're changing admin status
-    if (users[0].isAdmin !== (isAdmin ? 1 : 0)) {
-      const adminCount = await querySqlite(
-        'SELECT COUNT(*) as count FROM "Users" WHERE "isAdmin" = 1'
-      );
-      
-      // If user is being promoted to admin, check admin limit (max 5)
-      if (isAdmin && users[0].isAdmin !== 1 && adminCount[0].count >= 5) {
-        return res.status(400).json({ message: 'Maximum of 5 admins allowed' });
-      }
-      
-      // If user is being demoted from admin, ensure at least one admin remains
-      if (!isAdmin && users[0].isAdmin === 1 && adminCount[0].count <= 1) {
-        return res.status(400).json({ message: 'Cannot remove the last admin' });
-      }
-    }
-
-    // Update the user
-    await querySqlite(
-      `UPDATE "Users" SET 
-        "fullName" = ?, 
-        phone = ?, 
-        email = ?, 
-        "isAdmin" = ?, 
-        "updatedAt" = ?
-      WHERE id = ?`,
-      [
+    const newUser = await prisma.user.create({
+      data: {
+        username,
+        password: hashedPassword,
         fullName,
         phone,
-        email || null,
-        isAdmin ? 1 : 0,
-        new Date().toISOString(),
-        userId
-      ]
-    );
-
-    // Get the updated user
-    const updatedUser = await querySqlite(
-      `SELECT id, username, "fullName", phone, email, "isAdmin", "lastLogin", "createdAt", "updatedAt" 
-       FROM "Users" 
-       WHERE id = ?`,
-      [userId]
-    );
-
-    res.json({
-      success: true,
-      message: 'User updated successfully',
-      user: updatedUser[0]
+        email: email || null,
+        isAdmin,
+        isActive: true,
+      },
     });
+
+    const { password: _, ...userResponse } = newUser;
+    await logAdminActivity('ADMIN_CREATE_USER', newUser.id, req.user.id, { createdUsername: newUser.username, roleSet: isAdmin ? 'Admin' : 'User' });
+    debugLog('User registered successfully by admin:', req.user.username, 'New user:', userResponse.username);
+    return sendResponse(res, 201, true, { user: userResponse }, 'User registered successfully');
+
   } catch (error) {
-    console.error('Update user error:', error);
-    res.status(500).json({ 
-      message: 'Server error',
-      error: process.env.NODE_ENV === 'production' ? undefined : error.message
+    debugLog('CRITICAL ERROR in registration process:', error.message);
+     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        let field = 'identifier';
+        if (error.meta && Array.isArray(error.meta.target)) field = error.meta.target.join(', ');
+        return sendResponse(res, 400, false, null, `The ${field} is already taken.`, { code: 'UNIQUE_CONSTRAINT_FAILED', field });
+    }
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error during registration.', {
+      code: 'SERVER_ERROR',
+      details: process.env.NODE_ENV === 'production' ? 'An internal error occurred.' : error.message,
     });
+  } finally {
+    debugLog('=== REGISTER USER ATTEMPT FINISHED (ADMIN) ===');
   }
 };
 
-// Delete user (admin only) with direct SQLite
-exports.deleteUser = async (req, res) => {
+// Get user profile
+exports.getProfile = async (req, res) => {
+  debugLog('=== GET PROFILE ATTEMPT STARTED ===');
   try {
-    const { userId } = req.params;
-
-    // Check if user exists
-    const users = await querySqlite(
-      'SELECT id, "isAdmin" FROM "Users" WHERE id = ?',
-      [userId]
-    );
-    
-    if (!users || users.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
+    if (!req.user || !req.user.id) {
+      debugLog('Authentication required for profile.');
+      return sendResponse(res, 401, false, null, 'Authentication required.', { code: 'UNAUTHENTICATED' });
     }
 
-    // Prevent deletion of admin users for security
-    if (users[0].isAdmin === 1) {
-      return res.status(403).json({ message: 'Admin users cannot be deleted' });
-    }
-
-    // Check if the user has any related records
-    const payments = await querySqlite(
-      'SELECT COUNT(*) as count FROM "Payments" WHERE userId = ?',
-      [userId]
-    );
-
-    const receipts = await querySqlite(
-      'SELECT COUNT(*) as count FROM "Receipts" WHERE userId = ?',
-      [userId]
-    );
-
-    // If user has related records, don't delete but mark as inactive
-    if (payments[0].count > 0 || receipts[0].count > 0) {
-      await querySqlite(
-        `UPDATE "Users" SET 
-          isActive = 0, 
-          "updatedAt" = ?
-        WHERE id = ?`,
-        [new Date().toISOString(), userId]
-      );
-
-      return res.json({
-        success: true,
-        message: 'User has been deactivated due to existing records'
-      });
-    }
-
-    // Delete the user if no related records
-    await querySqlite(
-      'DELETE FROM "Users" WHERE id = ?',
-      [userId]
-    );
-
-    res.json({
-      success: true,
-      message: 'User deleted successfully'
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        id: true, username: true, fullName: true, email: true, phone: true,
+        isAdmin: true, lastLogin: true, isActive: true, createdAt: true, updatedAt: true,
+      },
     });
+
+    if (!user) {
+      debugLog(`User not found for ID: ${req.user.id}`);
+      return sendResponse(res, 404, false, null, 'User not found.', { code: 'USER_NOT_FOUND' });
+    }
+
+    debugLog('Profile retrieved successfully:', user.username);
+    return sendResponse(res, 200, true, { user }, 'Profile retrieved successfully.');
+
   } catch (error) {
-    console.error('Delete user error:', error);
-    res.status(500).json({ 
-      message: 'Server error',
-      error: process.env.NODE_ENV === 'production' ? undefined : error.message
+    debugLog('CRITICAL ERROR in getProfile process:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error retrieving profile.', {
+      code: 'SERVER_ERROR',
+      details: process.env.NODE_ENV === 'production' ? 'An internal error occurred.' : error.message,
     });
+  } finally {
+    debugLog('=== GET PROFILE ATTEMPT FINISHED ===');
   }
 };
 
-exports.resetUserPassword = async (req, res) => {
+// Get all users (admin only)
+exports.getUsers = async (req, res) => {
+  debugLog('=== GET ALL USERS ATTEMPT STARTED (ADMIN) ===');
   try {
-    const { userId } = req.params;
-    const { oldPassword, newPassword } = req.body;
-    
-    // Validate input
-    if (!oldPassword || !newPassword) {
-      return res.status(400).json({ message: 'Old password and new password are required' });
+    const users = await prisma.user.findMany({
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true, username: true, fullName: true, email: true, phone: true,
+        isAdmin: true, lastLogin: true, isActive: true, createdAt: true, updatedAt: true,
+      },
+    });
+
+    debugLog(`Retrieved ${users.length} users.`);
+    return sendResponse(res, 200, true, { users }, 'Users retrieved successfully.');
+
+  } catch (error) {
+    debugLog('CRITICAL ERROR in getUsers process:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error retrieving users.', {
+      code: 'SERVER_ERROR',
+      details: process.env.NODE_ENV === 'production' ? 'An internal error occurred.' : error.message,
+    });
+  } finally {
+    debugLog('=== GET ALL USERS ATTEMPT FINISHED (ADMIN) ===');
+  }
+};
+
+// Update user (admin only)
+exports.updateUser = async (req, res) => {
+  debugLog('=== UPDATE USER ATTEMPT STARTED (ADMIN) ===');
+  try {
+    if (isViewOnlyAdmin(req.user)) {
+        debugLog(`View-only admin ${req.user.username} (ID: ${req.user.id}) attempted to update user.`);
+        return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot update users.", { code: 'FORBIDDEN_VIEW_ONLY' });
     }
 
-    // Validate password strength
-    if (newPassword.length < 8) {
-      return res.status(400).json({ message: 'New password must be at least 8 characters long' });
-    }
-
-    if (!/[A-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
-      return res.status(400).json({ 
-        message: 'New password must contain at least one uppercase letter and one number' 
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      debugLog('Validation errors:', errors.array());
+      return sendResponse(res, 400, false, null, 'Validation failed', {
+        code: 'VALIDATION_ERROR',
+        details: errors.array().map(err => ({ field: err.path, message: err.msg })),
       });
     }
-    
-    // Find the user
-    const users = await querySqlite(
-      'SELECT id, password FROM "Users" WHERE id = ?',
-      [userId]
-    );
-    
-    if (!users || users.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
+    const { userId } = req.params;
+    const { fullName, phone, email, isAdmin, isActive } = req.body;
+    const numericUserId = parseInt(userId);
+
+    if (isNaN(numericUserId)) {
+      return sendResponse(res, 400, false, null, 'Invalid User ID format.', { code: 'INVALID_USER_ID' });
     }
-    
-    const user = users[0];
-    
-    // Verify old password
-    const isValidPassword = await bcrypt.compare(oldPassword, user.password);
-    if (!isValidPassword) {
-      return res.status(401).json({ message: 'Old password is incorrect' });
+
+    const userToUpdate = await prisma.user.findUnique({ where: { id: numericUserId } });
+
+    if (!userToUpdate) {
+      debugLog(`User not found for update: ID ${numericUserId}`);
+      return sendResponse(res, 404, false, null, 'User not found.', { code: 'USER_NOT_FOUND' });
     }
-    
-    // Hash new password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(newPassword, salt);
-    
-    // Update password
-    await querySqlite(
-      `UPDATE "Users" SET password = ?, "updatedAt" = ? WHERE id = ?`,
-      [hashedPassword, new Date().toISOString(), userId]
-    );
-    
-    // Optional: Log the activity (only if AdminAction table exists)
-    try {
-      // First check if AdminAction table exists
-      const tables = await querySqlite("SELECT name FROM sqlite_master WHERE type='table' AND name='AdminAction'");
-      
-      if (tables && tables.length > 0) {
-        await querySqlite(
-          `INSERT INTO "AdminAction" (actionType, targetId, actionData, initiatedBy, status, "createdAt", "updatedAt") 
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [
-            'RESET_PASSWORD',
-            userId,
-            JSON.stringify({ userId }),
-            req.user.id,
-            'COMPLETED',
-            new Date().toISOString(),
-            new Date().toISOString()
-          ]
-        );
+
+    if (typeof isAdmin === 'boolean' && userToUpdate.isAdmin !== isAdmin) {
+      const adminCount = await prisma.user.count({ where: { isAdmin: true, isActive: true } }); // Count only active admins
+      if (isAdmin && adminCount >= 5) {
+        debugLog('Admin limit reached. Cannot promote user.');
+        return sendResponse(res, 400, false, null, 'Maximum number of admin users (5) reached.', { code: 'ADMIN_LIMIT_REACHED' });
       }
-    } catch (logError) {
-      console.error('Error logging admin action:', logError);
-      // Continue even if logging fails
+      if (!isAdmin && userToUpdate.isAdmin && adminCount <= 1) {
+         if (userToUpdate.id === req.user.id) {
+            debugLog('Attempt to demote self as last admin.');
+            return sendResponse(res, 400, false, null, 'You cannot demote yourself as the last admin.', { code: 'CANNOT_SELF_DEMOTE_LAST_ADMIN' });
+        }
+        debugLog('Cannot remove the last active admin.');
+        return sendResponse(res, 400, false, null, 'Cannot remove the last active admin user.', { code: 'CANNOT_DEMOTE_LAST_ADMIN' });
+      }
     }
-    
-    res.json({
-      success: true,
-      message: 'Password reset successfully'
+
+    if (userToUpdate.id === req.user.id) {
+        if (typeof isAdmin === 'boolean' && !isAdmin && userToUpdate.isAdmin) {
+            const adminCount = await prisma.user.count({ where: { isAdmin: true, isActive: true } });
+            if (adminCount <= 1) {
+                 debugLog('Attempt to self-demote as last admin.');
+                 return sendResponse(res, 400, false, null, 'You cannot demote yourself as the last admin.', { code: 'CANNOT_SELF_DEMOTE_LAST_ADMIN' });
+            }
+        }
+        if (typeof isActive === 'boolean' && !isActive) {
+            debugLog('Attempt to self-deactivate.');
+            return sendResponse(res, 400, false, null, 'You cannot deactivate your own account.', { code: 'CANNOT_SELF_DEACTIVATE' });
+        }
+    }
+
+    const updateData = {
+        fullName: fullName !== undefined ? fullName : userToUpdate.fullName,
+        phone: phone !== undefined ? phone : userToUpdate.phone,
+        email: email !== undefined ? (email || null) : userToUpdate.email,
+        isAdmin: typeof isAdmin === 'boolean' ? isAdmin : userToUpdate.isAdmin,
+        isActive: typeof isActive === 'boolean' ? isActive : userToUpdate.isActive,
+    };
+
+    const updatedUser = await prisma.user.update({
+      where: { id: numericUserId },
+      data: updateData,
     });
+
+    const { password: _, ...userResponse } = updatedUser;
+    await logAdminActivity('ADMIN_UPDATE_USER', updatedUser.id, req.user.id, { updatedFields: Object.keys(updateData) });
+    debugLog('User updated successfully by admin:', req.user.username, 'Updated user:', userResponse.username);
+    return sendResponse(res, 200, true, { user: userResponse }, 'User updated successfully.');
+
   } catch (error) {
-    console.error('Reset password error:', error);
-    res.status(500).json({ 
-      message: 'Server error',
-      error: process.env.NODE_ENV === 'production' ? undefined : error.message
+    debugLog('CRITICAL ERROR in updateUser process:', error.message);
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        let field = 'identifier';
+        if (error.meta && Array.isArray(error.meta.target)) field = error.meta.target.join(', ');
+        return sendResponse(res, 400, false, null, `The ${field} is already taken by another user.`, { code: 'UNIQUE_CONSTRAINT_FAILED', field });
+    }
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error updating user.', {
+      code: 'SERVER_ERROR',
+      details: process.env.NODE_ENV === 'production' ? 'An internal error occurred.' : error.message,
     });
+  } finally {
+    debugLog('=== UPDATE USER ATTEMPT FINISHED (ADMIN) ===');
   }
 };
 
-// Change password with direct SQLite
+// Delete user (admin only) - Soft delete
+exports.deleteUser = async (req, res) => {
+  debugLog('=== DELETE USER ATTEMPT STARTED (ADMIN) ===');
+  try {
+    if (isViewOnlyAdmin(req.user)) {
+        debugLog(`View-only admin ${req.user.username} (ID: ${req.user.id}) attempted to delete user.`);
+        return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot delete users.", { code: 'FORBIDDEN_VIEW_ONLY' });
+    }
+
+    const { userId } = req.params;
+    const numericUserId = parseInt(userId);
+
+    if (isNaN(numericUserId)) {
+      return sendResponse(res, 400, false, null, 'Invalid User ID format.', { code: 'INVALID_USER_ID' });
+    }
+
+    const userToDelete = await prisma.user.findUnique({ where: { id: numericUserId } });
+
+    if (!userToDelete) {
+      debugLog(`User not found for deletion: ID ${numericUserId}`);
+      return sendResponse(res, 404, false, null, 'User not found.', { code: 'USER_NOT_FOUND' });
+    }
+
+    if (userToDelete.id === req.user.id) {
+        debugLog('Attempt to delete self.');
+        return sendResponse(res, 400, false, null, 'You cannot delete/deactivate your own account.', { code: 'CANNOT_DELETE_SELF' });
+    }
+    
+    if (userToDelete.isAdmin) {
+      const adminCount = await prisma.user.count({ where: { isAdmin: true, isActive: true } });
+      if (adminCount <= 1) {
+        debugLog('Attempt to delete the last active admin.');
+        return sendResponse(res, 400, false, null, 'Cannot delete or deactivate the last active admin user.', { code: 'CANNOT_DELETE_LAST_ADMIN' });
+      }
+    }
+
+    // Soft delete
+    const deactivatedUser = await prisma.user.update({
+      where: { id: numericUserId },
+      data: { 
+        isActive: false,
+        // To preserve uniqueness if user wants to re-register later with same username/email/phone
+        // we append a timestamp to make them unique.
+        // Alternatively, set them to NULL if your schema allows and you have a different re-registration policy.
+        username: `${userToDelete.username}_deleted_${Date.now()}`,
+        email: userToDelete.email ? `${userToDelete.email}_deleted_${Date.now()}` : null,
+        phone: `${userToDelete.phone}_deleted_${Date.now()}`
+      },
+    });
+
+    await logAdminActivity('ADMIN_DEACTIVATE_USER', deactivatedUser.id, req.user.id, { deactivatedUsername: userToDelete.username });
+    debugLog(`User deactivated by admin ${req.user.username}: User ${userToDelete.username}`);
+    return sendResponse(res, 200, true, { userId: numericUserId, status: 'deactivated' }, 'User deactivated successfully.');
+
+  } catch (error) {
+    debugLog('CRITICAL ERROR in deleteUser process:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error deactivating user.', {
+      code: 'SERVER_ERROR',
+      details: process.env.NODE_ENV === 'production' ? 'An internal error occurred.' : error.message,
+    });
+  } finally {
+    debugLog('=== DELETE USER ATTEMPT FINISHED (ADMIN) ===');
+  }
+};
+
+// Reset user password by Admin (sets a new password directly)
+exports.resetUserPassword = async (req, res) => {
+  debugLog('=== ADMIN RESET USER PASSWORD ATTEMPT STARTED ===');
+  try {
+    if (isViewOnlyAdmin(req.user)) {
+        debugLog(`View-only admin ${req.user.username} (ID: ${req.user.id}) attempted to reset password.`);
+        return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot reset passwords.", { code: 'FORBIDDEN_VIEW_ONLY' });
+    }
+    const errors = validationResult(req); // Assuming validation rules for newPassword are in authRoutes.js
+    if (!errors.isEmpty()) {
+      debugLog('Validation errors on password reset:', errors.array());
+      return sendResponse(res, 400, false, null, 'Validation failed', {
+        code: 'VALIDATION_ERROR',
+        details: errors.array().map(err => ({ field: err.path, message: err.msg })),
+      });
+    }
+
+    const { userId } = req.params;
+    const { newPassword } = req.body;
+    const numericUserId = parseInt(userId);
+
+    if (isNaN(numericUserId)) {
+      return sendResponse(res, 400, false, null, 'Invalid User ID format.', { code: 'INVALID_USER_ID' });
+    }
+
+    if (!newPassword) {
+      debugLog('New password not provided for admin reset.');
+      return sendResponse(res, 400, false, null, 'New password is required.', { code: 'NEW_PASSWORD_REQUIRED' });
+    }
+
+    const userToReset = await prisma.user.findUnique({ where: { id: numericUserId } });
+    if (!userToReset) {
+      debugLog(`User not found for password reset: ID ${numericUserId}`);
+      return sendResponse(res, 404, false, null, 'User not found.', { code: 'USER_NOT_FOUND' });
+    }
+    
+    // Prevent admin from resetting their own password through this admin-specific route
+    // They should use the regular 'change password' flow.
+    if (numericUserId === req.user.id) {
+        debugLog('Admin attempted to reset their own password via admin reset route.');
+        return sendResponse(res, 400, false, null, "Admins should use the 'Change Password' feature for their own account.", { code: 'ADMIN_SELF_RESET_NOT_ALLOWED'});
+    }
+
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await prisma.user.update({
+      where: { id: numericUserId },
+      data: { password: hashedPassword, updatedAt: new Date(), resetToken: null, resetTokenExpiry: null },
+    });
+
+    await logAdminActivity('ADMIN_RESET_USER_PASSWORD', userToReset.id, req.user.id, { targetUsername: userToReset.username });
+    debugLog(`Password reset by admin ${req.user.username} for user: ${userToReset.username}`);
+    return sendResponse(res, 200, true, null, 'User password reset successfully by admin.');
+
+  } catch (error) {
+    debugLog('CRITICAL ERROR in admin resetUserPassword process:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error resetting user password.', {
+      code: 'SERVER_ERROR',
+      details: process.env.NODE_ENV === 'production' ? 'An internal error occurred.' : error.message,
+    });
+  } finally {
+    debugLog('=== ADMIN RESET USER PASSWORD ATTEMPT FINISHED ===');
+  }
+};
+
+// Change own password (for logged-in user)
 exports.changePassword = async (req, res) => {
+  debugLog('=== CHANGE OWN PASSWORD ATTEMPT STARTED ===');
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      debugLog('Validation errors on change password:', errors.array());
+      return sendResponse(res, 400, false, null, 'Validation failed', {
+        code: 'VALIDATION_ERROR',
+        details: errors.array().map(err => ({ field: err.path, message: err.msg })),
+      });
     }
 
     const { currentPassword, newPassword } = req.body;
-    
-    if (!req.user || !req.user.id) {
-      return res.status(401).json({ message: 'Authentication required' });
+    const userId = req.user.id;
+
+    if (!userId) {
+      debugLog('User ID not found in token for password change.');
+      return sendResponse(res, 401, false, null, 'Authentication error.', { code: 'UNAUTHENTICATED' });
     }
-    
-    // Find the user
-    const users = await querySqlite(
-      `SELECT id, password FROM "Users" WHERE id = ?`,
-      [req.user.id]
-    );
-    
-    if (!users || users.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user) {
+      debugLog(`User not found for password change: ID ${userId}`);
+      return sendResponse(res, 404, false, null, 'User not found.', { code: 'USER_NOT_FOUND' });
     }
-    
-    const user = users[0];
-    
-    // Verify current password
+
     const isValidPassword = await bcrypt.compare(currentPassword, user.password);
     if (!isValidPassword) {
-      return res.status(401).json({ message: 'Current password is incorrect' });
+      debugLog('Current password incorrect for password change.');
+      return sendResponse(res, 401, false, null, 'Current password is incorrect.', { code: 'AUTH_FAILED_PASSWORD' });
     }
-    
-    // Validate new password strength
-    if (newPassword.length < 8) {
-      return res.status(400).json({ message: 'New password must be at least 8 characters long' });
-    }
-    
-    // Hash new password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(newPassword, salt);
-    
-    // Update password
-    await querySqlite(
-      `UPDATE "Users" SET password = ?, "updatedAt" = ? WHERE id = ?`,
-      [hashedPassword, new Date().toISOString(), req.user.id]
-    );
-    
-    res.json({
-      success: true,
-      message: 'Password changed successfully'
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await prisma.user.update({
+      where: { id: userId },
+      data: { password: hashedPassword, updatedAt: new Date() },
     });
+    
+    await logAdminActivity('USER_CHANGE_OWN_PASSWORD', userId, userId);
+    debugLog(`Password changed successfully for user: ${user.username}`);
+    return sendResponse(res, 200, true, null, 'Password changed successfully.');
+
   } catch (error) {
-    console.error('Change password error:', error);
-    res.status(500).json({ 
-      message: 'Server error',
-      error: process.env.NODE_ENV === 'production' ? undefined : error.message
+    debugLog('CRITICAL ERROR in changePassword process:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error changing password.', {
+      code: 'SERVER_ERROR',
+      details: process.env.NODE_ENV === 'production' ? 'An internal error occurred.' : error.message,
     });
+  } finally {
+    debugLog('=== CHANGE OWN PASSWORD ATTEMPT FINISHED ===');
   }
 };
-
-// DO NOT CHANGE THIS EXPORT. Export the entire exports object instead of individual functions
-module.exports = exports;

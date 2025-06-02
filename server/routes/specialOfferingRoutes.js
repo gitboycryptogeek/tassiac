@@ -1,79 +1,119 @@
 // server/routes/specialOfferingRoutes.js
 const express = require('express');
-const { body, query } = require('express-validator');
-const { authenticateJWT, isAdmin } = require('../middlewares/auth');
-const specialOfferingController = require('../controllers/specialOfferingController');
+const { body, param, query } = require('express-validator');
+const { authenticateJWT, isAdmin } = require('../middlewares/auth.js');
+const specialOfferingController = require('../controllers/specialOfferingController.js');
 
 const router = express.Router();
 
-// Get all special offerings (does not require auth)
-router.get('/', specialOfferingController.getAllSpecialOfferings);
-
-// Get a specific special offering by type
-router.get('/:offeringType', specialOfferingController.getSpecialOfferingByType);
-
-// Get progress for a special offering
-router.get('/:offeringType/progress', specialOfferingController.getSpecialOfferingProgress);
-
-// Create a special offering (admin only)
+// Create a special offering (Admin only, excluding view-only admins)
 router.post(
   '/',
   authenticateJWT,
-  isAdmin,
+  isAdmin, // General admin check
   [
-    body('offeringType').isString().withMessage('Valid offering type is required'),
-    body('name').isString().withMessage('Name is required'),
-    body('description').isString().withMessage('Description is required'),
-    body('startDate').isISO8601().withMessage('Valid start date is required'),
-    body('endDate').optional().isISO8601().withMessage('Valid end date is required'),
-    body('targetGoal').optional().isFloat({ min: 0 }).withMessage('Target goal must be a positive number'),
-    body('customFields').optional(),
-    body('amount').optional().isFloat({ min: 0 }).withMessage('Amount must be a positive number')
+    body('offeringCode').isString().notEmpty().withMessage('Offering code is required.').trim()
+      .isLength({ min: 3, max: 50 }).withMessage('Offering code must be between 3 and 50 characters.')
+      .matches(/^[A-Z0-9_]+$/).withMessage('Offering code can only contain uppercase letters, numbers, and underscores.'),
+    body('name').isString().notEmpty().withMessage('Name is required.').trim()
+      .isLength({ min: 3, max: 100 }).withMessage('Name must be between 3 and 100 characters.'),
+    body('description').optional().isString().trim(),
+    body('targetAmount').optional({nullable: true}).isFloat({ min: 0 }).withMessage('Target amount must be a non-negative number.'),
+    body('startDate').optional({nullable: true}).isISO8601().toDate().withMessage('Valid start date is required if provided.'),
+    body('endDate').optional({ nullable: true, checkFalsy: true }).isISO8601().toDate().withMessage('Valid end date required if provided.')
+      .custom((value, { req }) => {
+        if (value && req.body.startDate && new Date(value) < new Date(req.body.startDate)) {
+          throw new Error('End date must be after start date.');
+        }
+        return true;
+      }),
+    body('isActive').optional().isBoolean().toBoolean(),
+    body('customFields').optional({nullable: true}).isObject().withMessage('Custom fields must be an object or null.'),
   ],
   specialOfferingController.createSpecialOffering
 );
 
-// Update a special offering (admin only)
+// Get all special offerings (Publicly accessible, or add authenticateJWT if needed for logged-in users)
+router.get('/', [
+    query('activeOnly').optional().isBoolean().toBoolean(),
+    query('page').optional().isInt({ min: 1 }).toInt().default(1),
+    query('limit').optional().isInt({ min: 1, max: 100 }).toInt().default(10),
+    query('search').optional().isString().trim()
+  ],
+  specialOfferingController.getAllSpecialOfferings
+);
+
+// Get a specific special offering by ID or Code
+router.get(
+  '/:identifier',
+   [
+    param('identifier').notEmpty().withMessage('Offering identifier (ID or Code) is required.').trim()
+  ],
+  specialOfferingController.getSpecialOffering
+);
+
+// Update a special offering (Admin only, excluding view-only admins)
 router.put(
-  '/:offeringType',
+  '/:identifier',
   authenticateJWT,
   isAdmin,
   [
-    body('name').optional().isString().withMessage('Name must be a string'),
-    body('description').optional().isString().withMessage('Description must be a string'),
-    body('endDate').optional().isISO8601().withMessage('Valid end date is required'),
-    body('targetGoal').optional().isFloat({ min: 0 }).withMessage('Target goal must be a positive number'),
-    body('customFields').optional(),
-    body('isActive').optional().isBoolean().withMessage('isActive must be a boolean')
+    param('identifier').notEmpty().withMessage('Offering identifier (ID or Code) is required.').trim(),
+    body('name').optional().isString().notEmpty().withMessage('Name cannot be empty if provided.').trim()
+      .isLength({ min: 3, max: 100 }).withMessage('Name must be between 3 and 100 characters.'),
+    body('offeringCode').optional().isString().notEmpty().withMessage('Offering code cannot be empty if provided.').trim()
+      .isLength({ min: 3, max: 50 }).withMessage('Offering code must be between 3 and 50 characters.')
+      .matches(/^[A-Z0-9_]+$/).withMessage('Offering code can only contain uppercase letters, numbers, and underscores.'),
+    body('description').optional({nullable: true}).isString().trim(),
+    body('targetAmount').optional({nullable: true}).isFloat({ min: 0 }).withMessage('Target amount must be a non-negative number.'),
+    body('startDate').optional({nullable: true}).isISO8601().toDate().withMessage('Valid start date is required if provided.'),
+    body('endDate').optional({ nullable: true, checkFalsy: true }).isISO8601().toDate().withMessage('Valid end date required if provided.')
+     .custom((value, { req }) => {
+        if (value && req.body.startDate && new Date(value) < new Date(req.body.startDate)) {
+          throw new Error('End date must be after start date.');
+        }
+        return true;
+      }),
+    body('isActive').optional().isBoolean().toBoolean(),
+    body('customFields').optional({nullable: true}).isObject().withMessage('Custom fields must be an object or null.'),
   ],
   specialOfferingController.updateSpecialOffering
 );
 
-// Delete a special offering (admin only)
+// Delete a special offering (Admin only, excluding view-only admins)
 router.delete(
-  '/:offeringType',
+  '/:identifier',
   authenticateJWT,
   isAdmin,
+  [
+    param('identifier').notEmpty().withMessage('Offering identifier (ID or Code) is required.').trim()
+  ],
   specialOfferingController.deleteSpecialOffering
 );
 
-// Make a payment to a special offering (authenticated user)
-router.post(
-  '/:offeringType/payment',
-  authenticateJWT,
+// Get progress for a special offering
+router.get(
+  '/:identifier/progress',
   [
-    body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
-    body('description').optional().isString().withMessage('Description must be a string')
+    param('identifier').notEmpty().withMessage('Offering identifier (ID or Code) is required.').trim()
   ],
-  specialOfferingController.makePaymentToOffering
+  specialOfferingController.getSpecialOfferingProgress
 );
 
-// Cleanup duplicate templates (admin only)
+// Make a payment (contribution) to a specific special offering (Authenticated User)
 router.post(
-  '/admin/cleanup',
+  '/:identifier/contribution', // Changed from /payment to avoid conflict with main payment routes if base changes
   authenticateJWT,
-  isAdmin,
-  specialOfferingController.cleanupDuplicateTemplates
+  [
+    param('identifier').notEmpty().withMessage('Offering identifier (ID or Code) is required.').trim(),
+    body('amount').isFloat({ gt: 0 }).withMessage('Amount must be a positive number.'),
+    body('description').optional().isString().trim(),
+    body('paymentMethod').optional().isIn(['MPESA', 'MANUAL']).withMessage('Invalid payment method for this context. Admins use "MANUAL", users initiate "MPESA".')
+      .default('MPESA'), // Default to MPESA for user contributions
+    body('phoneNumber').optional().if(body('paymentMethod').equals('MPESA'))
+      .isMobilePhone('any', { strictMode: false }).withMessage('Valid phone number required for M-Pesa.')
+  ],
+  specialOfferingController.makePaymentToOffering
 );
 
 module.exports = router;

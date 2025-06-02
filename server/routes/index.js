@@ -1,27 +1,26 @@
 // server/routes/index.js
 const express = require('express');
-const authRoutes = require('./authRoutes');
-const paymentRoutes = require('./paymentRoutes');
-const receiptRoutes = require('./receiptRoutes');
-const contactRoutes = require('./contactRoutes');
-
-// Fix the path if needed - adjust this to match your actual file location
-const specialOfferingRoutes = require('./specialOfferingRoutes');
+const authRoutes = require('./authRoutes.js');
+const paymentRoutes = require('./paymentRoutes.js');
+const receiptRoutes = require('./receiptRoutes.js');
+const contactRoutes = require('./contactRoutes.js'); // This file
+const specialOfferingRoutes = require('./specialOfferingRoutes.js');
+const adminRoutes = require('./adminRoutes.js'); // Assuming you created this
 
 const router = express.Router();
 
-// API versioning
 router.use('/auth', authRoutes);
 router.use('/payment', paymentRoutes);
 router.use('/receipt', receiptRoutes);
-router.use('/contact', contactRoutes);
-router.use('/payment/special-offering', specialOfferingRoutes);
+router.use('/contact', contactRoutes); // Mounts all routes from contactRoutes.js under /api/contact
+router.use('/special-offerings', specialOfferingRoutes);
+router.use('/admin', adminRoutes); // For admin-specific dashboard/reporting
 
 // Base API route
 router.get('/', (req, res) => {
   res.json({
     message: 'TASSIAC API is running',
-    version: '1.0.0'
+    version: '1.2.0-prisma-contact',
   });
 });
 

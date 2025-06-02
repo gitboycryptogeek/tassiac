@@ -1,355 +1,505 @@
 // server/controllers/receiptController.js
+const { PrismaClient, Prisma } = require('@prisma/client');
 const fs = require('fs');
 const path = require('path');
-const PDFDocument = require('pdfkit');
-const { models } = require('../models');
+const PDFDocument = require('pdfkit'); // For PDF generation
+const { validationResult } = require('express-validator'); // If you add validation in routes
 
-const Receipt = models.Receipt;
-const Payment = models.Payment;
-const User = models.User;
+const prisma = new PrismaClient();
 
+// Setup debug log file
+const LOG_DIR = path.join(__dirname, '..', 'logs');
+if (!fs.existsSync(LOG_DIR)) {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+const LOG_FILE = path.join(LOG_DIR, 'receipt-controller-debug.log');
 
-const multer = require('multer');
-
-
-// Set up storage for uploaded files
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '..', 'public', 'uploads', 'receipts');
-    // Create directory if it doesn't exist
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
+function debugLog(message, data = null) {
+  const timestamp = new Date().toISOString();
+  let logMessage = `[${timestamp}] RECEIPT_CTRL: ${message}`;
+  if (data !== null) {
+    try {
+      const dataStr = JSON.stringify(data);
+      logMessage += ` | Data: ${dataStr}`;
+    } catch (err) {
+      logMessage += ` | Data: [Failed to stringify: ${err.message}]`;
     }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    // Generate unique filename with original extension
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, 'receipt-' + uniqueSuffix + ext);
   }
-});
+  console.log(logMessage);
+  try {
+    fs.appendFileSync(LOG_FILE, logMessage + '\n');
+  } catch (err) {
+    // console.error('Failed to write to debug log file:', err);
+  }
+  return logMessage;
+}
 
-// Filter for file types
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'];
-  if (allowedTypes.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error('Invalid file type. Only JPEG, PNG, and PDF are allowed.'), false);
+// Helper for sending standardized responses
+const sendResponse = (res, statusCode, success, data, message, errorDetails = null) => {
+  const responsePayload = { success, message };
+  if (data !== null && data !== undefined) {
+    responsePayload.data = data;
   }
+  if (errorDetails) {
+    responsePayload.error = errorDetails;
+  }
+  return res.status(statusCode).json(responsePayload);
 };
 
-const upload = multer({ 
-  storage: storage,
-  fileFilter: fileFilter,
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB max file size
+// Helper to check for view-only admin (ADAPT THIS LOGIC)
+const isViewOnlyAdmin = (user) => {
+  if (!user || !user.isAdmin) return false;
+  const viewOnlyUsernames = ['admin3', 'admin4', 'admin5']; // Example
+  return viewOnlyUsernames.includes(user.username);
+};
+
+// Log Admin Activity
+async function logAdminActivity(actionType, targetId, initiatedBy, actionData = {}) {
+  try {
+    await prisma.adminAction.create({
+      data: {
+        actionType,
+        targetId: String(targetId),
+        initiatedBy,
+        actionData,
+        status: 'COMPLETED',
+      },
+    });
+    debugLog(`Admin activity logged: ${actionType} for target ${targetId} by user ${initiatedBy}`);
+  } catch (error) {
+    debugLog(`Error logging admin activity for ${actionType} on ${targetId}:`, error.message);
   }
-});
+}
+
+// Helper to format date (consider moving to a shared util if used elsewhere)
+const formatDateForPdf = (dateString) => {
+  if (!dateString) return 'N/A';
+  try {
+    return new Date(dateString).toLocaleDateString('en-US', {
+      year: 'numeric', month: 'long', day: 'numeric',
+      hour: '2-digit', minute: '2-digit'
+    });
+  } catch (e) {
+    return dateString.toString();
+  }
+};
 
 // Get all receipts (admin only)
-const getAllReceipts = async (req, res) => {
+exports.getAllReceipts = async (req, res) => {
+  debugLog('Admin: Get All Receipts attempt started');
   try {
-    const { page = 1, limit = 20, startDate, endDate, userId } = req.query;
-    const offset = (page - 1) * limit;
-    
-    // Build filter conditions
+    const { page = 1, limit = 20, startDate, endDate, userId, search } = req.query;
+    const take = parseInt(limit);
+    const skip = (parseInt(page) - 1) * take;
+
     const whereConditions = {};
-    
-    if (startDate && endDate) {
-      whereConditions.receiptDate = {
-        [Op.between]: [new Date(startDate), new Date(endDate)]
-      };
-    }
-    
-    if (userId) {
-      whereConditions.userId = userId;
-    }
-    
-    // Get receipts with pagination
-    const receipts = await Receipt.findAndCountAll({
-      where: whereConditions,
-      include: [
-        { 
-          model: User,
-          attributes: ['id', 'username', 'fullName', 'phone'] 
-        },
-        {
-          model: Payment,
-          attributes: ['id', 'amount', 'paymentType', 'paymentMethod', 'description', 'status', 'isExpense']
-        },
-        {
-          model: User,
-          as: 'Generator',
-          attributes: ['id', 'username', 'fullName'],
-          required: false
+    if (startDate) whereConditions.receiptDate = { ...whereConditions.receiptDate, gte: new Date(startDate) };
+    if (endDate) whereConditions.receiptDate = { ...whereConditions.receiptDate, lte: new Date(new Date(endDate).setHours(23, 59, 59, 999)) };
+    if (userId) whereConditions.userId = parseInt(userId);
+
+    if (search) {
+      whereConditions.OR = [
+        { receiptNumber: { contains: search, mode: 'insensitive' } },
+        { user: { fullName: { contains: search, mode: 'insensitive' } } },
+        { user: { username: { contains: search, mode: 'insensitive' } } },
+        { payment: { description: { contains: search, mode: 'insensitive' } } }
+      ];
+       const searchAmount = parseFloat(search);
+        if (!isNaN(searchAmount)) {
+            whereConditions.OR.push({ payment: { amount: searchAmount } });
         }
-      ],
-      order: [['receiptDate', 'DESC']],
-      limit: parseInt(limit),
-      offset: parseInt(offset)
+    }
+
+    const receipts = await prisma.receipt.findMany({
+      where: whereConditions,
+      include: {
+        user: { select: { id: true, username: true, fullName: true, phone: true } },
+        payment: { select: { id: true, amount: true, paymentType: true, paymentMethod: true, description: true, status: true, isExpense: true } },
+        generator: { select: { id: true, username: true, fullName: true } }, // Admin who generated it
+      },
+      orderBy: { receiptDate: 'desc' },
+      skip,
+      take,
     });
-    
-    res.json({
-      total: receipts.count,
-      totalPages: Math.ceil(receipts.count / limit),
+
+    const totalReceipts = await prisma.receipt.count({ where: whereConditions });
+
+    debugLog(`Admin: Retrieved ${receipts.length} of ${totalReceipts} receipts.`);
+    return sendResponse(res, 200, true, {
+      receipts,
+      totalPages: Math.ceil(totalReceipts / take),
       currentPage: parseInt(page),
-      receipts: receipts.rows
-    });
+      totalReceipts,
+    }, 'Receipts retrieved successfully.');
+
   } catch (error) {
-    console.error('Get all receipts error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    debugLog('Admin: Error getting all receipts:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error fetching receipts.', { code: 'SERVER_ERROR', details: error.message });
   }
 };
 
-// Get user receipts
-const getUserReceipts = async (req, res) => {
+// Get receipts for a specific user (or the logged-in user)
+exports.getUserReceipts = async (req, res) => {
+  debugLog('Get User Receipts attempt started');
   try {
-    const userId = req.params.userId || req.user.id;
-    const { page = 1, limit = 10, startDate, endDate } = req.query;
-    const offset = (page - 1) * limit;
-    
-    // Build filter conditions
-    const whereConditions = { userId };
-    
-    if (startDate && endDate) {
-      whereConditions.receiptDate = {
-        [Op.between]: [new Date(startDate), new Date(endDate)]
-      };
+    const requestingUserId = req.user.id;
+    const targetUserIdParam = req.params.userId;
+    const userIdToFetch = targetUserIdParam ? parseInt(targetUserIdParam) : requestingUserId;
+
+    if (!req.user.isAdmin && requestingUserId !== userIdToFetch) {
+      debugLog(`Forbidden: User ${requestingUserId} trying to access receipts for ${userIdToFetch}`);
+      return sendResponse(res, 403, false, null, 'Forbidden. You can only access your own receipts.', { code: 'FORBIDDEN' });
     }
+
+    const { page = 1, limit = 10, startDate, endDate, search } = req.query;
+    const take = parseInt(limit);
+    const skip = (parseInt(page) - 1) * take;
+
+    const whereConditions = { userId: userIdToFetch };
+    if (startDate) whereConditions.receiptDate = { ...whereConditions.receiptDate, gte: new Date(startDate) };
+    if (endDate) whereConditions.receiptDate = { ...whereConditions.receiptDate, lte: new Date(new Date(endDate).setHours(23, 59, 59, 999)) };
     
-    // Get user's receipts with pagination
-    const receipts = await Receipt.findAndCountAll({
-      where: whereConditions,
-      include: [
-        {
-          model: Payment,
-          attributes: ['id', 'amount', 'paymentType', 'paymentMethod', 'description', 'status']
+    if (search) {
+      whereConditions.OR = [
+        { receiptNumber: { contains: search, mode: 'insensitive' } },
+        { payment: { description: { contains: search, mode: 'insensitive' } } },
+      ];
+      const searchAmount = parseFloat(search);
+        if (!isNaN(searchAmount)) {
+            whereConditions.OR.push({ payment: { amount: searchAmount } });
         }
-      ],
-      order: [['receiptDate', 'DESC']],
-      limit: parseInt(limit),
-      offset: parseInt(offset)
+    }
+
+
+    const receipts = await prisma.receipt.findMany({
+      where: whereConditions,
+      include: {
+        payment: { select: { id: true, amount: true, paymentType: true, paymentMethod: true, description: true, status: true, paymentDate: true } },
+      },
+      orderBy: { receiptDate: 'desc' },
+      skip,
+      take,
     });
-    
-    res.json({
-      total: receipts.count,
-      totalPages: Math.ceil(receipts.count / limit),
+
+    const totalReceipts = await prisma.receipt.count({ where: whereConditions });
+
+    debugLog(`Retrieved ${receipts.length} receipts for user ${userIdToFetch}.`);
+    return sendResponse(res, 200, true, {
+      receipts,
+      totalPages: Math.ceil(totalReceipts / take),
       currentPage: parseInt(page),
-      receipts: receipts.rows
-    });
+      totalReceipts,
+    }, 'User receipts retrieved successfully.');
+
   } catch (error) {
-    console.error('Get user receipts error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    debugLog('Error getting user receipts:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error fetching user receipts.', { code: 'SERVER_ERROR', details: error.message });
   }
 };
 
 // Get receipt by ID
-const getReceiptById = async (req, res) => {
+exports.getReceiptById = async (req, res) => {
+  debugLog('Get Receipt By ID attempt started');
   try {
     const { receiptId } = req.params;
-    
-    const receipt = await Receipt.findByPk(receiptId, {
-      include: [
-        { 
-          model: User,
-          attributes: ['id', 'username', 'fullName', 'phone', 'email'] 
+    const numericReceiptId = parseInt(receiptId);
+
+    if (isNaN(numericReceiptId)) {
+      return sendResponse(res, 400, false, null, 'Invalid Receipt ID format.', { code: 'INVALID_RECEIPT_ID' });
+    }
+
+    const receipt = await prisma.receipt.findUnique({
+      where: { id: numericReceiptId },
+      include: {
+        user: { select: { id: true, username: true, fullName: true, phone: true, email: true } },
+        payment: {
+          select: {
+            id: true, amount: true, paymentType: true, paymentMethod: true,
+            description: true, status: true, paymentDate: true, isExpense: true,
+            titheDistributionSDA: true, // Include SDA tithe distribution
+            specialOffering: { select: { name: true, offeringCode: true } } // If it's for a special offering
+          }
         },
-        {
-          model: Payment,
-          attributes: ['id', 'amount', 'paymentType', 'paymentMethod', 'description', 'status', 'paymentDate', 'isExpense']
-        }
-      ]
+        generator: { select: { id: true, username: true, fullName: true } },
+      },
     });
-    
+
     if (!receipt) {
-      return res.status(404).json({ message: 'Receipt not found' });
+      debugLog(`Receipt not found: ID ${numericReceiptId}`);
+      return sendResponse(res, 404, false, null, 'Receipt not found.', { code: 'RECEIPT_NOT_FOUND' });
     }
-    
-    // Check if the user is authorized to view this receipt
+
     if (!req.user.isAdmin && receipt.userId !== req.user.id) {
-      return res.status(403).json({ message: 'You are not authorized to view this receipt' });
+      debugLog(`Forbidden: User ${req.user.id} trying to access receipt ${numericReceiptId} for user ${receipt.userId}`);
+      return sendResponse(res, 403, false, null, 'Forbidden. You are not authorized to view this receipt.', { code: 'FORBIDDEN' });
     }
-    
-    res.json({ receipt });
+
+    debugLog(`Receipt ${numericReceiptId} retrieved successfully.`);
+    return sendResponse(res, 200, true, { receipt }, 'Receipt retrieved successfully.');
+
   } catch (error) {
-    console.error('Get receipt error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    debugLog('Error getting receipt by ID:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error retrieving receipt.', { code: 'SERVER_ERROR', details: error.message });
   }
 };
 
 // Generate PDF receipt
-const generatePdfReceipt = async (req, res) => {
+exports.generatePdfReceipt = async (req, res) => {
+  const { receiptId } = req.params;
+  debugLog(`Generate PDF Receipt attempt for ID: ${receiptId}`);
   try {
-    const { receiptId } = req.params;
-    
-    const receipt = await Receipt.findByPk(receiptId, {
-      include: [
-        { 
-          model: User,
-          attributes: ['id', 'fullName', 'phone', 'email'] 
+    const numericReceiptId = parseInt(receiptId);
+    if (isNaN(numericReceiptId)) {
+      return sendResponse(res, 400, false, null, 'Invalid Receipt ID format.', { code: 'INVALID_RECEIPT_ID' });
+    }
+
+    const receipt = await prisma.receipt.findUnique({
+      where: { id: numericReceiptId },
+      include: {
+        user: { select: { fullName: true, phone: true, email: true } },
+        payment: {
+          select: {
+            amount: true, paymentType: true, paymentMethod: true,
+            description: true, paymentDate: true, isExpense: true,
+            titheDistributionSDA: true,
+            specialOffering: { select: { name: true, offeringCode: true } }
+          }
         },
-        {
-          model: Payment,
-          attributes: ['id', 'amount', 'paymentType', 'paymentMethod', 'description', 'paymentDate']
-        }
-      ]
+      },
     });
-    
+
     if (!receipt) {
-      return res.status(404).json({ message: 'Receipt not found' });
+      debugLog(`Receipt not found for PDF generation: ID ${numericReceiptId}`);
+      return sendResponse(res, 404, false, null, 'Receipt not found.', { code: 'RECEIPT_NOT_FOUND' });
     }
-    
-    // Check if the user is authorized to download this receipt
+
     if (!req.user.isAdmin && receipt.userId !== req.user.id) {
-      return res.status(403).json({ message: 'You are not authorized to download this receipt' });
+      debugLog(`Forbidden PDF generation: User ${req.user.id} for receipt ${numericReceiptId}`);
+      return sendResponse(res, 403, false, null, 'Forbidden to generate this receipt.', { code: 'FORBIDDEN' });
     }
-    
-    // Create directory for receipts if it doesn't exist
+
     const receiptDir = path.join(__dirname, '..', 'public', 'receipts');
     if (!fs.existsSync(receiptDir)) {
       fs.mkdirSync(receiptDir, { recursive: true });
     }
-    
-    // Create PDF filename
-    const filename = `receipt_${receipt.receiptNumber.replace(/\//g, '-')}.pdf`;
+
+    const filename = `receipt_${receipt.receiptNumber.replace(/\//g, '-')}_${Date.now()}.pdf`;
     const filepath = path.join(receiptDir, filename);
-    
-    // Create a PDF document
-    const doc = new PDFDocument({ margin: 50 });
-    
-    // Pipe the PDF into a file
-    const stream = fs.createWriteStream(filepath);
-    doc.pipe(stream);
-    
-    // Add content to the PDF
-    
-    // Header
-    doc.fontSize(20).text('TASSIAC CHURCH', { align: 'center' });
-    doc.fontSize(14).text('Official Receipt', { align: 'center' });
-    doc.moveDown();
-    
-    // Receipt details
-    doc.fontSize(12).text(`Receipt Number: ${receipt.receiptNumber}`);
-    doc.text(`Date: ${new Date(receipt.receiptDate).toLocaleDateString()}`);
-    doc.moveDown();
-    
-    // User details
-    doc.text(`Name: ${receipt.User.fullName}`);
-    doc.text(`Phone: ${receipt.User.phone}`);
-    if (receipt.User.email) {
-      doc.text(`Email: ${receipt.User.email}`);
+
+    const doc = new PDFDocument({ margin: 40, size: 'A4' });
+    const writeStream = fs.createWriteStream(filepath);
+    doc.pipe(writeStream);
+
+    // --- PDF Content ---
+    doc.fontSize(20).font('Helvetica-Bold').text('TASSIA CENTRAL SDA CHURCH', { align: 'center' });
+    doc.fontSize(10).text('P.O. Box 12345 - 00100, Nairobi, Kenya', { align: 'center' });
+    doc.text('Phone: +254 7XX XXX XXX | Email: info@tassiacsda.org', { align: 'center' });
+    doc.moveDown(1.5);
+
+    doc.fontSize(16).font('Helvetica-Bold').text('OFFICIAL RECEIPT', { align: 'center' });
+    doc.moveDown(1);
+
+    // Receipt Info Table
+    const receiptInfoTop = doc.y;
+    doc.fontSize(10).font('Helvetica-Bold');
+    doc.text('Receipt No:', 40, receiptInfoTop);
+    doc.text('Date Issued:', 40, receiptInfoTop + 15 );
+    doc.font('Helvetica');
+    doc.text(receipt.receiptNumber || 'N/A', 120, receiptInfoTop);
+    doc.text(formatDateForPdf(receipt.receiptDate), 120, receiptInfoTop + 15);
+
+    doc.font('Helvetica-Bold');
+    doc.text('Payment Date:', 300, receiptInfoTop);
+    doc.text('Payment ID:', 300, receiptInfoTop + 15);
+    doc.font('Helvetica');
+    doc.text(formatDateForPdf(receipt.payment.paymentDate), 380, receiptInfoTop);
+    doc.text(String(receipt.paymentId), 380, receiptInfoTop + 15);
+    doc.moveDown(2);
+
+    // Member Details
+    doc.font('Helvetica-Bold').fontSize(11).text('RECEIVED FROM:');
+    doc.font('Helvetica').fontSize(10);
+    doc.text(receipt.user.fullName || 'N/A');
+    if (receipt.user.phone) doc.text(`Phone: ${receipt.user.phone}`);
+    if (receipt.user.email) doc.text(`Email: ${receipt.user.email}`);
+    doc.moveDown(1.5);
+
+    // Payment Particulars
+    doc.font('Helvetica-Bold').fontSize(11).text('PARTICULARS:');
+    doc.font('Helvetica').fontSize(10);
+    const paymentAmount = receipt.payment.amount ? parseFloat(receipt.payment.amount.toString()) : 0;
+
+    let paymentTypeDisplay = receipt.payment.paymentType;
+    if (paymentTypeDisplay === 'SPECIAL_OFFERING_CONTRIBUTION' && receipt.payment.specialOffering) {
+        paymentTypeDisplay = `Special Offering: ${receipt.payment.specialOffering.name} (${receipt.payment.specialOffering.offeringCode})`;
+    } else if (paymentTypeDisplay === 'TITHE') {
+        paymentTypeDisplay = 'Tithe';
     }
-    doc.moveDown();
-    
-    // Payment details
-    doc.text(`Payment Type: ${receipt.Payment.paymentType}`);
-    doc.text(`Payment Method: ${receipt.Payment.paymentMethod}`);
-    doc.text(`Amount: ${receipt.Payment.amount}`);
-    if (receipt.Payment.description) {
-      doc.text(`Description: ${receipt.Payment.description}`);
-    }
-    doc.text(`Payment Date: ${new Date(receipt.Payment.paymentDate).toLocaleDateString()}`);
-    doc.moveDown();
-    
-    // Additional receipt data if available
-    if (receipt.receiptData && receipt.receiptData.transactionDetails) {
-      doc.text('Transaction Details:');
-      const txDetails = receipt.receiptData.transactionDetails;
-      Object.keys(txDetails).forEach(key => {
-        if (txDetails[key]) {
-          const formattedKey = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
-          doc.text(`${formattedKey}: ${txDetails[key]}`);
+
+
+    const particulars = [
+      { label: 'Payment Type', value: paymentTypeDisplay },
+      { label: 'Payment Method', value: receipt.payment.paymentMethod || 'N/A' },
+      { label: 'Description', value: receipt.payment.description || 'N/A' },
+      { label: 'Amount', value: `KES ${paymentAmount.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
+    ];
+
+    const tableTop = doc.y;
+    const itemX = 40;
+    const amountX = 450; // For right-aligning amount
+
+    particulars.forEach(item => {
+        doc.font('Helvetica').text(item.label, itemX, doc.y, { width: 380, continued: item.label !== 'Amount' });
+        if (item.label === 'Amount') {
+             doc.font('Helvetica-Bold').text(item.value, amountX, doc.y - 10, {width: 100, align: 'right'}); // y -10 because it was already moved down
+        } else {
+            doc.font('Helvetica').text(item.value);
+        }
+        doc.moveDown(0.3);
+    });
+    doc.moveDown(0.5);
+
+    // Tithe Distribution (if applicable)
+    if (receipt.payment.paymentType === 'TITHE' && receipt.payment.titheDistributionSDA) {
+      doc.font('Helvetica-Bold').fontSize(11).text('TITHE DISTRIBUTION DETAILS:');
+      doc.moveDown(0.5);
+      const sdaTithe = receipt.payment.titheDistributionSDA;
+      const sdaCategories = [
+        { key: 'campMeetingExpenses', label: 'Camp Meeting Expenses' },
+        { key: 'welfare', label: 'Welfare' },
+        { key: 'thanksgiving', label: 'Thanksgiving' },
+        { key: 'stationFund', label: 'Station Fund' },
+        { key: 'mediaMinistry', label: 'Media Ministry' },
+      ];
+      sdaCategories.forEach(cat => {
+        const amount = sdaTithe[cat.key] ? parseFloat(sdaTithe[cat.key].toString()) : 0;
+        if (amount > 0) {
+          doc.font('Helvetica').fontSize(10).text(cat.label, itemX + 10, doc.y, {width: 370, continued: true});
+          doc.font('Helvetica').fontSize(10).text(`KES ${amount.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, amountX, doc.y, {width:100, align: 'right'});
+          doc.moveDown(0.3);
         }
       });
-      doc.moveDown();
+      doc.moveDown(0.5);
     }
     
-    // Footer
-    doc.fontSize(10).text('Thank you for your contribution to TASSIAC Church.', { align: 'center' });
-    doc.text('This is an official receipt. Please keep it for your records.', { align: 'center' });
-    
-    // Add signature line
-    doc.moveDown(3);
-    doc.lineCap('butt')
-      .moveTo(50, doc.y)
-      .lineTo(200, doc.y)
-      .stroke();
-    doc.text('Authorized Signature', 75, doc.y + 5);
-    
-    // Finalize the PDF
+    // Line for total
+    const totalY = doc.y + 5;
+    doc.strokeColor('#aaaaaa').lineWidth(0.5).moveTo(40, totalY).lineTo(555, totalY).stroke();
+    doc.moveDown(0.5);
+
+    doc.font('Helvetica-Bold').fontSize(12);
+    doc.text('TOTAL AMOUNT RECEIVED:', itemX, doc.y);
+    doc.text(`KES ${paymentAmount.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, amountX, doc.y, {width: 100, align: 'right'});
+    doc.moveDown(2);
+
+
+    doc.fontSize(9).fillColor('#555555')
+       .text('This is a computer-generated receipt and does not require a physical signature if sent electronically.', 40, doc.y, {align: 'center'});
+    doc.text('Thank you for your faithful stewardship!', { align: 'center' });
+    doc.moveDown(2);
+
+    // Footer with church details again or a stamp area
+    const pageHeight = doc.page.height;
+    doc.fontSize(8).fillColor('#333333')
+       .text(`Tassia Central SDA Church | Generated: ${formatDateForPdf(new Date())}`, 40, pageHeight - 50, { align: 'left', lineBreak: false });
+    doc.text(`Receipt System v1.0`, pageHeight - 40, pageHeight - 50, { align: 'right' });
+
+
+    // --- End PDF Content ---
     doc.end();
-    
-    // Wait for the stream to finish
-    stream.on('finish', () => {
-      // Update the receipt with the PDF path
-      receipt.update({ pdfPath: `/receipts/${filename}` });
-      
-      // Send the file
-      res.download(filepath, filename, err => {
-        if (err) {
-          console.error('Error sending file:', err);
-          res.status(500).json({ message: 'Error sending receipt' });
-        }
+
+    writeStream.on('finish', async () => {
+      debugLog(`PDF generated successfully: ${filename}`);
+      await prisma.receipt.update({
+        where: { id: numericReceiptId },
+        data: { pdfPath: `/receipts/${filename}` }, // Relative path for serving
       });
+      if (!res.headersSent) {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        const readStream = fs.createReadStream(filepath);
+        readStream.pipe(res);
+
+        // Optional: Delete file after sending if not needed on server long-term
+        // readStream.on('end', () => fs.unlinkSync(filepath));
+        // readStream.on('error', (err) => {
+        //   debugLog('Error streaming PDF to response:', err.message);
+        //   if (!res.headersSent) res.status(500).send('Error sending PDF');
+        // });
+      }
     });
+    writeStream.on('error', (err) => {
+      debugLog('Error writing PDF to stream:', err.message);
+      if (!res.headersSent){
+        return sendResponse(res, 500, false, null, 'Failed to generate PDF.', { code: 'PDF_GENERATION_ERROR', details: err.message });
+      }
+    });
+
   } catch (error) {
-    console.error('Generate PDF receipt error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    debugLog('Error generating PDF receipt:', error.message);
+    console.error(error);
+    if (!res.headersSent) {
+        return sendResponse(res, 500, false, null, 'Server error generating PDF receipt.', { code: 'SERVER_ERROR', details: error.message });
+    }
   }
 };
+
+// Upload receipt attachment (Admin action for manual payments/expenses)
+// This assumes multer is configured on the route for 'attachment' field
 exports.uploadReceiptAttachment = async (req, res) => {
+  debugLog('Upload Receipt Attachment attempt started');
   try {
+    if (isViewOnlyAdmin(req.user)) {
+      debugLog(`View-only admin ${req.user.username} attempted to upload attachment.`);
+      if (req.file && req.file.path) fs.unlinkSync(req.file.path); // Clean up uploaded file
+      return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot upload attachments.", { code: 'FORBIDDEN_VIEW_ONLY' });
+    }
+
     const { receiptId } = req.params;
-    
-    // Find receipt
-    const receipt = await Receipt.findByPk(receiptId);
+    const numericReceiptId = parseInt(receiptId);
+
+    if (isNaN(numericReceiptId)) {
+      if (req.file && req.file.path) fs.unlinkSync(req.file.path);
+      return sendResponse(res, 400, false, null, 'Invalid Receipt ID format.', { code: 'INVALID_RECEIPT_ID' });
+    }
+
+    if (!req.file) {
+      return sendResponse(res, 400, false, null, 'No file uploaded.', { code: 'NO_FILE_UPLOADED' });
+    }
+
+    const receipt = await prisma.receipt.findUnique({ where: { id: numericReceiptId } });
     if (!receipt) {
-      return res.status(404).json({ message: 'Receipt not found' });
+      if (req.file && req.file.path) fs.unlinkSync(req.file.path);
+      return sendResponse(res, 404, false, null, 'Receipt not found.', { code: 'RECEIPT_NOT_FOUND' });
     }
-    
-    // Check if the user is authorized
-    if (!req.user.isAdmin && receipt.userId !== req.user.id) {
-      return res.status(403).json({ message: 'You are not authorized to update this receipt' });
-    }
-    
-    // Handle file upload (in route definition)
-    const uploadSingle = upload.single('attachment');
-    
-    uploadSingle(req, res, async (err) => {
-      if (err) {
-        return res.status(400).json({ message: err.message });
-      }
-      
-      if (!req.file) {
-        return res.status(400).json({ message: 'No file uploaded' });
-      }
-      
-      // Update receipt with attachment information
-      const attachmentPath = `/uploads/receipts/${req.file.filename}`;
-      await receipt.update({
-        attachmentPath,
-        attachmentType: req.file.mimetype
-      });
-      
-      res.json({
-        success: true,
-        message: 'Attachment uploaded successfully',
-        attachmentPath
-      });
+
+    // Construct relative path for storing in DB
+    const attachmentPath = `/uploads/receipts/${req.file.filename}`;
+
+    await prisma.receipt.update({
+      where: { id: numericReceiptId },
+      data: {
+        attachmentPath: attachmentPath,
+        // attachmentType: req.file.mimetype, // You might want to add this field to your Prisma schema
+      },
     });
+    
+    await logAdminActivity('UPLOAD_RECEIPT_ATTACHMENT', numericReceiptId, req.user.id, { filename: req.file.filename });
+    debugLog(`Attachment uploaded for receipt ${numericReceiptId}: ${attachmentPath}`);
+    return sendResponse(res, 200, true, { attachmentPath }, 'Attachment uploaded successfully.');
+
   } catch (error) {
-    console.error('Upload receipt attachment error:', error);
-    res.status(500).json({ 
-      message: 'Server error',
-      error: process.env.NODE_ENV === 'production' ? undefined : error.message
-    });
+    debugLog('Error uploading receipt attachment:', error.message);
+    if (req.file && req.file.path) { // Clean up temp file on error
+        try { fs.unlinkSync(req.file.path); } catch (e) { debugLog("Error cleaning up temp file", e.message);}
+    }
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error uploading attachment.', { code: 'SERVER_ERROR', details: error.message });
   }
 };
-module.exports = {
-  getAllReceipts,
-  getUserReceipts,
-  getReceiptById,
-  generatePdfReceipt
-};
+
+
+module.exports = exports;

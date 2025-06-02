@@ -12,9 +12,11 @@
     "release": "node server/update-schema.js"
   },
   "devDependencies": {
-    "autoprefixer": "^10.4.21"
+    "autoprefixer": "^10.4.21",
+    "prisma": "^6.8.2"
   },
   "dependencies": {
+    "@prisma/client": "^6.8.2",
     "africastalking": "^0.7.3",
     "axios": "^1.8.4",
     "bcrypt": "^5.1.1",

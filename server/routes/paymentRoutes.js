@@ -1,87 +1,214 @@
 // server/routes/paymentRoutes.js
 const express = require('express');
 const { body, query, param } = require('express-validator');
-const paymentController = require('../controllers/paymentController');
-const { authenticateJWT, isAdmin, isOwnResource } = require('../middlewares/auth');
-const { createAdminAction, verifyAdminApprovals } = require('../middlewares/multiAdmin');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+const paymentController = require('../controllers/paymentController.js');
+const { authenticateJWT, isAdmin, isOwnResource } = require('../middlewares/auth.js');
+// The multi-admin approval middleware might be used for sensitive operations like delete,
+// but for now, we'll keep it simple as per the current controller structure.
+// const { createAdminAction, verifyAdminApprovals } = require('../middlewares/multiAdmin');
 
 const router = express.Router();
 
-// Get all payments (admin only)
-router.get('/all', authenticateJWT, isAdmin, paymentController.getAllPayments);
+// Multer setup for expense receipt uploads
+const expenseUploadDir = path.join(__dirname, '..', 'public', 'uploads', 'expense_receipts');
+if (!fs.existsSync(expenseUploadDir)) {
+  fs.mkdirSync(expenseUploadDir, { recursive: true });
+}
 
-// Get user payments
+const expenseStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, expenseUploadDir);
+  },
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}-${file.originalname.replace(/\s+/g, '_')}`); // Replace spaces in filename
+  }
+});
+
+const expenseUpload = multer({
+  storage: expenseStorage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|pdf/;
+    const mimetype = allowedTypes.test(file.mimetype);
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    if (mimetype && extname) {
+      return cb(null, true);
+    }
+    cb(new Error('File upload only supports a subset of types (JPEG, PNG, PDF)'));
+  }
+});
+
+// --- Admin Routes ---
+
+// GET all payments (admin only) - with pagination and filtering
 router.get(
-  '/user/:userId?', 
-  authenticateJWT, 
-  isOwnResource, 
-  paymentController.getUserPayments
+    '/all',
+    authenticateJWT,
+    isAdmin,
+    [
+        query('page').optional().isInt({ min: 1 }).toInt(),
+        query('limit').optional().isInt({ min: 1, max: 100 }).toInt(),
+        query('startDate').optional().isISO8601().toDate(),
+        query('endDate').optional().isISO8601().toDate(),
+        query('paymentType').optional().isString().trim(),
+        query('userId').optional().isInt().toInt(),
+        query('department').optional().isString().trim(),
+        query('status').optional().isString().trim(),
+        query('search').optional().isString().trim(),
+    ],
+    paymentController.getAllPayments
 );
 
-// Get payment statistics (admin only)
-router.get('/stats', authenticateJWT, isAdmin, paymentController.getPaymentStats);
-
-// Get promoted payments
-router.get('/promoted', paymentController.getPromotedPayments);
-
-// Get special offerings
-router.get('/special-offerings', authenticateJWT, paymentController.getSpecialOfferings);
-
-// Initiate a payment
-router.post(
-  '/initiate',
-  authenticateJWT,
-  [
-    body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
-    body('paymentType').isIn(['TITHE', 'OFFERING', 'DONATION', 'OTHER']).withMessage('Invalid payment type'),
-    body('description').optional().isString().withMessage('Description must be a string'),
-    body('titheDistribution').optional().isObject().withMessage('Tithe distribution must be an object')
-  ],
-  paymentController.initiatePayment
+// GET payment statistics (admin only)
+router.get(
+    '/stats',
+    authenticateJWT,
+    isAdmin,
+    paymentController.getPaymentStats
 );
 
-// Add manual payment (admin only)
+// POST add manual payment or expense (admin only)
+// Middleware for expense receipt upload is conditional within the controller logic (or use separate routes)
+// For simplicity, we'll handle the file in the controller for now if `isExpense` is true.
+// A more robust way would be a dedicated `/expenses` route with `expenseUpload.single('receiptImage')` middleware.
+// Let's assume for now that addManualPayment will check `isExpense` and expect `req.file` if true,
+// so we apply the multer middleware here.
 router.post(
   '/manual',
   authenticateJWT,
   isAdmin,
+  expenseUpload.single('expenseReceiptImage'), // Middleware for file upload
   [
-    body('userId').isInt().withMessage('Valid user ID is required'),
-    body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
-    // Update this line to include 'SPECIAL' or allow custom special offering types
-    body('paymentType').custom(value => {
-      const standardTypes = ['TITHE', 'OFFERING', 'DONATION', 'EXPENSE', 'OTHER'];
-      return standardTypes.includes(value) || value.startsWith('SPECIAL_') || value === 'SPECIAL';
-    }).withMessage('Invalid payment type'),
-    body('description').optional().isString().withMessage('Description must be a string'),
-    body('isExpense').optional().isBoolean().withMessage('isExpense must be a boolean'),
-    body('department').optional().isString().withMessage('Department must be a string'),
-    body('paymentDate').optional().isISO8601().withMessage('Valid date is required'),
-    body('titheDistribution').optional().isObject().withMessage('Tithe distribution must be an object'),
-    body('isPromoted').optional().isBoolean().withMessage('isPromoted must be a boolean')
+    body('userId').isInt().withMessage('Valid User ID is required.'),
+    body('amount').isFloat({ gt: 0 }).withMessage('Amount must be a positive number.'),
+    body('paymentType').isString().notEmpty().withMessage('Payment type is required.')
+      .custom(value => {
+        const validTypes = ['TITHE', 'OFFERING', 'DONATION', 'EXPENSE', 'SPECIAL_OFFERING_CONTRIBUTION'];
+        if (!validTypes.includes(value)) {
+          throw new Error(`Invalid payment type. Must be one of: ${validTypes.join(', ')}`);
+        }
+        return true;
+      }),
+    body('description').optional().isString().trim(),
+    body('paymentDate').optional().isISO8601().toDate().withMessage('Valid payment date is required if provided.'),
+    body('paymentMethod').optional().isIn(['MANUAL', 'CASH', 'BANK_TRANSFER', 'CHEQUE']).default('MANUAL'),
+    
+    // Conditional validation for expenses
+    body('isExpense').optional().isBoolean().toBoolean(),
+    body('department').if(body('isExpense').equals(true)).notEmpty().withMessage('Department is required for expenses.'),
+    // `expenseReceiptUrl` will be derived from `req.file` if an image is uploaded.
+
+    // Conditional validation for tithes
+    body('titheDistributionSDA').if(body('paymentType').equals('TITHE')).isObject().withMessage('Tithe distribution data is required for tithe payments.')
+      .custom((value, { req }) => {
+        if (req.body.paymentType === 'TITHE') {
+          const requiredKeys = ["campMeetingExpenses", "welfare", "thanksgiving", "stationFund", "mediaMinistry"];
+          let sum = 0;
+          for (const key of requiredKeys) {
+            if (typeof value[key] !== 'number' || value[key] < 0) {
+              throw new Error(`Invalid or missing value for tithe category: ${key}. Must be a non-negative number.`);
+            }
+            sum += value[key];
+          }
+          // Ensure the sum matches the payment amount, allowing for minor floating point issues
+          // This validation is now more advisory in the controller, can be made stricter here too.
+          // const paymentAmount = parseFloat(req.body.amount);
+          // if (Math.abs(sum - paymentAmount) > 0.01) {
+          //   throw new Error(`Sum of tithe distribution (${sum}) must equal the payment amount (${paymentAmount}).`);
+          // }
+        }
+        return true;
+      }),
+
+    // Conditional validation for special offering contributions
+    body('specialOfferingId').if(body('paymentType').equals('SPECIAL_OFFERING_CONTRIBUTION')).isInt().withMessage('Special Offering ID is required for this payment type.'),
+    body('reference').optional().isString().trim(),
   ],
   paymentController.addManualPayment
 );
 
-// Delete payment (requires 3 admin approvals)
+// PUT update payment status (admin only)
+router.put(
+  '/:paymentId/status',
+  authenticateJWT,
+  isAdmin,
+  [
+    param('paymentId').isInt().withMessage('Valid Payment ID is required.'),
+    body('status').isString().notEmpty().isIn(['PENDING', 'COMPLETED', 'FAILED', 'CANCELLED', 'REFUNDED'])
+      .withMessage('Invalid status value.'),
+  ],
+  paymentController.updatePaymentStatus
+);
+
+// DELETE payment (admin only)
 router.delete(
   '/:paymentId',
   authenticateJWT,
   isAdmin,
-  createAdminAction,
   [
-    body('adminApprovals').isArray({ min: 3 }).withMessage('At least 3 admin approvals are required'),
-    body('adminApprovals.*.username').isString().withMessage('Admin username is required'),
-    body('adminApprovals.*.password').isString().withMessage('Admin password is required')
+    param('paymentId').isInt().withMessage('Valid Payment ID is required.'),
   ],
-  verifyAdminApprovals,
-  (req, res) => {
-    // This would be the actual delete logic after approvals are verified
-    res.json({ message: 'Payment deleted successfully' });
-  }
+  // If you implement multi-admin approval later, it would go here:
+  // createAdminAction,
+  // verifyAdminApprovals,
+  paymentController.deletePayment
 );
 
-// M-Pesa callback route
-router.post('/mpesa/callback', paymentController.mpesaCallback);
+
+// --- User Routes ---
+
+// GET user's own payments (or specific user's payments if admin)
+// The isOwnResource middleware should be adapted or the controller should handle this logic.
+// For now, the controller handles the logic that admin can see any, user only their own.
+router.get(
+  '/user/:userId?', // :userId is optional; if not provided, controller uses req.user.id
+  authenticateJWT,
+  // isOwnResource, // Controller now has logic to enforce this or allow admin override
+  [
+    param('userId').optional().isInt().withMessage('User ID must be an integer.'),
+    query('page').optional().isInt({ min: 1 }).toInt(),
+    query('limit').optional().isInt({ min: 1, max: 100 }).toInt(),
+    query('startDate').optional().isISO8601().toDate(),
+    query('endDate').optional().isISO8601().toDate(),
+    query('paymentType').optional().isString().trim(),
+    query('status').optional().isString().trim(),
+    query('search').optional().isString().trim(),
+  ],
+  paymentController.getUserPayments
+);
+
+// POST initiate an M-Pesa payment (user action)
+router.post(
+  '/initiate-mpesa', // Renamed for clarity from just '/initiate'
+  authenticateJWT,
+  [
+    body('amount').isFloat({ gt: 0 }).withMessage('Amount must be a positive number.'),
+    body('paymentType').isString().notEmpty().withMessage('Payment type is required.')
+     .custom(value => {
+        const validTypes = ['TITHE', 'OFFERING', 'DONATION', 'SPECIAL_OFFERING_CONTRIBUTION']; // User-initiated types
+        if (!validTypes.includes(value)) {
+          throw new Error(`Invalid payment type. Must be one of: ${validTypes.join(', ')}`);
+        }
+        return true;
+      }),
+    body('description').optional().isString().trim(),
+    body('titheDistributionSDA').if(body('paymentType').equals('TITHE')).optional().isObject(), // Validated more deeply in controller if present
+    body('specialOfferingId').if(body('paymentType').equals('SPECIAL_OFFERING_CONTRIBUTION')).optional().isInt(),
+    body('phoneNumber').optional().isMobilePhone('any', { strictMode: false }).withMessage('Valid phone number is required if overriding.')
+  ],
+  paymentController.initiatePayment
+);
+
+// --- Public Routes (M-Pesa Callback) ---
+
+// POST M-Pesa callback
+router.post(
+  '/mpesa/callback',
+  paymentController.mpesaCallback // No JWT auth here as it's M-Pesa calling
+);
 
 module.exports = router;

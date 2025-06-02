@@ -1,0 +1,230 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql" // Or "sqlite" for local development
+  url      = env("DATABASE_URL_PRISMA")
+}
+
+// --------------- User and Auth Models ---------------
+model User {
+  id               Int       @id @default(autoincrement())
+  username         String    @unique
+  password         String
+  fullName         String    @map("fullName")
+  email            String?   @unique
+  phone            String    @unique
+  isAdmin          Boolean   @default(false) @map("isAdmin") // Indicates general admin privileges
+  role             String? // For more granular roles: e.g., "SUPER_ADMIN", "VIEW_ONLY_ADMIN", "MEMBER"
+  lastLogin        DateTime? @map("lastLogin")
+  resetToken       String?   @map("resetToken")
+  resetTokenExpiry DateTime? @map("resetTokenExpiry")
+  isActive         Boolean   @default(true) @map("isActive")
+
+  createdAt DateTime @default(now()) @map("createdAt")
+  updatedAt DateTime @updatedAt @map("updatedAt")
+
+  // Relations
+  payments                  Payment[]             @relation("UserPayments")
+  processedPayments         Payment[]             @relation("PaymentProcessor") // Payments/Expenses processed by this admin
+  createdSpecialOfferings   SpecialOffering[]     @relation("SpecialOfferingCreator")
+  initiatedAdminActions     AdminAction[]         @relation("Initiator")
+  approvedAdminActions      AdminActionApproval[] @relation("AdminApprover")
+  notifications             Notification[]        @relation("UserNotifications")
+  receipts                  Receipt[]             @relation("UserReceipts")
+  generatedReceipts         Receipt[]             @relation("ReceiptGenerator")
+  submittedContactInquiries ContactInquiry[]      @relation("SubmittedByUser")
+  handledContactInquiries   ContactInquiry[]      @relation("HandledByAdmin")
+
+  @@map("Users") // Explicitly map to your existing "Users" table name
+}
+
+model AdminAction {
+  id            Int    @id @default(autoincrement())
+  actionType    String @map("actionType") // e.g., USER_LOGIN, ADMIN_CREATE_USER, ADMIN_UPDATE_PAYMENT_STATUS
+  targetId      String @map("targetId") // ID of the entity being acted upon
+  actionData    Json?  @map("actionData") // Contextual data as JSON
+  status        String @default("COMPLETED") // e.g., PENDING, COMPLETED, FAILED
+  initiatedById Int    @map("initiatedById")
+  initiator     User   @relation("Initiator", fields: [initiatedById], references: [id])
+
+  createdAt DateTime @default(now()) @map("createdAt")
+  updatedAt DateTime @updatedAt @map("updatedAt")
+
+  approvals AdminActionApproval[] // If you implement multi-admin approval
+
+  @@map("AdminActions") // Choose a suitable table name
+}
+
+model AdminActionApproval {
+  id            Int         @id @default(autoincrement())
+  adminActionId Int         @map("adminActionId")
+  adminAction   AdminAction @relation(fields: [adminActionId], references: [id])
+  adminId       Int         @map("adminId")
+  admin         User        @relation("AdminApprover", fields: [adminId], references: [id])
+  approved      Boolean
+  comment       String?     @db.Text
+
+  createdAt DateTime @default(now()) @map("createdAt")
+  updatedAt DateTime @updatedAt @map("updatedAt")
+
+  @@map("AdminActionApprovals") // Choose a suitable table name
+}
+
+// --------------- Financial Models ---------------
+model SpecialOffering {
+  id           Int       @id @default(autoincrement())
+  offeringCode String    @unique @map("offeringCode") // User-friendly unique code (e.g., BUS_FUND_2025)
+  name         String // e.g., "Church Bus Fund"
+  description  String?   @db.Text
+  targetAmount Decimal?  @map("targetAmount") @db.Decimal(12, 2) // e.g., 5000000.00
+  // currentAmount will be calculated dynamically by summing contributions
+  startDate    DateTime  @default(now()) @map("startDate")
+  endDate      DateTime? @map("endDate")
+  isActive     Boolean   @default(true) @map("isActive") // Controls if offering is visible/accepts contributions
+  customFields Json?     @map("customFields") // For additional structured data like { "beneficiary": "Youth Ministry", "goal_details": "..." }
+
+  createdById Int  @map("createdById")
+  creator     User @relation("SpecialOfferingCreator", fields: [createdById], references: [id])
+
+  contributions Payment[] @relation("SpecialOfferingContributions") // Payments made specifically to this offering
+
+  createdAt DateTime @default(now()) @map("createdAt")
+  updatedAt DateTime @updatedAt @map("updatedAt")
+
+  @@map("SpecialOfferings") // New table for special offerings
+}
+
+model Payment {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("userId") // The member making the payment/contribution
+  user          User     @relation("UserPayments", fields: [userId], references: [id])
+  amount        Decimal  @db.Decimal(12, 2)
+  paymentType   String   @map("paymentType") // TITHE, OFFERING, DONATION, EXPENSE, SPECIAL_OFFERING_CONTRIBUTION
+  paymentMethod String   @map("paymentMethod") // MPESA, MANUAL_CASH, MANUAL_BANK, CHEQUE
+  description   String?  @db.Text
+  reference     String? // e.g., M-Pesa CheckoutRequestID, Cheque No.
+  transactionId String?  @unique @map("transactionId") // e.g., M-Pesa Transaction ID (should be unique if present)
+  status        String   @default("COMPLETED") // PENDING, COMPLETED, FAILED, CANCELLED, REFUNDED
+  receiptNumber String?  @unique @map("receiptNumber")
+  paymentDate   DateTime @default(now()) @map("paymentDate")
+  platformFee   Decimal  @default(0.00) @map("platformFee") @db.Decimal(10, 2)
+
+  // Tithe specific: Stored as JSON. Structure enforced by application.
+  // Example structure: { campMeetingExpenses: 100, welfare: 50, ... }
+  titheDistributionSDA Json? @map("titheDistributionSDA")
+
+  // Expense specific
+  isExpense         Boolean @default(false) @map("isExpense")
+  department        String? // Department for which the expense was made
+  expenseReceiptUrl String? @map("expenseReceiptUrl") // Path/URL to uploaded receipt for expense
+
+  processedById Int? // Admin who processed/entered this payment/expense
+  processor     User? @relation("PaymentProcessor", fields: [processedById], references: [id])
+
+  // Special Offering Contribution specific
+  specialOfferingId Int?             @map("specialOfferingId")
+  specialOffering   SpecialOffering? @relation("SpecialOfferingContributions", fields: [specialOfferingId], references: [id])
+
+  // Fields that were previously for defining special offerings directly on payment records.
+  // These are less relevant if the SpecialOffering model is used for definitions.
+  // Kept for potential backward compatibility or other template uses, but should be reviewed.
+  isTemplate Boolean? @default(false) @map("isTemplate")
+  targetGoal Decimal? @map("targetGoal") @db.Decimal(12, 2)
+  // customFields on Payment model is removed in favor of SpecialOffering.customFields
+
+  createdAt DateTime @default(now()) @map("createdAt")
+  updatedAt DateTime @updatedAt @map("updatedAt")
+
+  receipt Receipt? // One-to-one relation with Receipt
+
+  @@map("Payments")
+}
+
+model Receipt {
+  id             Int      @id @default(autoincrement())
+  receiptNumber  String   @unique @map("receiptNumber")
+  paymentId      Int      @unique @map("paymentId") // Each payment has one receipt
+  payment        Payment  @relation(fields: [paymentId], references: [id])
+  userId         Int      @map("userId") // User for whom the receipt is
+  user           User     @relation("UserReceipts", fields: [userId], references: [id])
+  generatedById  Int?     @map("generatedById") // Admin who manually generated if applicable
+  generator      User?    @relation("ReceiptGenerator", fields: [generatedById], references: [id])
+  receiptDate    DateTime @default(now()) @map("receiptDate")
+  receiptData    Json     @map("receiptData") // Structured data used for generating the PDF
+  pdfPath        String?  @map("pdfPath") // Server path to the generated PDF
+  attachmentPath String?  @map("attachmentPath") // Path to user/admin uploaded attachment related to the payment/receipt
+
+  createdAt DateTime @default(now()) @map("createdAt")
+  updatedAt DateTime @updatedAt @map("updatedAt")
+
+  @@map("Receipts")
+}
+
+// --------------- Notification and Contact Models ---------------
+model Notification {
+  id               Int     @id @default(autoincrement())
+  userId           Int     @map("userId")
+  user             User    @relation("UserNotifications", fields: [userId], references: [id])
+  notificationType String  @map("notificationType") // SMS, EMAIL, IN_APP_ADMIN, IN_APP_USER
+  message          String  @db.Text
+  reference        String? // e.g., payment ID, inquiry ID, offering ID
+  isRead           Boolean @default(false) @map("isRead")
+  status           String  @default("PENDING") // PENDING, SENT, FAILED, VIEWED (for external like SMS/Email or in-app)
+  responseData     Json?   @map("responseData") // Response from SMS/Email gateway or other relevant data
+
+  createdAt DateTime @default(now()) @map("createdAt")
+  updatedAt DateTime @updatedAt @map("updatedAt")
+
+  @@map("Notifications")
+}
+
+model ContactInquiry {
+  id      Int     @id @default(autoincrement())
+  name    String
+  email   String
+  phone   String?
+  subject String
+  message String  @db.Text
+  status  String  @default("PENDING") // PENDING, VIEWED, RESOLVED, ARCHIVED, SPAM
+
+  submittedById Int? // Optional: if submitted by a logged-in user
+  submittedBy   User? @relation("SubmittedByUser", fields: [submittedById], references: [id])
+
+  handledById     Int? // Admin who last updated the status or replied
+  handledBy       User?   @relation("HandledByAdmin", fields: [handledById], references: [id])
+  resolutionNotes String? @db.Text // Notes by admin when resolving
+
+  createdAt DateTime @default(now()) @map("createdAt")
+  updatedAt DateTime @updatedAt @map("updatedAt")
+
+  @@map("ContactInquiries")
+}
+
+// --------------- Enums (Optional, but good practice) ---------------
+// If you prefer to use enums for fields like 'status' or 'paymentType',
+// you can define them like this:
+//
+// enum PaymentStatus {
+//   PENDING
+//   COMPLETED
+//   FAILED
+//   CANCELLED
+//   REFUNDED
+// }
+//
+// enum PaymentTypeValue {
+//  TITHE
+//  OFFERING
+//  DONATION
+//  EXPENSE
+//  SPECIAL_OFFERING_CONTRIBUTION
+// }
+//
+// And then use them in your models:
+// status PaymentStatus @default(PENDING)
+// paymentType PaymentTypeValue

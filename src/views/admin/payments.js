@@ -5,7 +5,6 @@ export class AdminPaymentsView extends BaseComponent {
   constructor() {
     super();
     
-    // Add authService initialization at the start
     this.authService = window.authService;
     if (!this.authService) {
       throw new Error('AuthService not initialized');
@@ -13,69 +12,68 @@ export class AdminPaymentsView extends BaseComponent {
 
     this.title = 'Payment Management';
     this.user = this.authService ? this.authService.getUser() : null;
-    this.apiService = window.apiService;
-    this.payments = [];
+    this.apiService = window.apiService;  
+    
+    this.allPaymentsMasterList = [];  
+    this.payments = []; // Stores the currently filtered and paginated list for display
     this.specialOfferings = [];
+
     this.currentPage = 1;
     this.totalPages = 1;
-    this.totalPayments = 0;
-    this.isLoading = true;
+    this.totalFilteredPayments = 0;  
+    this.isLoading = true; // True initially until first data load attempt
     this.error = null;
     this.success = null;
+
+    // Filters for the main view - simplified to only search
     this.filters = {
-      startDate: '',
-      endDate: '',
-      paymentType: '',
-      userId: '',
-      specialOffering: ''
+      search: ''  
     };
+
+    // State for export-specific filters, populated by the export modal
+    this.exportFilterState = {
+        startDate: '',
+        endDate: '',
+        paymentType: '',
+        specialOffering: '',
+        format: '' // Stores the format like 'csv' or 'pdf'
+        // Search term for export will be taken from this.filters.search
+    };
+
     this.selectedPayment = null;
     
-    // API Request Management - Adding throttling to match dashboard
     this.apiRequestQueue = [];
     this.isProcessingQueue = false;
-    this.requestThrottleTime = 300; // ms between API calls
+    this.requestThrottleTime = 200;  
     
-    // Data Cache System
-    this.paymentCache = {};
-    this.specialOfferingsCache = null;
-    this.lastFetchTime = null;
-    this.CACHE_LIFETIME = 5 * 60 * 1000; // 5 minutes
-    this.SMS_STATUS = { sending: false, error: null, success: null };
+    this.specialOfferingsCache = null;  
+    this.CACHE_LIFETIME = 5 * 60 * 1000;  
     
-    // Debounce timer for filters
-    this.filterDebounceTimer = null;
-    this.FILTER_DEBOUNCE_DELAY = 500; // ms
+    this.smsState = new Map();  
+    this.pdfState = { generating: false };  
+    this.batchSmsState = { sending: false, queue: [], results: [], progress: 0, total: 0 };
     
-    // State flag to prevent double rendering
-    this.isRendering = false;
+    this.searchDebounceTimer = null; // Only search debounce needed for main filter
+    this.SEARCH_DEBOUNCE_DELAY = 550;
+    
+    this.isRendering = false;  
+    this.isRendered = false;  
+    this._fetchInProgress = false;  
 
-    // Add sorting configuration
-    this.sortConfig = {
-      field: 'id',
-      direction: 'desc'
-    };
-    
-    // Add responsive breakpoints
-    this.breakpoints = {
-      mobile: 768,
-      tablet: 1024
-    };
-    
-    // Add viewport tracking
+    this.breakpoints = { mobile: 768, tablet: 1024 };
     this.viewport = {
       width: window.innerWidth,
-      isMobile: window.innerWidth < 768,
-      isTablet: window.innerWidth >= 768 && window.innerWidth < 1024
+      isMobile: window.innerWidth < this.breakpoints.mobile,
+      isTablet: window.innerWidth >= this.breakpoints.mobile && window.innerWidth < this.breakpoints.tablet
     };
-    
-    // Add loading optimization
     this.pageSize = this.viewport.isMobile ? 10 : 20;
-    this.lazyLoadThreshold = 500;
 
-    // Add resize handler binding after method definition 
     this.handleResize = this.handleResize.bind(this);
     window.addEventListener('resize', this.handleResize);
+
+    // Initial data fetch
+    this.fetchAllPaymentsData();
+    this.fetchSpecialOfferings(); // Still needed for display and export modal
   }
   
   handleResize() {
@@ -85,3344 +83,1620 @@ export class AdminPaymentsView extends BaseComponent {
         isMobile: width < this.breakpoints.mobile,
         isTablet: width >= this.breakpoints.mobile && width < this.breakpoints.tablet
     };
-    
-    // Update page size based on viewport
-    this.pageSize = this.viewport.isMobile ? 10 : 20;
-    
-    // Trigger re-render if needed
-    if (this.isRendered) {
-        this.updateView();
+    const newPageSize = this.viewport.isMobile ? 10 : 20;
+    if (newPageSize !== this.pageSize) {
+        this.pageSize = newPageSize;
+        this.applyFiltersAndPagination(this.filters);  
+        if(this.isRendered) this.updateView();
     }
   }
 
   async render() {
-    // Prevent re-entry during rendering
-    if (this.isRendering) {
-      console.log('Render already in progress, skipping');
-      return;
-    }
-    
+    if (this.isRendering && document.readyState !== 'complete') return null;  
     this.isRendering = true;
-    console.log('Rendering AdminPaymentsView');
     
     try {
-      // Check if user is admin
       if (!this.authService.isAdmin()) {
         this.isRendering = false;
         return this.renderUnauthorized();
       }
       
-      // Add the futuristic background and particle overlay to match dashboard
       this.addBackgroundEffects();
       
-      // Create container
-      const container = this.createElement('div', {
-        className: 'dashboard-container',
-        style: {
-          maxWidth: '1300px',
-          margin: '0 auto',
-          padding: '30px 20px',
-          color: '#eef2ff',
-          fontFamily: 'Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
-          position: 'relative',
-          zIndex: '1'
-        }
-      });
+      const container = this.createElement('div', { className: 'dashboard-container' });
 
-      // Add navigation at the very top
       container.appendChild(this.renderTopNavigation());
+      container.appendChild(this.renderPageHeader());    
       
-      // Add page title
-      container.appendChild(this.renderPageHeader());
+      if (this.error) container.appendChild(this.renderAlert('error', this.error));      
+      if (this.success) container.appendChild(this.renderAlert('success', this.success));  
       
-      // Show error or success messages if any
-      if (this.error) {
-        container.appendChild(this.renderAlert('error', this.error));
+      container.appendChild(this.renderFiltersCard());  
+      
+      if (this.isLoading && this._fetchInProgress) {  
+        container.appendChild(this.renderLoading());  
+      } else { 
+        container.appendChild(this.renderPaymentsTable());  
       }
       
-      
-      if (this.success) {
-        container.appendChild(this.renderAlert('success', this.success));
-      }
-      
-      // Filters card with enhanced UI to match dashboard
-      container.appendChild(this.renderFiltersCard());
-      
-      // Track if data fetch was initiated
-      let fetchInitiated = false;
-      
-      // Payments table or loading indicator
-      if (this.isLoading) {
-        container.appendChild(this.renderLoading());
-        
-        // Only fetch if we don't have an in-progress fetch
-        if (!this._fetchInProgress) {
-          // Set flag before fetching to prevent duplicate requests
-          this._fetchInProgress = true;
-          fetchInitiated = true;
-          
-          // Fetch data without awaiting to prevent blocking render
-          this.fetchPayments(this.currentPage);
-          this.fetchSpecialOfferings();
-        }
-      } else {
-        container.appendChild(this.renderPaymentsTable());
-      }
-      
-      // Payment detail modal (hidden initially)
       container.appendChild(this.renderPaymentDetailModal());
-      
-      // SMS Status Modal
       container.appendChild(this.renderSmsStatusModal());
+      container.appendChild(this.renderBatchSmsModal());
+      container.appendChild(this.renderExportFilterModal());  
       
-      // Add required styles
-      this.addGlobalStyles();
-      this.addAnimationStyles();
+      this.addGlobalStyles();  
       
-      // Attach event listeners after the DOM is ready
-      setTimeout(() => {
-        this.attachEventListeners();
-      }, 0);
+      if (!this.isRendered) { 
+          this.attachEventListeners();  
+      }
       
-      // Reset rendering flag before returning
+      this.isRendered = true;  
       this.isRendering = false;
-      
-      console.log('Render complete');
       return container;
     } catch (error) {
       console.error('Render error:', error);
       this.isRendering = false;
-      return this.renderError(error);
+      return this.renderError(error);  
     }
   }
   
   addBackgroundEffects() {
-    // Add futuristic background (only if not already present)
     if (!document.querySelector('.gradient-background')) {
-      const gradientBackground = this.createElement('div', {
-        className: 'gradient-background',
-        style: {
-          position: 'fixed',
-          top: '0',
-          left: '0',
-          width: '100%',
-          height: '100%',
-          background: 'linear-gradient(125deg, #0f172a 0%, #1e293b 40%, #0f172a 100%)',
-          backgroundSize: '400% 400%',
-          zIndex: '-2',
-          animation: 'gradientBG 15s ease infinite'
-        }
-      });
+      const gradientBackground = this.createElement('div', { className: 'gradient-background' });
       document.body.appendChild(gradientBackground);
     }
-
-    // Add particle overlay (only if not already present)
     if (!document.querySelector('.particle-overlay')) {
-      const particleOverlay = this.createElement('div', {
-        className: 'particle-overlay',
-        style: {
-          position: 'fixed',
-          top: '0',
-          left: '0',
-          width: '100%',
-          height: '100%',
-          background: 'url("data:image/svg+xml,%3Csvg width=\'100\' height=\'100\' viewBox=\'0 0 100 100\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cpath d=\'M11 18c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm48 25c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm-43-7c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm63 31c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM34 90c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm56-76c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM12 86c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm28-65c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm23-11c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-6 60c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm29 22c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zM32 63c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm57-13c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-9-21c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM60 91c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM35 41c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM12 60c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2z\' fill=\'%234f6bff\' fill-opacity=\'0.03\' fill-rule=\'evenodd\'/%3E%3C/svg%3E")',
-          backgroundSize: '100px 100px',
-          backgroundRepeat: 'repeat',
-          zIndex: '-1',
-          animation: 'floatParticles 150s linear infinite'
-        }
-      });
+      const particleOverlay = this.createElement('div', { className: 'particle-overlay' });
       document.body.appendChild(particleOverlay);
     }
   }
   
   renderPageHeader() {
-    const headerSection = this.createElement('div', {
-      className: 'neo-card animated-item',
-      style: {
-        marginBottom: '40px',
-        padding: '30px',
-        position: 'relative',
-        overflow: 'hidden',
-        animation: 'fadeIn 0.6s ease-out'
-      }
-    });
-    
-    // Add glow effect
-    const headerGlow = this.createElement('div', {
-      className: 'card-glow',
-      style: {
-        background: 'radial-gradient(circle at top right, rgba(99, 102, 241, 0.3), transparent 70%)'
-      }
-    });
+    const headerSection = this.createElement('div', { className: 'neo-card animated-item page-header-card' });
+    const headerGlow = this.createElement('div', { className: 'card-glow' });
     headerSection.appendChild(headerGlow);
     
-    // Add floating particles
-    for (let i = 0; i < 5; i++) {
-      const particle = this.createElement('div', {
-        style: {
-          position: 'absolute',
-          width: `${Math.random() * 6 + 2}px`,
-          height: `${Math.random() * 6 + 2}px`,
-          borderRadius: '50%',
-          background: 'rgba(129, 140, 248, 0.3)',
-          top: `${Math.random() * 100}%`,
-          right: `${Math.random() * 30}%`,
-          animation: `float ${Math.random() * 4 + 3}s ease-in-out infinite`,
-          animationDelay: `${Math.random() * 2}s`,
-          opacity: Math.random() * 0.5 + 0.2,
-          zIndex: '1'
-        }
-      });
-      headerSection.appendChild(particle);
+    for (let i = 0; i < 3; i++) {  
+        const particle = this.createElement('div', { className: 'header-particle' });
+        Object.assign(particle.style, {
+            width: `${Math.random() * 4 + 2}px`, height: `${Math.random() * 4 + 2}px`,
+            top: `${Math.random() * 100}%`, right: `${Math.random() * 30}%`,
+            animationDelay: `${Math.random() * 2}s`, opacity: Math.random() * 0.5 + 0.2,
+        });
+        headerSection.appendChild(particle);
     }
     
-    const headerContent = this.createElement('div', {
-      style: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: '20px',
-        position: 'relative',
-        zIndex: '2'
-      }
-    });
+    const headerContent = this.createElement('div', { className: 'page-header-content' });
+    const headerTitle = this.createElement('h1', { className: 'page-header-title' }, 'Payment Management');
+    const exportButtonsGroup = this.createElement('div', { className: 'export-buttons-group' });
     
-    // Improved header title with better visibility
-    const headerTitle = this.createElement('h1', {
-      style: {
-        fontSize: '32px',
-        fontWeight: '700',
-        margin: '0',
-        background: 'linear-gradient(to right, #ffffff, #e0e7ff)',
-        backgroundClip: 'text',
-        WebkitBackgroundClip: 'text',
-        color: 'transparent',
-        WebkitTextFillColor: 'transparent',
-        textShadow: '0 2px 4px rgba(0, 0, 0, 0.3)'
-      }
-    }, 'Payment Management');
+    const exportCsvButton = this.createFuturisticButton('Export CSV', '#10b981', () => this.showExportFilterModal('csv'));
+    const csvIcon = this.createSvgIcon('csv');
+    if (csvIcon) exportCsvButton.prepend(csvIcon);
     
-    // Add export buttons
-    const exportButtonsGroup = this.createElement('div', {
-      style: {
-        display: 'flex',
-        gap: '15px',
-        flexWrap: 'wrap'
-      }
-    });
+    const exportPdfButton = this.createFuturisticButton('Export PDF', '#ef4444', () => this.showExportFilterModal('pdf'));
+    const pdfIcon = this.createSvgIcon('pdf');
+    if (pdfIcon) exportPdfButton.prepend(pdfIcon);
     
-    // Export as CSV button
-    const exportCsvButton = this.createFuturisticButton('Export as CSV', '#10b981', () => this.exportPayments('csv'));
-    exportCsvButton.prepend(this.createSvgIcon('csv'));
+    const batchSmsButton = this.createFuturisticButton('Batch SMS', '#8b5cf6', () => this.showBatchSmsModal());
+    const smsIconSvg = this.createSvgIcon('sms');
+    if (smsIconSvg) batchSmsButton.prepend(smsIconSvg);
     
-    // Export as PDF button
-    const exportPdfButton = this.createFuturisticButton('Export as PDF', '#ef4444', () => this.exportPayments('pdf'));
-    exportPdfButton.prepend(this.createSvgIcon('pdf'));
-    
-    // Export filtered results button
-    const exportFilteredButton = this.createFuturisticButton('Export Filtered Results', '#4f46e5', () => this.exportFilteredResults());
-    exportFilteredButton.prepend(this.createSvgIcon('filter'));
-    
-    exportButtonsGroup.appendChild(exportCsvButton);
-    exportButtonsGroup.appendChild(exportPdfButton);
-    exportButtonsGroup.appendChild(exportFilteredButton);
-    
-    headerContent.appendChild(headerTitle);
-    headerContent.appendChild(exportButtonsGroup);
-    
+    exportButtonsGroup.append(exportCsvButton, exportPdfButton, batchSmsButton);
+    headerContent.append(headerTitle, exportButtonsGroup);
     headerSection.appendChild(headerContent);
-    
     return headerSection;
   }
   
   createFuturisticButton(text, color, onClick) {
-    const hexColor = color || '#3b82f6';
-    const button = this.createElement('button', {
-      className: 'futuristic-button',
-      style: {
-        background: `linear-gradient(135deg, rgba(${this.hexToRgb(hexColor)}, 0.2), rgba(${this.hexToRgb(hexColor)}, 0.1))`,
-        border: `1px solid rgba(${this.hexToRgb(hexColor)}, 0.3)`,
-      },
-      onClick: onClick
-    }, text);
-    
+    const button = this.createElement('button', { className: 'futuristic-button' });
+    if (onClick) button.onclick = onClick;  
+    const rgb = this.hexToRgb(color);
+    if (rgb) {  
+        button.style.setProperty('--btn-color-r', rgb.r.toString());
+        button.style.setProperty('--btn-color-g', rgb.g.toString());
+        button.style.setProperty('--btn-color-b', rgb.b.toString());
+    }
+    button.appendChild(document.createTextNode(text));  
     return button;
   }
   
   createSvgIcon(type) {
-    const iconWrapper = this.createElement('span', {
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginRight: '8px'
-      }
-    });
-    
-    let svgContent = '';
-    
-    switch(type) {
-      case 'csv':
-        svgContent = `
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-            <polyline points="14 2 14 8 20 8"></polyline>
-            <line x1="16" y1="13" x2="8" y2="13"></line>
-            <line x1="16" y1="17" x2="8" y2="17"></line>
-            <line x1="10" y1="9" x2="8" y2="9"></line>
-          </svg>
-        `;
-        break;
-      case 'pdf':
-        svgContent = `
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-            <polyline points="14 2 14 8 20 8"></polyline>
-            <path d="M9 15H7v-2h2v2z"></path>
-            <path d="M13 15h-2v-2h2v2z"></path>
-            <path d="M17 15h-2v-2h2v2z"></path>
-          </svg>
-        `;
-        break;
-      case 'filter':
-        svgContent = `
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
-          </svg>
-        `;
-        break;
-      case 'eye':
-        svgContent = `
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-            <circle cx="12" cy="12" r="3"></circle>
-          </svg>
-        `;
-        break;
-      case 'sms':
-        svgContent = `
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-          </svg>
-        `;
-        break;
-      case 'download':
-        svgContent = `
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-            <polyline points="7 10 12 15 17 10"></polyline>
-            <line x1="12" y1="15" x2="12" y2="3"></line>
-          </svg>
-        `;
-        break;
-      default:
-        svgContent = '';
-    }
-    
-    iconWrapper.innerHTML = svgContent;
+    const iconWrapper = this.createElement('span', { className: 'svg-icon-wrapper' });
+    const icons = {  
+        csv: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`,
+        pdf: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M10.5 17H8.5v-2H10c.8 0 1.5.7 1.5 1.5v0c0 .8-.7 1.5-1.5 1.5zM12 17h1.5a1.5 1.5 0 0 0 1.5-1.5v0A1.5 1.5 0 0 0 13.5 14H12v3zM15 17h1a2 2 0 0 0 2-2v-1a2 2 0 0 0-2-2h-1v5z"/></svg>`,
+        eye: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
+        sms: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+        download: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`
+    };
+    if (icons[type]) iconWrapper.innerHTML = icons[type];
     return iconWrapper;
   }
   
   renderAlert(type, message) {
-    const alertConfig = {
-      success: {
-        backgroundColor: 'rgba(16, 185, 129, 0.1)',
-        borderColor: 'rgba(16, 185, 129, 0.3)',
-        color: '#10b981',
-        icon: `
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-            <polyline points="22 4 12 14.01 9 11.01"></polyline>
-          </svg>
-        `
-      },
-      error: {
-        backgroundColor: 'rgba(239, 68, 68, 0.1)',
-        borderColor: 'rgba(239, 68, 68, 0.3)',
-        color: '#ef4444',
-        icon: `
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="12" y1="8" x2="12" y2="12"></line>
-            <line x1="12" y1="16" x2="12.01" y2="16"></line>
-          </svg>
-        `
-      }
+    const configs = {
+      success: { icon: '✓' },
+      error: { icon: '⚠' }
     };
-    
-    const config = alertConfig[type];
-    
-    const alertElement = this.createElement('div', {
-      className: 'neo-card animated-item',
-      style: {
-        padding: '16px 20px',
-        marginBottom: '24px',
-        display: 'flex',
-        alignItems: 'flex-start',
-        gap: '12px',
-        backgroundColor: config.backgroundColor,
-        borderLeft: `4px solid ${config.color}`,
-        animation: 'fadeIn 0.3s ease-out'
-      }
-    });
-    
-    const iconSpan = this.createElement('span', {
-      style: {
-        color: config.color,
-        flexShrink: 0,
-        marginTop: '2px'
-      }
-    });
-    
-    iconSpan.innerHTML = config.icon;
-    
-    const messageSpan = this.createElement('span', {
-      style: {
-        color: '#f1f5f9',
-        fontSize: '14px',
-        lineHeight: '1.6'
-      }
-    }, message);
-    
-    alertElement.appendChild(iconSpan);
-    alertElement.appendChild(messageSpan);
-    
+    const config = configs[type] || configs.error;
+    const alertElement = this.createElement('div', { className: `neo-card animated-item alert-card alert-${type}` });
+    alertElement.innerHTML = `<span class="alert-icon">${config.icon}</span><span class="alert-message">${this.escapeHtml(message)}</span>`;
     return alertElement;
   }
   
   renderFiltersCard() {
-    const filtersCard = this.createElement('div', {
-      className: 'neo-card animated-item',
-      style: {
-        marginBottom: '24px',
-        animationDelay: '0.1s',
-        overflow: 'hidden'
-      }
-    });
+    const filtersCard = this.createElement('div', { className: 'neo-card animated-item filters-card' });
+    filtersCard.appendChild(this.createElement('div', { className: 'card-glow' }));
     
-    // Add glow effect
-    const filtersGlow = this.createElement('div', {
-      className: 'card-glow',
-      style: {
-        background: 'radial-gradient(circle at center, rgba(99, 102, 241, 0.2), transparent 70%)'
-      }
-    });
-    filtersCard.appendChild(filtersGlow);
-    
-    const filtersHeader = this.createElement('div', {
-      style: {
-        padding: '16px 24px',
-        borderBottom: '1px solid rgba(148, 163, 184, 0.1)',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center'
-      }
-    });
-    
-    const filtersTitle = this.createElement('h2', {
-      style: {
-        fontSize: '18px',
-        fontWeight: '600',
-        margin: '0',
-        color: '#f1f5f9',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px'
-      }
-    }, 'Filter Payments');
-    
-    // Add filter icon
-    const filterTitleIcon = this.createElement('span');
-    filterTitleIcon.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
-      </svg>
-    `;
-    
-    filtersTitle.prepend(filterTitleIcon);
-    filtersHeader.appendChild(filtersTitle);
+    const filtersHeader = this.createElement('div', { className: 'filters-header' });
+    filtersHeader.appendChild(this.createElement('h2', { className: 'filters-title' }, '🔍 Search Payments')); // Simplified title
     filtersCard.appendChild(filtersHeader);
     
-    const filtersContent = this.createElement('div', {
-      style: {
-        padding: '24px'
-      }
-    });
+    const filtersContent = this.createElement('div', { className: 'filters-content' });
+    const filtersForm = this.createElement('form', { id: 'payment-filters-form', className: 'filters-form' });
     
-    const filtersForm = this.createElement('form', {
-      id: 'payment-filters-form',
-      style: {
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-        gap: '20px'
-      }
-    });
+    const searchGroup = this.createFormGroup('Search (All Fields)', 'search', 'text', 'Type any keyword...');
+    searchGroup.querySelector('input').value = this.filters.search;
     
-    // Date range filters
-    const startDateGroup = this.createFormGroup('Start Date', 'startDate', 'date');
-    const startDateInput = startDateGroup.querySelector('input');
-    startDateInput.value = this.filters.startDate;
-    
-    const endDateGroup = this.createFormGroup('End Date', 'endDate', 'date');
-    const endDateInput = endDateGroup.querySelector('input');
-    endDateInput.value = this.filters.endDate;
-    
-    // Payment type filter
-    const paymentTypeGroup = this.createFormGroup('Payment Type', 'paymentType', 'select');
-    const paymentTypeSelect = paymentTypeGroup.querySelector('select');
-    
-    // Add default option
-    const defaultOption = this.createElement('option', {
-      value: ''
-    }, 'All Types');
-    paymentTypeSelect.appendChild(defaultOption);
-    
-    // Add payment type options
-    const paymentTypes = [
-      { value: 'TITHE', label: 'Tithe' },
-      { value: 'OFFERING', label: 'Offering' },
-      { value: 'DONATION', label: 'Donation' },
-      { value: 'EXPENSE', label: 'Expense' },
-      { value: 'SPECIAL', label: 'Special Offerings' }
-    ];
-    
-    paymentTypes.forEach(type => {
-      const option = this.createElement('option', {
-        value: type.value,
-        selected: this.filters.paymentType === type.value
-      }, type.label);
-      paymentTypeSelect.appendChild(option);
-    });
-    
-    // Special offerings dropdown (only visible when payment type is SPECIAL)
-    const specialOfferingGroup = this.createFormGroup('Special Offering', 'specialOffering', 'select');
-    specialOfferingGroup.style.display = this.filters.paymentType === 'SPECIAL' ? 'block' : 'none';
-    
-    const specialOfferingSelect = specialOfferingGroup.querySelector('select');
-    
-    // Add default option
-    const allSpecialOption = this.createElement('option', {
-      value: ''
-    }, 'All Special Offerings');
-    specialOfferingSelect.appendChild(allSpecialOption);
-    
-    // Will be populated after loading special offerings
-    
-    // Form actions
-    const formActions = this.createElement('div', {
-      style: {
-        gridColumn: '1 / -1',
-        display: 'flex',
-        gap: '15px',
-        justifyContent: 'flex-end',
-        marginTop: '10px'
-      }
-    });
-    
-    const resetButton = this.createFuturisticButton('Reset Filters', '#64748b', () => this.resetFilters());
-    
-    const applyButton = this.createElement('button', {
-      type: 'submit',
-      className: 'futuristic-button',
-      style: {
-        background: 'linear-gradient(135deg, rgba(79, 70, 229, 0.2), rgba(79, 70, 229, 0.1))',
-        border: '1px solid rgba(79, 70, 229, 0.3)'
-      }
-    }, 'Apply Filters');
-    
-    formActions.appendChild(resetButton);
-    formActions.appendChild(applyButton);
-    
-    // Assemble the filters form
-    filtersForm.appendChild(startDateGroup);
-    filtersForm.appendChild(endDateGroup);
-    filtersForm.appendChild(paymentTypeGroup);
-    filtersForm.appendChild(specialOfferingGroup);
-    filtersForm.appendChild(formActions);
-    
+    const formActions = this.createElement('div', { className: 'filters-form-actions' });
+    const resetButton = this.createFuturisticButton('Reset Search', '#64748b', () => this.resetFilters());
+    formActions.append(resetButton);
+
+    // Only append search group and actions
+    filtersForm.append(searchGroup, formActions); 
     filtersContent.appendChild(filtersForm);
     filtersCard.appendChild(filtersContent);
-    
     return filtersCard;
   }
   
-  createFormGroup(label, id, type) {
-    const formGroup = this.createElement('div');
-    
-    const formLabel = this.createElement('label', {
-      htmlFor: id,
-      style: {
-        display: 'block',
-        fontSize: '14px',
-        fontWeight: '500',
-        color: '#94a3b8',
-        marginBottom: '8px'
-      }
-    }, label);
-    
+  createFormGroup(label, id, type, placeholder = '') {
+    const formGroup = this.createElement('div', { className: 'form-group' });
+    const formLabel = this.createElement('label', { htmlFor: id, className: 'form-label' }, label);
     let inputElement;
-    
     if (type === 'select') {
-      inputElement = this.createElement('select', {
-        id: id,
-        name: id,
-        className: 'form-control'
-      });
+      inputElement = this.createElement('select', { id, name: id, className: 'form-control' });
     } else {
-      inputElement = this.createElement('input', {
-        id: id,
-        name: id,
-        type: type,
-        className: 'form-control'
-      });
+      inputElement = this.createElement('input', { id, name: id, type, className: 'form-control', placeholder });
     }
-    
-    formGroup.appendChild(formLabel);
-    formGroup.appendChild(inputElement);
-    
+    formGroup.append(formLabel, inputElement);
     return formGroup;
   }
   
   renderPaymentsTable() {
-    const tableCard = this.createElement('div', {
-      className: 'neo-card animated-item',
-      style: {
-        animationDelay: '0.2s',
-        overflow: 'hidden'
+    const tableCard = this.createElement('div', { className: 'neo-card animated-item payments-table-card' });
+    tableCard.appendChild(this.createElement('div', { className: 'card-glow' }));
+    
+    const tableHeaderEl = this.createElement('div', { className: 'payments-table-header' });
+    const tableTitle = this.createElement('h2', { className: 'payments-table-title' }, '💳 Payment Records');
+    const paymentCount = this.createElement('span', { className: 'payment-count' }, `${this.totalFilteredPayments.toLocaleString()} records found`);
+    tableHeaderEl.append(tableTitle, paymentCount);
+    tableCard.appendChild(tableHeaderEl);
+
+    const startIndex = (this.currentPage - 1) * this.pageSize;
+    const endIndex = startIndex + this.pageSize;
+    const paginatedPayments = this.payments.slice(startIndex, endIndex);  
+
+    if (paginatedPayments.length === 0 && !this.isLoading) { // Added !this.isLoading to prevent showing "No payments" during load
+      const emptyState = this.createElement('div', { className: 'empty-state-container' });
+      emptyState.innerHTML = `
+        <div class="empty-state-icon">📋</div>
+        <h3 class="empty-state-title">No payments match your criteria.</h3>
+        <p class="empty-state-text">Try adjusting your search or add a new payment.</p>`; // Adjusted text
+      const addPaymentButton = this.createElement('a', { href: '/admin/add-payment', className: 'futuristic-button add-payment-empty' });
+      addPaymentButton.textContent = '➕ Add New Payment';  
+      const addBtnRgb = this.hexToRgb('#4f46e5');
+      if (addBtnRgb) {
+          addPaymentButton.style.setProperty('--btn-color-r', addBtnRgb.r.toString());
+          addPaymentButton.style.setProperty('--btn-color-g', addBtnRgb.g.toString());
+          addPaymentButton.style.setProperty('--btn-color-b', addBtnRgb.b.toString());
       }
-    });
-    
-    // Add glow effect
-    const tableGlow = this.createElement('div', {
-      className: 'card-glow',
-      style: {
-        background: 'radial-gradient(circle at center, rgba(59, 130, 246, 0.2), transparent 70%)'
-      }
-    });
-    tableCard.appendChild(tableGlow);
-    
-    const tableHeader = this.createElement('div', {
-      style: {
-        padding: '16px 24px',
-        borderBottom: '1px solid rgba(148, 163, 184, 0.1)',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center'
-      }
-    });
-    
-    const tableTitle = this.createElement('h2', {
-      style: {
-        fontSize: '18px',
-        fontWeight: '600',
-        margin: '0',
-        color: '#f1f5f9',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px'
-      }
-    }, 'Payment Records');
-    
-    // Add payment icon
-    const paymentIcon = this.createElement('span');
-    paymentIcon.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect>
-        <line x1="1" y1="10" x2="23" y2="10"></line>
-      </svg>
-    `;
-    
-    tableTitle.prepend(paymentIcon);
-    
-    const paymentCount = this.createElement('span', {
-      style: {
-        fontSize: '14px',
-        color: '#94a3b8'
-      }
-    }, `${this.totalPayments.toLocaleString()} total records`);
-    
-    tableHeader.appendChild(tableTitle);
-    tableHeader.appendChild(paymentCount);
-    
-    tableCard.appendChild(tableHeader);
-    
-    // If no payments found
-    if (this.payments.length === 0) {
-      const emptyState = this.createElement('div', {
-        style: {
-          padding: '60px 20px',
-          textAlign: 'center'
-        }
-      });
-      
-      const emptyIcon = this.createElement('div', {
-        style: {
-          margin: '0 auto 20px',
-          width: '60px',
-          height: '60px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center'
-        }
-      });
-      
-      emptyIcon.innerHTML = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10"></circle>
-          <path d="M8 15h8"></path>
-          <path d="M9 9h.01"></path>
-          <path d="M15 9h.01"></path>
-        </svg>
-      `;
-      
-      const emptyText = this.createElement('h3', {
-        style: {
-          fontSize: '22px',
-          fontWeight: '600',
-          margin: '0 0 10px 0',
-          color: '#f1f5f9'
-        }
-      }, 'No payments found');
-      
-      const emptySubtext = this.createElement('p', {
-        style: {
-          fontSize: '16px',
-          color: '#94a3b8',
-          margin: '0 0 30px 0',
-          maxWidth: '500px',
-          marginLeft: 'auto',
-          marginRight: 'auto'
-        }
-      }, 'Try adjusting your filters or add a new payment to get started');
-      
-      const addPaymentButton = this.createElement('a', {
-        href: '/admin/add-payment',
-        className: 'futuristic-button',
-        style: {
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '8px',
-          background: 'linear-gradient(135deg, rgba(79, 70, 229, 0.2), rgba(79, 70, 229, 0.1))',
-          border: '1px solid rgba(79, 70, 229, 0.3)'
-        }
-      }, 'Add New Payment');
-      
-      // Add plus icon
-      const plusIcon = this.createElement('span');
-      plusIcon.innerHTML = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="12" y1="5" x2="12" y2="19"></line>
-          <line x1="5" y1="12" x2="19" y2="12"></line>
-        </svg>
-      `;
-      
-      addPaymentButton.prepend(plusIcon);
-      
-      emptyState.appendChild(emptyIcon);
-      emptyState.appendChild(emptyText);
-      emptyState.appendChild(emptySubtext);
       emptyState.appendChild(addPaymentButton);
-      
       tableCard.appendChild(emptyState);
-      
       return tableCard;
     }
     
-    // Table container
-    const tableContainer = this.createElement('div', {
-      style: {
-        overflowX: 'auto',
-        padding: '0 10px'
-      },
-      className: 'payment-table-wrapper'
-    });
-    
-    // Create table
-    const table = this.createElement('table', {
-      style: {
-        width: '100%',
-        borderCollapse: 'collapse',
-        borderSpacing: '0',
-        fontSize: '14px'
-      }
-    });
-    
-    // Table headers
-    const thead = this.createElement('thead', {
-      style: {
-        background: 'rgba(30, 41, 59, 0.6)'
-      }
-    });
-    
+    const tableContainer = this.createElement('div', { className: 'payment-table-wrapper' });
+    const table = this.createElement('table', { className: 'payments-table' });
+    const thead = this.createElement('thead');
     const headerRow = this.createElement('tr');
-    
-    const headers = [
-      'ID', 'Date', 'User', 'Type', 'Method', 'Amount', 'Status', 'Actions'
-    ];
-    
-    headers.forEach(header => {
-      const th = this.createElement('th', {
-        style: {
-          padding: '14px 16px',
-          textAlign: header === 'Amount' ? 'right' : 'left',
-          fontSize: '13px',
-          fontWeight: '600',
-          color: '#94a3b8',
-          borderBottom: '1px solid rgba(148, 163, 184, 0.2)',
-          whiteSpace: 'nowrap'
-        }
-      }, header);
+    const headers = ['ID', 'Date', 'User', 'Type', 'Method', 'Amount', 'Status', 'Actions'];
+    headers.forEach(headerText => {
+      const th = this.createElement('th', {}, headerText);
+      if (headerText === 'Amount') th.style.textAlign = 'right';
       headerRow.appendChild(th);
     });
-    
     thead.appendChild(headerRow);
     table.appendChild(thead);
     
-    // Table body
     const tbody = this.createElement('tbody');
-    
-    this.payments.forEach((payment, index) => {
-      const row = this.createElement('tr', {
-        style: {
-          borderBottom: '1px solid rgba(148, 163, 184, 0.1)',
-          background: index % 2 === 0 ? 'rgba(30, 41, 59, 0.3)' : 'transparent',
-          transition: 'background-color 0.2s ease'
-        }
+    paginatedPayments.forEach((payment, index) => {  
+      const row = this.createElement('tr');
+      row.style.background = index % 2 === 0 ? 'rgba(30, 41, 59, 0.3)' : 'transparent';
+
+      const cellData = [
+          payment.id,
+          this.formatDate(new Date(payment.paymentDate)),
+          this.renderUserCell(payment.User),
+          this.createPaymentTypeBadge(payment),
+          payment.paymentMethod,
+          this.renderAmountCell(payment),
+          this.createStatusBadge(payment.status),
+          this.renderActionButtons(payment)
+      ];
+      cellData.forEach((data, i) => {
+          const cell = this.createElement('td');
+          if (headers[i] === 'Amount') cell.style.textAlign = 'right';
+          if (data instanceof Node) cell.appendChild(data);
+          else cell.textContent = data !== null && data !== undefined ? data.toString() : '';
+          row.appendChild(cell);
       });
-      
-      // Hover effect for rows
-      row.addEventListener('mouseenter', () => {
-        row.style.background = 'rgba(30, 41, 59, 0.5)';
-      });
-      
-      row.addEventListener('mouseleave', () => {
-        row.style.background = index % 2 === 0 ? 'rgba(30, 41, 59, 0.3)' : 'transparent';
-      });
-      
-      // ID cell
-      const idCell = this.createElement('td', {
-        style: {
-          padding: '14px 16px',
-          fontSize: '14px',
-          color: '#94a3b8'
-        }
-      }, payment.id);
-      
-      // Date cell
-      const dateCell = this.createElement('td', {
-        style: {
-          padding: '14px 16px',
-          fontSize: '14px',
-          color: '#94a3b8'
-        }
-      });
-      
-      const paymentDate = new Date(payment.paymentDate);
-      dateCell.textContent = this.formatDate(paymentDate);
-      
-      // User cell
-      const userCell = this.createElement('td', {
-        style: {
-          padding: '14px 16px',
-          fontSize: '14px'
-        }
-      });
-      
-      if (payment.User) {
-        const userName = this.createElement('div', {
-          style: {
-            fontWeight: '500',
-            color: '#f1f5f9'
-          }
-        }, payment.User.fullName);
-        
-        const userPhone = this.createElement('div', {
-          style: {
-            fontSize: '13px',
-            color: '#94a3b8'
-          }
-        }, payment.User.phone);
-        
-        userCell.appendChild(userName);
-        userCell.appendChild(userPhone);
-      } else {
-        userCell.textContent = 'Unknown User';
-        userCell.style.color = '#94a3b8';
-      }
-      
-      // Type cell
-      const typeCell = this.createElement('td', {
-        style: {
-          padding: '14px 16px'
-        }
-      });
-      
-      const paymentTypeBadge = this.createPaymentTypeBadge(payment);
-      typeCell.appendChild(paymentTypeBadge);
-      
-      // Method cell
-      const methodCell = this.createElement('td', {
-        style: {
-          padding: '14px 16px',
-          fontSize: '14px',
-          color: '#94a3b8'
-        }
-      }, payment.paymentMethod);
-      
-      // Amount cell
-      const amountCell = this.createElement('td', {
-        style: {
-          padding: '14px 16px',
-          textAlign: 'right',
-          fontSize: '14px',
-          fontFamily: 'monospace',
-          whiteSpace: 'nowrap'
-        }
-      });
-      
-      const amount = payment.isExpense 
-        ? `-KES ${payment.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-        : `KES ${payment.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-      
-      amountCell.textContent = amount;
-      
-      if (payment.isExpense) {
-        amountCell.style.color = '#ef4444';
-      } else {
-        amountCell.style.color = '#10b981';
-      }
-      
-      // Status cell
-      const statusCell = this.createElement('td', {
-        style: {
-          padding: '14px 16px'
-        }
-      });
-      
-      const statusBadge = this.createElement('span', {
-        style: {
-          display: 'inline-block',
-          padding: '2px 10px',
-          borderRadius: '9999px',
-          fontSize: '12px',
-          fontWeight: '500',
-          backgroundColor: payment.status === 'COMPLETED' ? 'rgba(16, 185, 129, 0.2)' : 
-                          payment.status === 'PENDING' ? 'rgba(245, 158, 11, 0.2)' : 
-                          'rgba(239, 68, 68, 0.2)',
-          color: payment.status === 'COMPLETED' ? '#10b981' : 
-                 payment.status === 'PENDING' ? '#f59e0b' : 
-                 '#ef4444'
-        }
-      }, payment.status);
-      
-      statusCell.appendChild(statusBadge);
-      
-      // Actions cell
-      const actionsCell = this.createElement('td', {
-        style: {
-          padding: '14px 16px'
-        }
-      });
-      
-      const actionsContainer = this.createElement('div', {
-        style: {
-          display: 'flex',
-          gap: '8px',
-          flexWrap: 'wrap'
-        }
-      });
-      
-      // View details button
-      const viewButton = this.createElement('button', {
-        className: 'action-button view-payment-btn',
-        'data-id': payment.id,
-        style: {
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          padding: '6px 12px',
-          background: 'rgba(59, 130, 246, 0.2)',
-          color: '#3b82f6',
-          border: 'none',
-          borderRadius: '6px',
-          fontSize: '12px',
-          fontWeight: '500',
-          cursor: 'pointer',
-          transition: 'all 0.2s ease'
-        }
-      }, 'View');
-      
-      // Add view icon
-      viewButton.prepend(this.createSvgIcon('eye'));
-      
-      actionsContainer.appendChild(viewButton);
-      
-      // Add SMS button if user has phone
-      if (payment.User && payment.User.phone) {
-        const smsButton = this.createElement('button', {
-          className: 'action-button send-sms-btn',
-          'data-id': payment.id,
-          'data-phone': payment.User.phone,
-          'data-name': payment.User.fullName,
-          style: {
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            padding: '6px 12px',
-            background: 'rgba(139, 92, 246, 0.2)',
-            color: '#8b5cf6',
-            border: 'none',
-            borderRadius: '6px',
-            fontSize: '12px',
-            fontWeight: '500',
-            cursor: 'pointer',
-            transition: 'all 0.2s ease'
-          }
-        }, 'SMS');
-        
-        // Add SMS icon
-        smsButton.prepend(this.createSvgIcon('sms'));
-        
-        actionsContainer.appendChild(smsButton);
-      }
-      
-      actionsCell.appendChild(actionsContainer);
-      
-      // Add all cells to row
-      row.appendChild(idCell);
-      row.appendChild(dateCell);
-      row.appendChild(userCell);
-      row.appendChild(typeCell);
-      row.appendChild(methodCell);
-      row.appendChild(amountCell);
-      row.appendChild(statusCell);
-      row.appendChild(actionsCell);
-      
       tbody.appendChild(row);
     });
-    
     table.appendChild(tbody);
     tableContainer.appendChild(table);
     tableCard.appendChild(tableContainer);
     
-    // Pagination
-    if (this.totalPages > 1) {
-      const paginationContainer = this.createElement('div', {
-        style: {
-          display: 'flex',
-          justifyContent: 'center',
-          padding: '16px',
-          borderTop: '1px solid rgba(148, 163, 184, 0.1)'
-        }
-      });
-      
-      // Previous button
-      const prevButton = this.createElement('a', {
-        className: `pagination-item ${this.currentPage === 1 ? 'disabled' : ''}`,
-        'data-page': this.currentPage - 1
-      });
-      prevButton.textContent = '« Previous';
-      paginationContainer.appendChild(prevButton);
-      
-      // Page numbers - FIXED IMPLEMENTATION
-      const startPage = Math.max(1, this.currentPage - 2);
-      const endPage = Math.min(startPage + 4, this.totalPages);
-      
-      for (let i = startPage; i <= endPage; i++) {
-        const pageLink = this.createElement('a', {
-          className: `pagination-item ${i === this.currentPage ? 'active' : ''}`,
-          'data-page': i
-        });
-        pageLink.textContent = i.toString();
-        paginationContainer.appendChild(pageLink);
-      }
-      
-      // Next button
-      const nextButton = this.createElement('a', {
-        className: `pagination-item ${this.currentPage === this.totalPages ? 'disabled' : ''}`,
-        'data-page': this.currentPage + 1
-      });
-      nextButton.textContent = 'Next »';
-      paginationContainer.appendChild(nextButton);
-      
-      tableCard.appendChild(paginationContainer);
+    if (this.totalPages > 1) {  
+      tableCard.appendChild(this.renderPagination());
     }
-    
     return tableCard;
   }
-  
-  createPaymentTypeBadge(payment) {
-    // Get proper payment type name for special offerings
-    const isSpecial = typeof payment.paymentType === 'string' && payment.paymentType.startsWith('SPECIAL_');
-    
-    let typeName = '';
-    
-    if (isSpecial) {
-      // Find the special offering by type from our cached list
-      const specialOffering = this.specialOfferings.find(o => 
-        o.paymentType === payment.paymentType || 
-        o.offeringType === payment.paymentType ||
-        (o.id && payment.paymentType.includes(o.id))
-      );
-      
-      if (specialOffering) {
-        // Use the name or description, with fallbacks
-        if (specialOffering.name) {
-          typeName = `Special: ${specialOffering.name.substring(0, 15)}${specialOffering.name.length > 15 ? '...' : ''}`;
-        } else if (specialOffering.description) {
-          typeName = `Special: ${specialOffering.description.substring(0, 15)}${specialOffering.description.length > 15 ? '...' : ''}`;
-        } else {
-          // Use the better formatter
-          typeName = this.getFriendlySpecialOfferingName(payment.paymentType);
-        }
-      } else {
-        // Use the better formatter if no match found
-        typeName = this.getFriendlySpecialOfferingName(payment.paymentType);
-      }
+
+  renderUserCell(user) {  
+    const userCell = this.createElement('div', {className: 'user-cell'});
+    if (user && user.fullName) {  
+      userCell.innerHTML = `
+        <div class="user-name">${this.escapeHtml(user.fullName)}</div>
+        <div class="user-phone">${this.escapeHtml(user.phone) || 'N/A'}</div>`;
     } else {
-      typeName = this.formatPaymentType(payment.paymentType);
+      userCell.textContent = 'Unknown User';
     }
-    
-    const paymentTypeBadge = this.createElement('span', {
-      style: {
-        display: 'inline-block',
-        padding: '2px 10px',
-        borderRadius: '9999px',
-        fontSize: '12px',
-        fontWeight: '500'
-      }
-    });
-    
-    // Set the text content separately to avoid "Invalid child" errors
-    paymentTypeBadge.textContent = typeName;
-    
-    // Color the badge based on payment type
-    if (payment.paymentType === 'TITHE') {
-      paymentTypeBadge.style.backgroundColor = 'rgba(59, 130, 246, 0.2)';
-      paymentTypeBadge.style.color = '#3b82f6';
-    } else if (payment.paymentType === 'OFFERING') {
-      paymentTypeBadge.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
-      paymentTypeBadge.style.color = '#10b981';
-    } else if (payment.paymentType === 'DONATION') {
-      paymentTypeBadge.style.backgroundColor = 'rgba(245, 158, 11, 0.2)';
-      paymentTypeBadge.style.color = '#f59e0b';
-    } else if (payment.paymentType === 'EXPENSE' || payment.isExpense) {
-      paymentTypeBadge.style.backgroundColor = 'rgba(239, 68, 68, 0.2)';
-      paymentTypeBadge.style.color = '#ef4444';
-    } else if (isSpecial) {
-      paymentTypeBadge.style.backgroundColor = 'rgba(139, 92, 246, 0.2)';
-      paymentTypeBadge.style.color = '#8b5cf6';
-    } else {
-      paymentTypeBadge.style.backgroundColor = 'rgba(100, 116, 139, 0.2)';
-      paymentTypeBadge.style.color = '#94a3b8';
-    }
-    
-    return paymentTypeBadge;
-  }
-  
-  getFriendlySpecialOfferingName(paymentType) {
-    // First check if we have this special offering in our cache
-    const specialOffering = this.specialOfferings.find(o => 
-      o.paymentType === paymentType || 
-      o.offeringType === paymentType
-    );
-    
-    // If we found it in our cache, return its proper name
-    if (specialOffering) {
-      if (specialOffering.name) return specialOffering.name;
-      if (specialOffering.description) return specialOffering.description;
-    }
-    
-    // Clean up the type string for display
-    let displayName = "Special Offering";
-    
-    // Extract a meaningful name from the type
-    if (paymentType && paymentType.startsWith('SPECIAL_')) {
-      // Get just the unique part without the SPECIAL_ prefix
-      const uniquePart = paymentType.replace('SPECIAL_', '');
-      
-      // If we have a specialOffering object with a name/description, use that
-      if (specialOffering && (specialOffering.name || specialOffering.description)) {
-        return specialOffering.name || specialOffering.description;
-      }
-      
-      // Otherwise, format the ID part nicely
-      if (uniquePart.length > 8) {
-        // Try to parse to see if it's a date-based ID
-        if (uniquePart.includes('-')) {
-          const parts = uniquePart.split('-');
-          if (parts.length >= 2) {
-            // If it looks like a date pattern
-            return `${displayName} (${parts[0]})`;
-          }
-        }
-        // If it's just long, truncate with ellipsis
-        return `${displayName} ${uniquePart.substring(0, 8)}...`;
-      }
-      
-      // For shorter IDs, show the full thing
-      return `${displayName} ${uniquePart}`;
-    }
-    
-    // Fallback
-    return displayName;
-  }
-  
-  renderPaymentDetailModal() {
-    const modalBackdrop = this.createElement('div', {
-      id: 'payment-detail-modal',
-      className: 'modal-backdrop',
-      style: {
-        display: 'none',
-        position: 'fixed',
-        top: '0',
-        left: '0',
-        width: '100%',
-        height: '100%',
-        backgroundColor: 'rgba(0, 0, 0, 0.7)',
-        zIndex: '1000',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '20px',
-        boxSizing: 'border-box',
-        overflow: 'auto',
-        backdropFilter: 'blur(5px)'
-      }
-    });
-    
-    const modalContent = this.createElement('div', {
-      className: 'modal-content neo-card',
-      style: {
-        position: 'relative',
-        width: '90%',
-        maxWidth: '800px',
-        maxHeight: '90vh',
-        overflow: 'auto',
-        margin: 'auto',
-        animation: 'slideIn 0.3s ease-out'
-      }
-    });
-    
-    // Add glow effect
-    const modalGlow = this.createElement('div', {
-      className: 'card-glow',
-      style: {
-        background: 'radial-gradient(circle at center, rgba(99, 102, 241, 0.3), transparent 70%)'
-      }
-    });
-    modalContent.appendChild(modalGlow);
-    
-    // Modal header
-    const modalHeader = this.createElement('div', {
-      style: {
-        borderBottom: '1px solid rgba(148, 163, 184, 0.1)',
-        padding: '16px 24px',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        position: 'relative'
-      }
-    });
-    
-    const modalTitle = this.createElement('h3', {
-      id: 'modal-title',
-      style: {
-        margin: '0',
-        fontSize: '20px',
-        fontWeight: '600',
-        color: '#f1f5f9'
-      }
-    }, 'Payment Details');
-    
-    const closeButton = this.createElement('button', {
-      className: 'close-modal',
-      style: {
-        background: 'none',
-        border: 'none',
-        color: '#94a3b8',
-        cursor: 'pointer',
-        padding: '0',
-        lineHeight: '1',
-        opacity: '0.8',
-        transition: 'all 0.2s ease'
-      }
-    });
-    
-    closeButton.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="18" y1="6" x2="6" y2="18"></line>
-        <line x1="6" y1="6" x2="18" y2="18"></line>
-      </svg>
-    `;
-    
-    // Hover effect
-    closeButton.addEventListener('mouseenter', () => {
-      closeButton.style.opacity = '1';
-      closeButton.style.color = '#f1f5f9';
-    });
-    
-    closeButton.addEventListener('mouseleave', () => {
-      closeButton.style.opacity = '0.8';
-      closeButton.style.color = '#94a3b8';
-    });
-    
-    closeButton.addEventListener('click', () => {
-      modalBackdrop.style.display = 'none';
-    });
-    
-    modalHeader.appendChild(modalTitle);
-    modalHeader.appendChild(closeButton);
-    
-    // Modal body
-    const modalBody = this.createElement('div', {
-      id: 'modal-body',
-      style: {
-        padding: '24px'
-      }
-    });
-    
-    // Loading placeholder
-    const loadingPlaceholder = this.createElement('div', {
-      style: {
-        textAlign: 'center',
-        padding: '40px 0'
-      }
-    });
-    
-    const spinner = this.createElement('div', {
-      className: 'loading-spinner',
-      style: {
-        marginBottom: '16px'
-      }
-    });
-    
-    const loadingText = this.createElement('div', {
-      style: {
-        color: '#94a3b8'
-      }
-    }, 'Loading payment details...');
-    
-    loadingPlaceholder.appendChild(spinner);
-    loadingPlaceholder.appendChild(loadingText);
-    
-    modalBody.appendChild(loadingPlaceholder);
-    
-    // Modal footer
-    const modalFooter = this.createElement('div', {
-      style: {
-        borderTop: '1px solid rgba(148, 163, 184, 0.1)',
-        padding: '16px 24px',
-        display: 'flex',
-        justifyContent: 'flex-end',
-        gap: '15px',
-        position: 'relative'
-      }
-    });
-    
-    const closeModalButton = this.createFuturisticButton('Close', '#64748b', () => {
-      modalBackdrop.style.display = 'none';
-    });
-    
-    const downloadButton = this.createElement('button', {
-      id: 'modal-download-btn',
-      className: 'futuristic-button',
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(37, 99, 235, 0.1))',
-        border: '1px solid rgba(59, 130, 246, 0.3)'
-      }
-    }, 'Download PDF');
-    
-    // Add download icon
-    downloadButton.prepend(this.createSvgIcon('download'));
-    
-    // Send SMS button
-    const sendSmsButton = this.createElement('button', {
-      id: 'modal-sms-btn',
-      className: 'futuristic-button',
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(109, 40, 217, 0.1))',
-        border: '1px solid rgba(139, 92, 246, 0.3)'
-      }
-    }, 'Send SMS');
-    
-    // Add SMS icon
-    sendSmsButton.prepend(this.createSvgIcon('sms'));
-    
-    modalFooter.appendChild(closeModalButton);
-    modalFooter.appendChild(sendSmsButton);
-    modalFooter.appendChild(downloadButton);
-    
-    modalContent.appendChild(modalHeader);
-    modalContent.appendChild(modalBody);
-    modalContent.appendChild(modalFooter);
-    
-    modalBackdrop.appendChild(modalContent);
-    
-    return modalBackdrop;
-  }
-  
-  renderSmsStatusModal() {
-    const smsStatusModal = this.createElement('div', {
-      id: 'sms-status-modal',
-      style: {
-        display: 'none',
-        position: 'fixed',
-        top: '20px',
-        right: '20px',
-        zIndex: '2000',
-        padding: '16px',
-        borderRadius: '12px',
-        boxShadow: '0 10px 25px rgba(0, 0, 0, 0.2)',
-        maxWidth: '350px',
-        width: '100%',
-        animation: 'slideIn 0.3s ease-out'
-      },
-      className: 'neo-card'
-    });
-    
-    return smsStatusModal;
-  }
-  
-  renderLoading() {
-    const loadingContainer = this.createElement('div', {
-      className: 'neo-card animated-item',
-      style: {
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '60px 0',
-        animationDelay: '0.2s'
-      }
-    });
-    
-    // Add glow effect
-    const loadingGlow = this.createElement('div', {
-      className: 'card-glow',
-      style: {
-        background: 'radial-gradient(circle at center, rgba(99, 102, 241, 0.2), transparent 70%)'
-      }
-    });
-    loadingContainer.appendChild(loadingGlow);
-    
-    const spinner = this.createElement('div', {
-      className: 'loading-spinner',
-      style: {
-        width: '50px',
-        height: '50px',
-        marginBottom: '20px'
-      }
-    });
-    
-    const loadingText = this.createElement('div', {
-      style: {
-        color: '#94a3b8',
-        fontSize: '18px',
-        fontWeight: '500'
-      }
-    }, 'Loading payment data...');
-    
-    loadingContainer.appendChild(spinner);
-    loadingContainer.appendChild(loadingText);
-    
-    return loadingContainer;
-  }
-  
-  renderError(error) {
-    const errorContainer = this.createElement('div', {
-      className: 'neo-card animated-item',
-      style: {
-        padding: '30px',
-        textAlign: 'center',
-        animation: 'fadeIn 0.3s ease-out'
-      }
-    });
-    
-    // Add glow effect
-    const errorGlow = this.createElement('div', {
-      className: 'card-glow',
-      style: {
-        background: 'radial-gradient(circle at center, rgba(239, 68, 68, 0.3), transparent 70%)'
-      }
-    });
-    errorContainer.appendChild(errorGlow);
-    
-    const errorIcon = this.createElement('div', {
-      style: {
-        margin: '0 auto 24px',
-        width: '60px',
-        height: '60px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        color: '#ef4444'
-      }
-    });
-    
-    errorIcon.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="10"></circle>
-        <line x1="12" y1="8" x2="12" y2="12"></line>
-        <line x1="12" y1="16" x2="12.01" y2="16"></line>
-      </svg>
-    `;
-    
-    const errorTitle = this.createElement('h2', {
-      style: {
-        fontSize: '24px',
-        fontWeight: '600',
-        color: '#f1f5f9',
-        margin: '0 0 16px'
-      }
-    }, 'Error Loading Payments');
-    
-    const errorMessage = this.createElement('p', {
-      style: {
-        fontSize: '16px',
-        color: '#94a3b8',
-        margin: '0 0 30px',
-        maxWidth: '600px',
-        marginLeft: 'auto',
-        marginRight: 'auto'
-      }
-    }, error.message || 'An unexpected error occurred. Please try again later.');
-    
-    const retryButton = this.createFuturisticButton('Retry', '#ef4444', () => {
-      this.isLoading = true;
-      this.error = null;
-      this.updateView();
-    });
-    
-    // Add retry icon
-    const retryIcon = this.createElement('span');
-    retryIcon.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M3 2v6h6"></path>
-        <path d="M3 13a9 9 0 1 0 3-7.7L3 8"></path>
-      </svg>
-    `;
-    
-    retryButton.prepend(retryIcon);
-    
-    errorContainer.appendChild(errorIcon);
-    errorContainer.appendChild(errorTitle);
-    errorContainer.appendChild(errorMessage);
-    errorContainer.appendChild(retryButton);
-    
-    return errorContainer;
-  }
-  
-  renderUnauthorized() {
-    const unauthorizedContainer = this.createElement('div', {
-      className: 'neo-card animated-item',
-      style: {
-        maxWidth: '800px',
-        margin: '40px auto',
-        padding: '40px 30px',
-        textAlign: 'center',
-        animation: 'fadeIn 0.3s ease-out'
-      }
-    });
-    
-    // Add glow effect
-    const unauthorizedGlow = this.createElement('div', {
-      className: 'card-glow',
-      style: {
-        background: 'radial-gradient(circle at center, rgba(239, 68, 68, 0.3), transparent 70%)'
-      }
-    });
-    unauthorizedContainer.appendChild(unauthorizedGlow);
-    
-    const unauthorizedIcon = this.createElement('div', {
-      style: {
-        margin: '0 auto 24px',
-        width: '80px',
-        height: '80px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        color: '#ef4444'
-      }
-    });
-    
-    unauthorizedIcon.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-      </svg>
-    `;
-    
-    const unauthorizedTitle = this.createElement('h2', {
-      style: {
-        fontSize: '28px',
-        fontWeight: '700',
-        color: '#f1f5f9',
-        margin: '0 0 16px',
-        background: 'linear-gradient(to right, #ffffff, #fee2e2)',
-        backgroundClip: 'text',
-        WebkitBackgroundClip: 'text',
-        color: 'transparent',
-        WebkitTextFillColor: 'transparent'
-      }
-    }, 'Access Denied');
-    
-    const unauthorizedMessage = this.createElement('p', {
-      style: {
-        fontSize: '16px',
-        color: '#94a3b8',
-        margin: '0 0 40px',
-        maxWidth: '600px',
-        marginLeft: 'auto',
-        marginRight: 'auto',
-        lineHeight: '1.6'
-      }
-    }, 'You do not have permission to access this page. Only administrators can manage payments.');
-    
-    const homeButton = this.createElement('a', {
-      href: '/dashboard',
-      className: 'futuristic-button',
-      style: {
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: '8px',
-        padding: '12px 24px',
-        fontSize: '16px',
-        background: 'linear-gradient(135deg, rgba(79, 70, 229, 0.2), rgba(79, 70, 229, 0.1))',
-        border: '1px solid rgba(79, 70, 229, 0.3)'
-      }
-    }, 'Go to Dashboard');
-    
-    // Add home icon
-    const homeIcon = this.createElement('span');
-    homeIcon.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-        <polyline points="9 22 9 12 15 12 15 22"></polyline>
-      </svg>
-    `;
-    
-    homeButton.prepend(homeIcon);
-    
-    unauthorizedContainer.appendChild(unauthorizedIcon);
-    unauthorizedContainer.appendChild(unauthorizedTitle);
-    unauthorizedContainer.appendChild(unauthorizedMessage);
-    unauthorizedContainer.appendChild(homeButton);
-    
-    return unauthorizedContainer;
-  }
-  
-  // API Request Throttling
-  queueApiRequest(requestFunction) {
-    return new Promise((resolve, reject) => {
-      this.apiRequestQueue.push({
-        request: requestFunction,
-        resolve,
-        reject
-      });
-      
-      if (!this.isProcessingQueue) {
-        this.processApiRequestQueue();
-      }
-    });
+    return userCell;
   }
 
-  processApiRequestQueue() {
-    if (this.apiRequestQueue.length === 0) {
-      this.isProcessingQueue = false;
-      return;
+  renderAmountCell(payment) {  
+    const amountCell = this.createElement('div', { className: 'amount-cell' });
+    amountCell.style.color = payment.isExpense ? '#ef4444' : '#10b981';
+    const amount = payment.amount !== null && payment.amount !== undefined ? parseFloat(payment.amount) : 0;
+    amountCell.textContent = `${payment.isExpense ? '-' : ''}KES ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return amountCell;
+  }
+
+  createStatusBadge(status) {  
+    const colors = { COMPLETED: { bg: 'rgba(16, 185, 129, 0.2)', color: '#10b981' }, PENDING: { bg: 'rgba(245, 158, 11, 0.2)', color: '#f59e0b' }, FAILED: { bg: 'rgba(239, 68, 68, 0.2)', color: '#ef4444' }};
+    const config = colors[status] || colors.PENDING;  
+    const badge = this.createElement('span', { className: 'status-badge' }, status || 'Unknown');  
+    Object.assign(badge.style, { backgroundColor: config.bg, color: config.color });
+    return badge;
+  }
+
+  renderActionButtons(payment) {  
+    const actionsContainer = this.createElement('div', { className: 'action-buttons-container' });
+    const viewButton = this.createElement('button', { className: 'action-button view-payment-btn', 'data-id': payment.id });
+    const eyeIcon = this.createSvgIcon('eye');
+    if (eyeIcon) viewButton.appendChild(eyeIcon);
+    viewButton.appendChild(document.createTextNode('View'));
+    actionsContainer.appendChild(viewButton);
+
+    if (payment.User && payment.User.phone) {
+      const smsButton = this.createElement('button', { className: 'action-button send-sms-btn', 'data-id': payment.id, 'data-phone': payment.User.phone, 'data-name': payment.User.fullName });
+      const smsStateData = this.smsState.get(payment.id) || { sent: false, sending: false };
+      this.styleSmsButton(smsButton, smsStateData.sending ? 'sending' : (smsStateData.sent ? 'sent' : 'default'));
+      actionsContainer.appendChild(smsButton);
+    }
+    return actionsContainer;
+  }
+
+  renderPagination() {  
+    const paginationContainer = this.createElement('div', { className: 'pagination-container' });
+    if (this.currentPage > 1) {
+      paginationContainer.appendChild(this.createElement('button', { className: 'pagination-item', 'data-page': this.currentPage - 1 }, '« Prev'));
+    }
+    const startPage = Math.max(1, this.currentPage - 2);
+    const endPage = Math.min(this.totalPages, this.currentPage + 2);  
+    if (startPage > 1) paginationContainer.appendChild(this.createElement('button', {className: 'pagination-item', 'data-page': 1}, '1'));
+    if (startPage > 2) paginationContainer.appendChild(this.createElement('span', {className: 'pagination-ellipsis'}, '...'));
+    
+    for (let i = startPage; i <= endPage; i++) {
+      paginationContainer.appendChild(this.createElement('button', { className: `pagination-item ${i === this.currentPage ? 'active' : ''}`, 'data-page': i }, i.toString()));
+    }
+
+    if (endPage < this.totalPages -1) paginationContainer.appendChild(this.createElement('span', {className: 'pagination-ellipsis'}, '...'));
+    if (endPage < this.totalPages) paginationContainer.appendChild(this.createElement('button', {className: 'pagination-item', 'data-page': this.totalPages}, this.totalPages.toString()));
+
+    if (this.currentPage < this.totalPages) {
+      paginationContainer.appendChild(this.createElement('button', { className: 'pagination-item', 'data-page': this.currentPage + 1 }, 'Next »'));
+    }
+    return paginationContainer;
+  }
+  
+  getPaymentTypeDisplayName(payment) {
+    if (!payment) return 'Unknown';
+    if (payment.isExpense || payment.paymentType === 'EXPENSE') return 'Expense';
+    if (payment.paymentType === 'TITHE') return 'Tithe';
+    if (payment.paymentType === 'OFFERING') return 'Offering';
+    if (payment.paymentType === 'DONATION') return 'Donation';
+    
+    if (payment.paymentType && payment.paymentType.startsWith('SPECIAL_')) {
+      // this.specialOfferings is populated by fetchSpecialOfferings
+      const specialOffering = this.specialOfferings.find(o =>  
+        o.paymentType === payment.paymentType || o.offeringType === payment.paymentType
+      );
+      if (specialOffering) {
+        return this.escapeHtml(specialOffering.description || specialOffering.name || `Special: ${payment.paymentType.replace('SPECIAL_', '')}`);
+      }
+      return `Special: ${this.escapeHtml(payment.paymentType.replace('SPECIAL_', '').replace(/_/g, ' '))}`;
     }
     
+    const knownTypes = { 'OTHER': 'Other' };
+    return knownTypes[payment.paymentType] || (payment.paymentType ? this.escapeHtml(payment.paymentType.charAt(0).toUpperCase() + payment.paymentType.slice(1).toLowerCase().replace(/_/g, ' ')) : 'Unknown');
+  }
+
+  createPaymentTypeBadge(payment) {  
+    const typeName = this.getPaymentTypeDisplayName(payment);
+    let badgeColor = { bg: 'rgba(100, 116, 139, 0.2)', color: '#94a3b8' };  
+    if (payment.isExpense || payment.paymentType === 'EXPENSE') badgeColor = { bg: 'rgba(239, 68, 68, 0.2)', color: '#ef4444' };
+    else if (payment.paymentType === 'TITHE') badgeColor = { bg: 'rgba(59, 130, 246, 0.2)', color: '#3b82f6' };
+    else if (payment.paymentType === 'OFFERING') badgeColor = { bg: 'rgba(16, 185, 129, 0.2)', color: '#10b981' };
+    else if (payment.paymentType === 'DONATION') badgeColor = { bg: 'rgba(245, 158, 11, 0.2)', color: '#f59e0b' };
+    else if (payment.paymentType && payment.paymentType.startsWith('SPECIAL_')) badgeColor = { bg: 'rgba(139, 92, 246, 0.2)', color: '#8b5cf6' };
+    
+    const badge = this.createElement('span', { className: 'payment-type-badge' }, typeName.length > 25 ? typeName.substring(0,22) + '...' : typeName);
+    Object.assign(badge.style, { backgroundColor: badgeColor.bg, color: badgeColor.color });
+    return badge;
+  }
+
+  queueApiRequest(requestFunction) {  
+    return new Promise((resolve, reject) => {
+      this.apiRequestQueue.push({ request: requestFunction, resolve, reject });
+      if (!this.isProcessingQueue) this.processApiRequestQueue();
+    });
+  }
+  async processApiRequestQueue() {  
+    if (this.apiRequestQueue.length === 0) { this.isProcessingQueue = false; return; }
     this.isProcessingQueue = true;
     const { request, resolve, reject } = this.apiRequestQueue.shift();
+    try { resolve(await request()); } catch (error) { reject(error); }  
+    finally { setTimeout(() => this.processApiRequestQueue(), this.requestThrottleTime); }
+  }
     
+  async fetchAllPaymentsData() {
+    if (this._fetchInProgress) return;  
+    this._fetchInProgress = true;
+    this.isLoading = true;
+    this.error = null;  
+    if(this.isRendered) this.updateView();  
+
     try {
-      request()
-        .then(result => resolve(result))
-        .catch(error => reject(error))
-        .finally(() => {
-          setTimeout(() => {
-            this.processApiRequestQueue();
-          }, this.requestThrottleTime);
-        });
+      const response = await this.queueApiRequest(() => this.apiService.get('/payment/all'));  
+
+      if (response && Array.isArray(response.payments)) {
+        this.allPaymentsMasterList = response.payments.sort((a, b) => b.id - a.id);  
+      } else {
+        this.allPaymentsMasterList = [];
+        console.warn("No payments data received or in unexpected format:", response);
+      }
+      this.applyFiltersAndPagination(this.filters);  
     } catch (error) {
-      reject(error);
-      setTimeout(() => {
-        this.processApiRequestQueue();
-      }, this.requestThrottleTime);
-    }
-  }
-  
-  // Efficient Data Fetching with Cache
-  isCacheValid(key) {
-    return this.paymentCache[key] && 
-           (Date.now() - this.paymentCache[key].timestamp < this.CACHE_LIFETIME);
-  }
-  
-  async fetchPayments(page = 1) {
-    try {
-      if (this.isLoading) {
-        this._fetchInProgress = true;
-      }
-      
-      const cacheKey = this.generateCacheKey(page);
-      if (this.isCacheValid(cacheKey)) {
-        console.log('Using cached payment data');
-        this.payments = this.paymentCache[cacheKey].payments;
-        this.totalPages = this.paymentCache[cacheKey].totalPages;
-        this.totalPayments = this.paymentCache[cacheKey].total;
-        this.currentPage = page;
-        this.isLoading = false;
-        
-        if (this._fetchInProgress) {
-          this._fetchInProgress = false;
-          this.updateView();
-        }
-        return;
-      }
-      
-      const params = new URLSearchParams();
-      params.append('page', page || this.currentPage);
-      
-      Object.entries(this.filters).forEach(([key, value]) => {
-        if (value) {
-          if (key === 'specialOffering' && this.filters.paymentType === 'SPECIAL') {
-            params.append('paymentType', value);
-          } else if (key !== 'specialOffering') {
-            params.append(key, value);
-          }
-        }
-      });
-      
-      console.log('Fetching payment data from API');
-      const response = await this.queueApiRequest(() => this.apiService.get(`/payment/all?${params.toString()}`));
-      
-      if (response) {
-        this.payments = response.payments || [];
-        this.totalPages = response.totalPages || 1;
-        this.totalPayments = response.total || 0;
-        this.currentPage = page || this.currentPage;
-        
-        // IMPROVED SORTING: More robust date comparison with fallbacks
-        this.payments.sort((a, b) => {
-          // First, try paymentDate (primary date field)
-          const aDate = a.paymentDate ? new Date(a.paymentDate) : null;
-          const bDate = b.paymentDate ? new Date(b.paymentDate) : null;
-          
-          // If both have valid paymentDate, compare them
-          if (aDate && bDate) {
-            return bDate - aDate; // Descending order (newest first)
-          }
-          
-          // Fallback to createdAt if available
-          if (a.createdAt && b.createdAt) {
-            return new Date(b.createdAt) - new Date(a.createdAt);
-          }
-          
-          // Fallback to updatedAt if available
-          if (a.updatedAt && b.updatedAt) {
-            return new Date(b.updatedAt) - new Date(a.updatedAt);
-          }
-          
-          // Last resort: compare IDs (newer IDs are typically higher)
-          return b.id - a.id;
-        });
-        
-        this.paymentCache[cacheKey] = {
-          payments: this.payments,
-          totalPages: this.totalPages,
-          total: this.totalPayments,
-          timestamp: Date.now()
-        };
-        
-        console.log(`Loaded ${this.payments.length} payments successfully`);
-      }
-      
-      this.isLoading = false;
-      
-      if (this._fetchInProgress) {
-        this._fetchInProgress = false;
-        this.updateView();
-      }
-    } catch (error) {
-      console.error('Error fetching payments:', error);
-      this.error = 'Failed to load payments. Please try again.';
+      console.error('Error fetching all payments data:', error);
+      this.error = `Failed to load payment data: ${error.message || 'Unknown API error'}`;
+      this.allPaymentsMasterList = [];
+      this.applyFiltersAndPagination(this.filters);  
+    } finally {
       this.isLoading = false;
       this._fetchInProgress = false;
-      this.updateView();
+      this.updateView();  
+    }
+  }
+
+  applyClientSideFilters(sourceFilters) {
+    let filtered = [...this.allPaymentsMasterList];
+
+    // Search filter (always from sourceFilters.search, which might be from main filter or export filter)
+    if (sourceFilters.search) {
+      const searchTerm = sourceFilters.search.toLowerCase();
+      filtered = filtered.filter(p =>  
+        (p.User?.fullName?.toLowerCase().includes(searchTerm)) ||
+        (p.User?.phone?.includes(searchTerm)) ||
+        (p.description?.toLowerCase().includes(searchTerm)) ||
+        (p.paymentMethod?.toLowerCase().includes(searchTerm)) ||
+        (p.id?.toString().includes(searchTerm)) ||  
+        (this.getPaymentTypeDisplayName(p).toLowerCase().includes(searchTerm))
+      );
+    }
+
+    // The following filters are primarily for the export functionality
+    if (sourceFilters.startDate) {
+        try {
+            const startDate = new Date(sourceFilters.startDate);
+            startDate.setHours(0,0,0,0);  
+            if (!isNaN(startDate)) { 
+                filtered = filtered.filter(p => new Date(p.paymentDate) >= startDate);
+            }
+        } catch (e) { console.warn("Invalid start date for filter:", sourceFilters.startDate); }
+    }
+    if (sourceFilters.endDate) {
+        try {
+            const endDate = new Date(sourceFilters.endDate);
+            endDate.setHours(23,59,59,999);  
+            if (!isNaN(endDate)) { 
+                filtered = filtered.filter(p => new Date(p.paymentDate) <= endDate);
+            }
+        } catch (e) { console.warn("Invalid end date for filter:", sourceFilters.endDate); }
+    }
+    
+    if (sourceFilters.paymentType) {
+        if (sourceFilters.paymentType === 'SPECIAL') {
+            if (sourceFilters.specialOffering) {  
+                filtered = filtered.filter(p => p.paymentType === sourceFilters.specialOffering);
+            } else {  
+                filtered = filtered.filter(p => p.paymentType && p.paymentType.startsWith('SPECIAL_'));
+            }
+        } else {  
+            filtered = filtered.filter(p => p.paymentType === sourceFilters.paymentType);
+        }
+    }
+    
+    // This userId filter is only relevant if export filters include it, not for main view
+    if (sourceFilters.userId) {  
+        filtered = filtered.filter(p => p.User && p.User.id?.toString() === sourceFilters.userId);
+    }
+    
+    return filtered;
+  }
+
+  applyFiltersAndPagination(filterSetToUse) {
+    // filterSetToUse will be this.filters for main view (only search)
+    // or exportSpecificFilters for export (search + dates, type, etc.)
+    const filteredPayments = this.applyClientSideFilters(filterSetToUse);
+    this.totalFilteredPayments = filteredPayments.length;
+    this.totalPages = Math.ceil(this.totalFilteredPayments / this.pageSize) || 1;
+    this.currentPage = Math.max(1, Math.min(this.currentPage, this.totalPages));  
+    this.payments = filteredPayments;  
+  }
+  
+  showExportFilterModal(format) {
+    this.exportFilterState.format = format; // Store intended format
+    const modal = document.getElementById('export-filter-modal');
+    if (modal) {
+        // Populate with current exportFilterState or empty
+        modal.querySelector('#export-start-date').value = this.exportFilterState.startDate || '';
+        modal.querySelector('#export-end-date').value = this.exportFilterState.endDate || '';
+        
+        const paymentTypeSelect = modal.querySelector('#export-payment-type');
+        paymentTypeSelect.value = this.exportFilterState.paymentType || '';
+
+        const specialOfferingGroup = modal.querySelector('#export-special-offering-group');
+        const specialOfferingSelect = modal.querySelector('#export-special-offering');
+        
+        this.populateExportFilterSpecialOfferings(); // Make sure options are up-to-date
+
+        if (paymentTypeSelect.value === 'SPECIAL') {
+            specialOfferingGroup.style.display = 'grid';
+            specialOfferingSelect.value = this.exportFilterState.specialOffering || '';
+        } else {
+            specialOfferingGroup.style.display = 'none';
+            specialOfferingSelect.value = ''; // Clear if not 'SPECIAL'
+        }
+        
+        // Update the info text about the search term
+        const searchInfoP = modal.querySelector('#export-search-info');
+        if (searchInfoP) {
+            searchInfoP.innerHTML = `The current main search term ("<strong style="color:#e0e7ff;">${this.escapeHtml(this.filters.search) || 'None'}</strong>") will also be applied.`;
+        }
+
+        modal.style.display = 'flex';
     }
   }
   
-  
-  // Generate a cache key based on current filters and page
-  generateCacheKey(page) {
-    const filterValues = Object.values(this.filters).join('-');
-    return `payments-${page}-${filterValues}`;
+  async handleProceedWithExport() {
+    const modal = document.getElementById('export-filter-modal');
+    if (!modal) return;
+
+    // Read values from the export modal
+    const exportFilters = {
+        startDate: modal.querySelector('#export-start-date').value,
+        endDate: modal.querySelector('#export-end-date').value,
+        paymentType: modal.querySelector('#export-payment-type').value,
+        specialOffering: '', 
+        search: this.filters.search // Carry over main search term
+    };
+
+    if (exportFilters.paymentType === 'SPECIAL') {
+        exportFilters.specialOffering = modal.querySelector('#export-special-offering').value;
+    }
+
+    // Update exportFilterState with the chosen values for persistence
+    this.exportFilterState.startDate = exportFilters.startDate;
+    this.exportFilterState.endDate = exportFilters.endDate;
+    this.exportFilterState.paymentType = exportFilters.paymentType;
+    this.exportFilterState.specialOffering = exportFilters.specialOffering;
+    // this.exportFilterState.format is already set
+    
+    modal.style.display = 'none'; // Hide modal
+    this.exportPayments(this.exportFilterState.format, exportFilters);
+  }
+
+
+  async exportPayments(format, exportSpecificFilters) {
+    this.showMessage(`Preparing ${format.toUpperCase()} export...`, 'info');
+    
+    // applyClientSideFilters will use the exportSpecificFilters (which include date, type, SO, and main search)
+    const paymentsToExport = this.applyClientSideFilters(exportSpecificFilters);  
+
+    if (paymentsToExport.length === 0) {
+        this.showMessage('No data to export with the selected filters.', 'error');
+        return;
+    }
+
+    if (format === 'csv') {
+      try {
+        const headers = ['ID', 'Date', 'User Name', 'User Phone', 'Payment Type', 'Description', 'Method', 'Amount (KES)', 'Status', 'Receipt No.'];
+        const csvRows = [];
+        csvRows.push(headers.join(','));  
+
+        paymentsToExport.forEach(p => {
+          const row = [
+            p.id,
+            this.formatDate(new Date(p.paymentDate)),
+            `"${p.User?.fullName?.replace(/"/g, '""') || ''}"`,  
+            p.User?.phone || '',
+            this.getPaymentTypeDisplayName(p),
+            `"${p.description?.replace(/"/g, '""') || ''}"`,  
+            p.paymentMethod || '',
+            p.amount,
+            p.status || '',
+            p.receiptNumber || ''
+          ];
+          csvRows.push(row.join(','));
+        });
+
+        const csvString = csvRows.join('\r\n');
+        const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+        a.download = `payments_export_${timestamp}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        this.showMessage('CSV export generated successfully.', 'success');
+      } catch (error) {
+        console.error('Error generating CSV:', error);
+        this.showMessage(`Failed to generate CSV: ${error.message}`, 'error');
+      }
+    } else if (format === 'pdf') {
+      try {
+        if (this.pdfState.generating) {
+          this.showMessage('PDF generation is already in progress.', 'info');
+          return;
+        }
+        this.pdfState.generating = true;
+        this.showMessage('Generating PDF report...', 'info'); // Indicate report generation
+        await this.generateBatchPdfInBrowser(paymentsToExport);
+      } catch (error) {
+        console.error('Error generating batch PDF:', error);
+        this.showMessage(`Failed to generate PDF: ${error.message}`, 'error');
+      } finally {
+        this.pdfState.generating = false;
+      }
+    }
+  }
+
+  async generateBatchPdfInBrowser(paymentsToPrint) {
+    const printWindow = window.open('', '_blank', 'height=600,width=800,scrollbars=yes');
+    if (!printWindow) {
+      this.showMessage('Pop-up blocked! Please allow pop-ups for this site to generate PDF.', 'error', 10000);
+      throw new Error('Pop-up blocked.');
+    }
+    printWindow.document.write('<html><head><title>Payments Export</title>');
+    printWindow.document.write(`
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; font-size: 12px; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+            th, td { border: 1px solid #ccc; padding: 6px; text-align: left; font-size: 10px; word-break: break-word; }
+            th { background-color: #e9e9e9; font-weight: bold; }
+            h1 { text-align: center; margin-bottom: 20px; font-size: 18px; }
+            .print-controls { text-align: center; margin-top: 20px; padding-top: 10px; border-top: 1px solid #ccc; }
+            /* Buttons styled via JS for CSP */
+            @media print { .print-controls { display: none !important; } body { margin: 0.5in; font-size: 10pt;} table{font-size: 9pt;} }
+        </style>
+    `);
+    printWindow.document.write('</head><body>');
+    printWindow.document.write('<h1>Payment Records</h1>');
+    printWindow.document.write('<table><thead><tr>');
+    const headers = ['ID', 'Date', 'User', 'Type', 'Method', 'Amount (KES)', 'Status', 'Description'];
+    headers.forEach(h => printWindow.document.write(`<th>${this.escapeHtml(h)}</th>`));
+    printWindow.document.write('</tr></thead><tbody>');
+
+    paymentsToPrint.forEach(p => {
+        const amount = p.amount !== null && p.amount !== undefined ? parseFloat(p.amount) : 0;
+        printWindow.document.write('<tr>');
+        printWindow.document.write(`<td>${p.id}</td>`);
+        printWindow.document.write(`<td>${this.formatDate(new Date(p.paymentDate))}</td>`);
+        printWindow.document.write(`<td>${this.escapeHtml(p.User?.fullName) || 'N/A'} (${this.escapeHtml(p.User?.phone) || 'N/A'})</td>`);
+        printWindow.document.write(`<td>${this.getPaymentTypeDisplayName(p)}</td>`);
+        printWindow.document.write(`<td>${this.escapeHtml(p.paymentMethod) || ''}</td>`);
+        printWindow.document.write(`<td style="text-align:right;">${p.isExpense ? '-' : ''}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>`);
+        printWindow.document.write(`<td>${this.escapeHtml(p.status) || ''}</td>`);
+        printWindow.document.write(`<td>${this.escapeHtml(p.description) || ''}</td>`);
+        printWindow.document.write('</tr>');
+    });
+
+    printWindow.document.write('</tbody></table>');
+    
+    const controlsDiv = printWindow.document.createElement('div');
+    controlsDiv.className = 'print-controls';
+    const printButton = printWindow.document.createElement('button');
+    printButton.textContent = 'Print Records';
+    printButton.style.cssText = 'padding: 8px 15px; font-size: 14px; cursor: pointer; margin: 0 5px; background-color:#4A90E2; color:white; border:none; border-radius:4px;';
+    const closeButton = printWindow.document.createElement('button');
+    closeButton.textContent = 'Close';
+    closeButton.style.cssText = 'padding: 8px 15px; font-size: 14px; cursor: pointer; margin: 0 5px; background-color:#ccc; color:black; border:none; border-radius:4px;';
+    controlsDiv.appendChild(printButton);
+    controlsDiv.appendChild(closeButton);
+    printWindow.document.body.appendChild(controlsDiv);
+    
+    printWindow.document.write('</body></html>');
+    printWindow.document.close();  
+
+    printWindow.onload = () => { 
+        const pButton = printWindow.document.querySelector('.print-controls button:first-child');
+        const cButton = printWindow.document.querySelector('.print-controls button:last-child');
+        if(pButton) pButton.addEventListener('click', () => printWindow.print());
+        if(cButton) cButton.addEventListener('click', () => printWindow.close());
+        printWindow.focus();  
+        this.showMessage('PDF ready for printing/saving. Use browser print option.', 'success');
+    };
   }
   
-  async fetchSpecialOfferings() {
+  async fetchSpecialOfferings() {  
     try {
-      // Try to use cache if available
-      if (this.specialOfferingsCache && 
-          (Date.now() - this.specialOfferingsCache.timestamp < this.CACHE_LIFETIME)) {
+      if (this.specialOfferingsCache && (Date.now() - this.specialOfferingsCache.timestamp < this.CACHE_LIFETIME)) {
         this.specialOfferings = this.specialOfferingsCache.data;
-        return;
-      }
-      
-      // Get special offerings for dropdown and naming
-      const response = await this.queueApiRequest(() => this.apiService.getSpecialOfferings());
-      
-      if (response && response.specialOfferings) {
-        this.specialOfferings = response.specialOfferings;
       } else {
-        this.specialOfferings = [];
-      }
-      
-      // Cache the results
-      this.specialOfferingsCache = {
-        data: this.specialOfferings,
-        timestamp: Date.now()
-      };
-      
-      // Update special offerings dropdown
-      const container = document.getElementById('payment-filters-form');
-      if (container) {
-        const select = container.querySelector('select[name="specialOffering"]');
-        if (select) {
-          // Clear existing options except the first one
-          while (select.options.length > 1) {
-            select.remove(1);
-          }
-          
-          // Add options for each special offering
-          this.specialOfferings.forEach(offering => {
-            const offeringName = offering.name || offering.description || this.getFriendlySpecialOfferingName(offering.offeringType || offering.paymentType || '');
-            
-            const option = document.createElement('option');
-            option.value = offering.offeringType || offering.paymentType;
-            option.textContent = offeringName;
-            select.appendChild(option);
-          });
-        }
+        // Using the apiService method for special offerings
+        const response = await this.queueApiRequest(() => this.apiService.getSpecialOfferings());
+        this.specialOfferings = (response && Array.isArray(response.specialOfferings)) ? response.specialOfferings : [];
+        this.specialOfferingsCache = { data: this.specialOfferings, timestamp: Date.now() };
       }
     } catch (error) {
       console.error('Error fetching special offerings:', error);
+      this.specialOfferings = []; // Default to empty array on error
     }
+    // Only populate for export filter modal as main filter doesn't have it anymore
+    this.populateExportFilterSpecialOfferings();  
   }
   
-  async viewPaymentDetails(paymentId) {
-    try {
-      const modal = document.getElementById('payment-detail-modal');
-      const modalBody = document.getElementById('modal-body');
-      const downloadBtn = document.getElementById('modal-download-btn');
-      const sendSmsBtn = document.getElementById('modal-sms-btn');
-      
-      if (!modal || !modalBody) return;
-      
-      // Show modal with loading state
-      modal.style.display = 'flex';
-      modalBody.innerHTML = `
-        <div style="text-align: center; padding: 40px 0;">
-          <div class="loading-spinner" style="margin-bottom: 16px;"></div>
-          <div style="color: #94a3b8;">Loading payment details...</div>
-        </div>
-      `;
-      
-      // Check if we already have the payment data
-      let payment = this.payments.find(p => p.id === parseInt(paymentId));
-      
-      // If not found in current page, fetch it
-      if (!payment) {
-        const response = await this.queueApiRequest(() => this.apiService.get(`/payment/${paymentId}`));
-        
-        if (!response || !response.payment) {
-          throw new Error('Payment details not found');
-        }
-        
-        payment = response.payment;
-      }
-      
-      this.selectedPayment = payment;
-      
-      // Update modal title to include payment type
-      const modalTitle = document.getElementById('modal-title');
-      if (modalTitle) {
-        const isSpecial = payment.paymentType && payment.paymentType.startsWith('SPECIAL_');
-        let paymentTypeName = this.formatPaymentType(payment.paymentType);
-        
-        // For special offerings, use the description instead of the type code
-        if (isSpecial) {
-          const specialOffering = this.specialOfferings.find(o => o.paymentType === payment.paymentType || o.offeringType === payment.paymentType);
-          if (specialOffering && (specialOffering.name || specialOffering.description)) {
-            paymentTypeName = `Special: ${specialOffering.name || specialOffering.description}`;
-          } else {
-            paymentTypeName = this.getFriendlySpecialOfferingName(payment.paymentType);
-          }
-        }
-        
-        modalTitle.textContent = `${paymentTypeName} Payment Details`;
-      }
-      
-      // Show or hide download button based on receipt availability
-      downloadBtn.style.display = 'flex';
-      downloadBtn.onclick = () => this.downloadPdf(payment);
-      
-      // Show or hide SMS button based on user phone availability
-      if (payment.User && payment.User.phone) {
-        sendSmsBtn.style.display = 'flex';
-        sendSmsBtn.onclick = () => this.sendSms(payment.User.phone, payment.User.fullName, payment);
-      } else {
-        sendSmsBtn.style.display = 'none';
-      }
-      
-      // Render payment details
-      modalBody.innerHTML = this.renderPaymentDetailsContent(payment);
-      
-    } catch (error) {
-      console.error('Error fetching payment details:', error);
-      
-      const modalBody = document.getElementById('modal-body');
-      if (modalBody) {
-        modalBody.innerHTML = `
-          <div style="text-align: center; padding: 40px 0; color: #ef4444;">
-            <svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin: 0 auto 20px;">
-              <circle cx="12" cy="12" r="10"></circle>
-              <path d="M12 8v4"></path>
-              <path d="M12 16h.01"></path>
-            </svg>
-            <p style="font-weight: 600; margin-bottom: 8px; font-size: 18px;">Error loading payment details</p>
-            <p style="color: #94a3b8;">${error.message}</p>
-          </div>
-        `;
-      }
-    }
-  }
-  
-  // Continuing from the previous code block...
+  // Removed populateMainFilterSpecialOfferings as it's no longer needed
 
-  renderPaymentDetailsContent(payment) {
-    // Start with an empty html string
-    let html = '';
-    
-    // Basic payment details grid
-    html += `
-      <div style="padding: 20px 0;">
-        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 24px;" class="payment-details-grid">
-    `;
-    
-    // User information
-    if (payment.User) {
-      html += `
-        <!-- User Information -->
-        <div class="neo-card" style="overflow: hidden; padding: 20px; background: rgba(30, 41, 59, 0.5);">
-          <h4 style="margin: 0 0 15px 0; font-size: 16px; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 8px;">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-              <circle cx="12" cy="7" r="4"></circle>
-            </svg>
-            User Information
-          </h4>
-          <div style="display: grid; grid-template-columns: 1fr; gap: 12px;">
-            <div>
-              <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Name</div>
-              <div style="font-size: 15px; font-weight: 500; color: #f1f5f9;">${payment.User.fullName}</div>
-            </div>
-            <div>
-              <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Phone</div>
-              <div style="font-size: 15px; color: #f1f5f9;">${payment.User.phone}</div>
-            </div>
-            ${payment.User.email ? `
-            <div>
-              <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Email</div>
-              <div style="font-size: 15px; color: #f1f5f9;">${payment.User.email}</div>
-            </div>
-            ` : ''}
-          </div>
-        </div>
-      `;
+  populateExportFilterSpecialOfferings() {
+    const modal = document.getElementById('export-filter-modal');
+    if (modal) {
+        const select = modal.querySelector('select[name="export-special-offering"]');
+        // Use this.exportFilterState.specialOffering for the current selection
+        this.populateSpecialOfferingsDropdown(select, this.exportFilterState.specialOffering);
     }
-    
-    // Payment information
-    html += `
-      <!-- Payment Information -->
-      <div class="neo-card" style="overflow: hidden; padding: 20px; background: rgba(30, 41, 59, 0.5);">
-        <h4 style="margin: 0 0 15px 0; font-size: 16px; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 8px;">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect>
-            <line x1="1" y1="10" x2="23" y2="10"></line>
-          </svg>
-          Payment Information
-        </h4>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-          <div>
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Payment ID</div>
-            <div style="font-size: 15px; color: #f1f5f9;">${payment.id}</div>
-          </div>
-          <div>
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Date</div>
-            <div style="font-size: 15px; color: #f1f5f9;">${this.formatDate(new Date(payment.paymentDate))}</div>
-          </div>
-          <div>
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Type</div>
-            <div style="font-size: 15px; color: #f1f5f9;">
-              ${this.formatPaymentType(payment.paymentType)}
-            </div>
-          </div>
-          <div>
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Method</div>
-            <div style="font-size: 15px; color: #f1f5f9;">${payment.paymentMethod}</div>
-          </div>
-          <div>
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Status</div>
-            <div style="font-size: 15px; color: 
-              ${payment.status === 'COMPLETED' ? '#10b981' : 
-                payment.status === 'PENDING' ? '#f59e0b' : 
-                '#ef4444'};">
-              ${payment.status}
-            </div>
-          </div>
-          <div>
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Receipt</div>
-            <div style="font-size: 15px; color: #f1f5f9;">${payment.receiptNumber || 'N/A'}</div>
-          </div>
-        </div>
-      </div>
-    `;
-    
-    // Amount information
-    html += `
-      <!-- Amount Information -->
-      <div class="neo-card" style="overflow: hidden; padding: 20px; background: rgba(30, 41, 59, 0.5);">
-        <h4 style="margin: 0 0 15px 0; font-size: 16px; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 8px;">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="12" y1="1" x2="12" y2="23"></line>
-            <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
-          </svg>
-          Amount Information
-        </h4>
-        <div style="display: grid; grid-template-columns: 1fr; gap: 14px;">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <div style="font-size: 15px; color: #f1f5f9;">Amount</div>
-            <div style="font-size: 18px; font-weight: 600; color: ${payment.isExpense ? '#ef4444' : '#10b981'}; font-family: monospace;">
-              ${payment.isExpense ? '-' : ''}KES ${parseFloat(payment.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-          </div>
-          
-          ${payment.platformFee ? `
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <div style="font-size: 15px; color: #94a3b8;">Platform Fee</div>
-            <div style="font-size: 15px; color: #f1f5f9; font-family: monospace;">
-              KES ${parseFloat(payment.platformFee).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-          </div>
-          ` : ''}
-          
-          ${payment.description ? `
-          <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(148, 163, 184, 0.1);">
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 4px;">Description</div>
-            <div style="font-size: 15px; color: #f1f5f9; line-height: 1.5;">${payment.description}</div>
-          </div>
-          ` : ''}
-        </div>
-      </div>
-    `;
-    
-    // Handle tithe distribution
-    if (payment.titheDistribution && payment.paymentType === 'TITHE') {
-      html += `
-        <!-- Tithe Distribution -->
-        <div class="neo-card" style="overflow: hidden; grid-column: 1 / -1; background: rgba(30, 41, 59, 0.5);">
-          <div style="padding: 14px 16px; border-bottom: 1px solid rgba(148, 163, 184, 0.1);">
-            <h4 style="margin: 0; font-size: 16px; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 8px;">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-              </svg>
-              Tithe Distribution
-            </h4>
-          </div>
-          <div style="padding: 16px;">
-            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px;">
-      `;
-      
-      let total = 0;
-      Object.entries(payment.titheDistribution).forEach(([key, value]) => {
-        if (key !== 'otherSpecification' && value > 0) {
-          const formattedKey = key.replace(/([A-Z])/g, ' $1')
-            .replace(/^./, str => str.toUpperCase());
-          
-          total += parseFloat(value);
-          
-          html += `
-            <div>
-              <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">${formattedKey}</div>
-              <div style="font-size: 15px; font-weight: 500; color: #3b82f6; font-family: monospace;">
-                KES ${parseFloat(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </div>
-            </div>
-          `;
-        }
-      });
-      
-      if (payment.titheDistribution.other > 0) {
-        const otherLabel = payment.titheDistribution.otherSpecification 
-          ? `Other (${payment.titheDistribution.otherSpecification})` 
-          : 'Other';
+  }
+
+  populateSpecialOfferingsDropdown(selectElement, currentSelectionValue) {  
+    if (selectElement) {
+        const originalValue = currentSelectionValue || selectElement.value;  
         
-        html += `
-          <div>
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">${otherLabel}</div>
-            <div style="font-size: 15px; font-weight: 500; color: #3b82f6; font-family: monospace;">
-              KES ${parseFloat(payment.titheDistribution.other).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-          </div>
-        `;
-      }
-      
-      html += `
-              <div style="grid-column: 1 / -1; border-top: 1px solid rgba(148, 163, 184, 0.1); padding-top: 16px; margin-top: 16px;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                  <div style="font-size: 15px; font-weight: 600; color: #f1f5f9;">Total Distribution</div>
-                  <div style="font-size: 15px; font-weight: 600; color: #3b82f6;">KES ${total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-    
-    // Add department info for expenses
-    if (payment.isExpense && payment.department) {
-      html += `
-        <!-- Department Information -->
-        <div class="neo-card" style="overflow: hidden; grid-column: 1 / -1; background: rgba(30, 41, 59, 0.5);">
-          <div style="padding: 14px 16px; border-bottom: 1px solid rgba(148, 163, 184, 0.1);">
-            <h4 style="margin: 0; font-size: 16px; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 8px;">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
-                <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
-              </svg>
-              Department Information
-            </h4>
-          </div>
-          <div style="padding: 16px;">
-            <div style="display: flex; align-items: center; gap: 12px;">
-              <div style="background: ${this.getDepartmentColor(payment.department)}; width: 10px; height: 10px; border-radius: 50%;"></div>
-              <div>
-                <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Department</div>
-                <div style="font-size: 14px; font-weight: 500; color: #f1f5f9;">${this.formatDepartment(payment.department)}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-    
-    // Add special offering info
-    const isSpecialOffering = payment.paymentType && payment.paymentType.startsWith('SPECIAL_');
-    if (isSpecialOffering) {
-      // Try to find the special offering in our list
-      const specialOffering = this.specialOfferings.find(o => o.paymentType === payment.paymentType || o.offeringType === payment.paymentType);
-      const offeringName = specialOffering ? specialOffering.name || specialOffering.description : this.getFriendlySpecialOfferingName(payment.paymentType);
-      
-      let fullDescription = specialOffering?.description || payment.description || '';
-      let customFields = [];
-      
-      try {
-        if (payment.customFields) {
-          const parsedFields = typeof payment.customFields === 'string'
-            ? JSON.parse(payment.customFields)
-            : payment.customFields;
-            
-          if (parsedFields.fields) {
-            customFields = parsedFields.fields;
-          }
-          
-          if (parsedFields.fullDescription) {
-            fullDescription = parsedFields.fullDescription;
-          }
-        } else if (specialOffering && specialOffering.customFields) {
-          const parsedFields = typeof specialOffering.customFields === 'string'
-            ? JSON.parse(specialOffering.customFields)
-            : specialOffering.customFields;
-            
-          customFields = parsedFields.fields || [];
-          
-          if (parsedFields.fullDescription) {
-            fullDescription = parsedFields.fullDescription;
-          }
+        let firstOption = null;
+        if (selectElement.options.length > 0 && selectElement.options[0].value === '') {
+            firstOption = selectElement.options[0];
         }
-      } catch (e) {
-        console.error('Error parsing custom fields:', e);
-      }
-      
-      html += `
-        <!-- Special Offering Information -->
-        <div class="neo-card" style="overflow: hidden; grid-column: 1 / -1; background: rgba(30, 41, 59, 0.5);">
-          <div style="padding: 14px 16px; border-bottom: 1px solid rgba(148, 163, 184, 0.1);">
-            <h4 style="margin: 0; font-size: 16px; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 8px;">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="20 12 20 22 4 22 4 12"></polyline>
-                <rect x="2" y="7" width="20" height="5"></rect>
-                <line x1="12" y1="22" x2="12" y2="7"></line>
-                <path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"></path>
-                <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"></path>
-              </svg>
-              Special Offering Details
-            </h4>
-          </div>
-          <div style="padding: 16px;">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px;">
-              <div>
-                <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Offering Name</div>
-                <div style="font-size: 14px; font-weight: 500; color: #f1f5f9;">${offeringName}</div>
-              </div>
-      `;
-      
-      // If there's a target goal and end date, show it
-      if (payment.targetGoal || specialOffering?.targetGoal) {
-        const targetGoal = payment.targetGoal || specialOffering?.targetGoal || 0;
-        html += `
-          <div>
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Target Goal</div>
-            <div style="font-size: 14px; font-weight: 500; color: #f1f5f9;">KES ${parseFloat(targetGoal).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-          </div>
-        `;
-      }
-      
-      // If there's an end date, show it
-      if (payment.endDate || specialOffering?.endDate) {
-        const endDate = payment.endDate || specialOffering?.endDate;
-        html += `
-          <div>
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">End Date</div>
-            <div style="font-size: 14px; color: #f1f5f9;">${new Date(endDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</div>
-          </div>
-        `;
-      }
-      
-      // Add description if we have it
-      if (fullDescription) {
-        html += `
-          <div style="grid-column: 1 / -1; margin-top: 8px;">
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Description</div>
-            <div style="font-size: 14px; color: #f1f5f9; line-height: 1.5;">${fullDescription}</div>
-          </div>
-        `;
-      }
-      
-      // If we have custom fields, display them
-      if (customFields && customFields.length > 0) {
-        html += `
-          </div>
-          <div style="margin-top: 16px; border-top: 1px solid rgba(148, 163, 184, 0.1); padding-top: 12px;">
-            <div style="font-size: 14px; color: #f1f5f9; font-weight: 500; margin-bottom: 10px;">Custom Fields</div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px;">
-        `;
-        
-        customFields.forEach(field => {
-          html += `
-            <div style="background: rgba(15, 23, 42, 0.4); padding: 10px; border-radius: 6px;">
-              <div style="font-size: 13px; color: #8b5cf6; margin-bottom: 2px;">${field.name}</div>
-              <div style="font-size: 14px; color: #f1f5f9;">${field.description || 'N/A'}</div>
-            </div>
-          `;
+        selectElement.innerHTML = ''; 
+        if (firstOption) { 
+            selectElement.appendChild(firstOption);
+        } else { 
+            selectElement.add(new Option('All Special Offerings', ''), 0);
+        }
+
+        this.specialOfferings.forEach(offering => {
+          const name = this.escapeHtml(offering.description || offering.name || `Special ID: ${offering.id || offering.paymentType}`);
+          // Ensure value is consistent, typically offering.offeringType or a unique ID
+          const value = offering.offeringType || offering.paymentType || `SPECIAL_${offering.id}`;  
+          selectElement.add(new Option(name, value));
         });
+        selectElement.value = originalValue;  
+      }
+  }
+  
+  async viewPaymentDetails(paymentId) {  
+    const modal = document.getElementById('payment-detail-modal');
+    const modalBody = document.getElementById('modal-body');
+    if (!modal || !modalBody) return;
+    modal.style.display = 'flex';
+    modalBody.innerHTML = `<div class="modal-loading"><div class="loading-spinner"></div>Loading...</div>`;
+    
+    try {
+        let payment = this.allPaymentsMasterList.find(p => p.id === parseInt(paymentId));
+        // If not in master list (e.g., if master list is very large and paginated server-side in future)
+        // you might need an API call here:
+        // if (!payment) {
+        //   payment = await this.queueApiRequest(() => this.apiService.get(`/payment/details/${paymentId}`));
+        //   if (!payment) throw new Error('Payment details not found.');
+        // }
+        if (!payment) throw new Error('Payment details not found in local data.'); // Current behavior
+        this.selectedPayment = payment;
         
-        html += `
-            </div>
-        `;
-      }
-      
-      html += `
-            </div>
-          </div>
-        </div>
-      `;
+        const modalTitle = document.getElementById('modal-title');
+        if(modalTitle) modalTitle.textContent = `${this.getPaymentTypeDisplayName(payment)} Details`;
+        
+        modalBody.innerHTML = this.renderPaymentDetailsContent(payment);
+
+        const downloadBtn = document.getElementById('modal-download-btn');
+        if(downloadBtn) downloadBtn.onclick = () => this.downloadPdf(payment);  
+
+        const sendSmsBtn = document.getElementById('modal-sms-btn');
+        if (sendSmsBtn) {
+            if (payment.User && payment.User.phone) {
+                sendSmsBtn.style.display = 'inline-flex';  
+                const smsStateData = this.smsState.get(payment.id) || { sent: false, sending: false };
+                this.styleSmsButton(sendSmsBtn, smsStateData.sending ? 'sending' : (smsStateData.sent ? 'sent' : 'default'), true);
+                sendSmsBtn.onclick = () => this.sendSms(payment.User.phone, payment.User.fullName, payment);
+            } else {
+                sendSmsBtn.style.display = 'none';
+            }
+        }
+    } catch (error) {
+        console.error('Error in viewPaymentDetails:', error);
+        modalBody.innerHTML = `<div class="modal-error">⚠️ Error loading details: ${this.escapeHtml(error.message)}</div>`;
     }
-    
-    // Add transaction details section if available
-    if (payment.transactionId || payment.reference || payment.platformFee) {
-      html += `
-        <!-- Transaction Details -->
-        <div class="neo-card" style="overflow: hidden; grid-column: 1 / -1; background: rgba(30, 41, 59, 0.5);">
-          <div style="padding: 14px 16px; border-bottom: 1px solid rgba(148, 163, 184, 0.1);">
-            <h4 style="margin: 0; font-size: 16px; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 8px;">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect>
-                <line x1="1" y1="10" x2="23" y2="10"></line>
-              </svg>
-              Transaction Details
-            </h4>
-          </div>
-          <div style="padding: 16px;">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px;">
-      `;
-      
-      if (payment.transactionId) {
-        html += `
-          <div>
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Transaction ID</div>
-            <div style="font-size: 14px; color: #f1f5f9;">${payment.transactionId}</div>
-          </div>
-        `;
-      }
-      
-      if (payment.reference) {
-        html += `
-          <div>
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Reference</div>
-            <div style="font-size: 14px; color: #f1f5f9;">${payment.reference}</div>
-          </div>
-        `;
-      }
-      
-      if (payment.platformFee) {
-        html += `
-          <div>
-            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 2px;">Platform Fee</div>
-            <div style="font-size: 14px; color: #f1f5f9;">KES ${parseFloat(payment.platformFee).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-          </div>
-        `;
-      }
-      
-      html += `
-            </div>
-          </div>
-        </div>
-      `;
+  }
+  
+  renderPaymentDetailsContent(payment) {  
+    const paymentTypeName = this.getPaymentTypeDisplayName(payment);
+    let html = `<div class="payment-details-grid">`;
+    if (payment.User) {
+        html += `<div class="neo-card detail-section"><h4>👤 User Information</h4><div><span>Name:</span><span>${this.escapeHtml(payment.User.fullName) || 'N/A'}</span></div><div><span>Phone:</span><span>${this.escapeHtml(payment.User.phone) || 'N/A'}</span></div>${payment.User.email ? `<div><span>Email:</span><span>${this.escapeHtml(payment.User.email)}</span></div>` : ''}</div>`;
     }
-    
-    // Close the grid container
-    html += `</div></div>`;
-    
+    html += `<div class="neo-card detail-section"><h4>💳 Payment Information</h4><div><span>ID:</span><span>${payment.id}</span></div><div><span>Date:</span><span>${this.formatDate(new Date(payment.paymentDate))}</span></div><div><span>Type:</span><span>${this.escapeHtml(paymentTypeName)}</span></div><div><span>Method:</span><span>${this.escapeHtml(payment.paymentMethod) || 'N/A'}</span></div><div><span>Status:</span><span>${this.escapeHtml(payment.status) || 'N/A'}</span></div><div><span>Receipt:</span><span>${this.escapeHtml(payment.receiptNumber) || 'N/A'}</span></div></div>`;
+    const amount = payment.amount !== null && payment.amount !== undefined ? parseFloat(payment.amount) : 0;
+    html += `<div class="neo-card detail-section"><h4>💰 Amount Information</h4><div><span>Amount:</span><span style="color:${payment.isExpense ? '#ef4444':'#10b981'}; font-weight:bold;">${payment.isExpense ? '-' : ''}KES ${amount.toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>`;
+    if (payment.platformFee && parseFloat(payment.platformFee) > 0) {
+        html += `<div><span>Platform Fee:</span><span>KES ${parseFloat(payment.platformFee).toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>`;
+    }
+    if (payment.description) {
+        html += `<div class="description-detail"><span>Description:</span><p>${this.escapeHtml(payment.description)}</p></div>`;
+    }
+    html += `</div>`;
+    if (payment.paymentType && payment.paymentType.startsWith('SPECIAL_')) {
+        const so = this.specialOfferings.find(o => o.paymentType === payment.paymentType || o.offeringType === payment.paymentType);
+        if(so) html += `<div class="neo-card detail-section so-detail"><h4>✨ Special Offering</h4><div><span>Name:</span><span>${this.escapeHtml(so.description || so.name)}</span></div>${so.targetGoal ? `<div><span>Target:</span><span>KES ${parseFloat(so.targetGoal).toLocaleString()}</span></div>` : ''}${so.endDate ? `<div><span>Ends:</span><span>${this.formatDate(new Date(so.endDate))}</span></div>` : ''}</div>`;
+    } else if (payment.isExpense && payment.department) {
+        html += `<div class="neo-card detail-section dept-detail"><h4>🏢 Department</h4><div style="display:flex; align-items:center; gap:5px;"><div style="width:10px; height:10px; border-radius:50%; background-color:${this.getDepartmentColor(payment.department)};"></div><span>${this.formatDepartment(payment.department)}</span></div></div>`;
+    }
+    html += `</div>`;  
     return html;
   }
   
-  async downloadPdf(payment) {
+  escapeHtml(unsafe) {
+    if (unsafe === null || unsafe === undefined) return '';
+    return unsafe
+          .toString()
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+  }
+
+  async downloadPdf(payment) {  
     try {
-      if (!payment) return;
-      
-      // Show downloading status
-      this.success = 'Generating PDF for download...';
-      this.updateView();
-      
-      // Frontend PDF generation using the browser's built-in functionality
-      await this.generatePdfInBrowser(payment);
-      
-      this.success = 'PDF generated successfully';
-      setTimeout(() => {
-        this.success = null;
-        this.updateView();
-      }, 3000);
+      if (this.pdfState.generating) {
+        this.showMessage('Receipt generation is already in progress.', 'info'); return;
+      }
+      this.pdfState.generating = true;
+      this.showMessage('Generating receipt...', 'info');
+      await this.generatePdfInBrowser(payment);  
     } catch (error) {
-      console.error('Error downloading PDF:', error);
-      this.error = 'Failed to generate PDF: ' + error.message;
-      this.updateView();
-      
-      setTimeout(() => {
-        this.error = null;
-        this.updateView();
-      }, 5000);
-    }
-  }
-  
-  async generatePdfInBrowser(payment) {
-    // Create a new window to hold the printable content
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) {
-      throw new Error('Pop-up blocked. Please allow pop-ups for this site.');
-    }
-    
-    // Get user info
-    const user = payment.User || { fullName: 'Unknown User', phone: 'N/A', email: 'N/A' };
-    
-    // Format payment type nicely
-    let paymentTypeName = payment.paymentType;
-    if (payment.paymentType.startsWith('SPECIAL_')) {
-      const specialOffering = this.specialOfferings.find(o => 
-        o.paymentType === payment.paymentType || o.offeringType === payment.paymentType
-      );
-      
-      if (specialOffering) {
-        paymentTypeName = specialOffering.name || specialOffering.description || this.getFriendlySpecialOfferingName(payment.paymentType);
-      } else {
-        paymentTypeName = this.getFriendlySpecialOfferingName(payment.paymentType);
+      console.error('Error preparing PDF receipt:', error);
+      if (error.message !== 'Pop-up blocked.') { // Avoid double message for pop-up blocked
+         this.showMessage(`Failed to generate receipt: ${error.message}.`, 'error');
       }
-    } else {
-      paymentTypeName = this.formatPaymentType(payment.paymentType);
-    }
-    
-    // Generate HTML content for printing
-    printWindow.document.write(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Payment Receipt - ${payment.receiptNumber || payment.id}</title>
-        <style>
-          body {
-            font-family: Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            padding: 20px;
-            max-width: 800px;
-            margin: 0 auto;
-          }
-          .receipt-header {
-            text-align: center;
-            margin-bottom: 30px;
-            border-bottom: 2px solid #4f46e5;
-            padding-bottom: 10px;
-          }
-          .receipt-header h1 {
-            color: #4f46e5;
-            margin: 0;
-            font-size: 28px;
-          }
-          .receipt-header h2 {
-            font-size: 20px;
-            margin: 5px 0;
-            color: #666;
-          }
-          .receipt-section {
-            margin-bottom: 25px;
-          }
-          .receipt-section h3 {
-            border-bottom: 1px solid #ddd;
-            padding-bottom: 5px;
-            color: #4f46e5;
-          }
-          .section-content {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-          }
-          .detail-item {
-            margin-bottom: 8px;
-          }
-          .detail-label {
-            font-weight: bold;
-            color: #666;
-            font-size: 14px;
-          }
-          .detail-value {
-            font-size: 16px;
-          }
-          .amount {
-            font-weight: bold;
-            color: ${payment.isExpense ? '#ef4444' : '#10b981'};
-            font-size: 18px;
-          }
-          .receipt-footer {
-            margin-top: 30px;
-            text-align: center;
-            color: #666;
-            font-size: 14px;
-            border-top: 1px solid #ddd;
-            padding-top: 20px;
-          }
-          .signature-line {
-            margin-top: 50px;
-            border-top: 1px solid #000;
-            width: 200px;
-            display: inline-block;
-            text-align: center;
-          }
-          @media print {
-            body {
-              padding: 0;
-              font-size: 12pt;
-            }
-            .no-print {
-              display: none;
-            }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="receipt-header">
-          <h1>TASSIAC CHURCH</h1>
-          <h2>Official Payment Receipt</h2>
-        </div>
-        
-        <div class="receipt-section">
-          <h3>Receipt Information</h3>
-          <div class="section-content">
-            <div class="detail-item">
-              <div class="detail-label">Receipt Number</div>
-              <div class="detail-value">${payment.receiptNumber || 'N/A'}</div>
-            </div>
-            <div class="detail-item">
-              <div class="detail-label">Payment ID</div>
-              <div class="detail-value">${payment.id}</div>
-            </div>
-            <div class="detail-item">
-              <div class="detail-label">Date</div>
-              <div class="detail-value">${new Date(payment.paymentDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</div>
-            </div>
-            <div class="detail-item">
-              <div class="detail-label">Status</div>
-              <div class="detail-value">${payment.status}</div>
-            </div>
-          </div>
-        </div>
-        
-        <div class="receipt-section">
-          <h3>User Information</h3>
-          <div class="section-content">
-            <div class="detail-item">
-              <div class="detail-label">Name</div>
-              <div class="detail-value">${user.fullName}</div>
-            </div>
-            <div class="detail-item">
-              <div class="detail-label">Phone</div>
-              <div class="detail-value">${user.phone}</div>
-            </div>
-            ${user.email ? `
-            <div class="detail-item">
-              <div class="detail-label">Email</div>
-              <div class="detail-value">${user.email}</div>
-            </div>
-            ` : ''}
-          </div>
-        </div>
-        
-        <div class="receipt-section">
-          <h3>Payment Details</h3>
-          <div class="section-content">
-            <div class="detail-item">
-              <div class="detail-label">Payment Type</div>
-              <div class="detail-value">${paymentTypeName}</div>
-            </div>
-            <div class="detail-item">
-              <div class="detail-label">Payment Method</div>
-              <div class="detail-value">${payment.paymentMethod}</div>
-            </div>
-            <div class="detail-item">
-              <div class="detail-label">Amount</div>
-              <div class="detail-value amount">
-                ${payment.isExpense ? '-' : ''}KES ${parseFloat(payment.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </div>
-            </div>
-            ${payment.platformFee ? `
-            <div class="detail-item">
-              <div class="detail-label">Platform Fee</div>
-              <div class="detail-value">
-                KES ${parseFloat(payment.platformFee).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </div>
-            </div>
-            ` : ''}
-          </div>
-          
-          ${payment.description ? `
-          <div style="margin-top: 15px;">
-            <div class="detail-label">Description</div>
-            <div class="detail-value">${payment.description}</div>
-          </div>
-          ` : ''}
-        </div>
-        
-        ${payment.transactionId || payment.reference ? `
-        <div class="receipt-section">
-          <h3>Transaction Information</h3>
-          <div class="section-content">
-            ${payment.transactionId ? `
-            <div class="detail-item">
-              <div class="detail-label">Transaction ID</div>
-              <div class="detail-value">${payment.transactionId}</div>
-            </div>
-            ` : ''}
-            ${payment.reference ? `
-            <div class="detail-item">
-              <div class="detail-label">Reference</div>
-              <div class="detail-value">${payment.reference}</div>
-            </div>
-            ` : ''}
-          </div>
-        </div>
-        ` : ''}
-        
-        ${payment.titheDistribution && payment.paymentType === 'TITHE' ? `
-        <div class="receipt-section">
-          <h3>Tithe Distribution</h3>
-          <div class="section-content">
-            ${Object.entries(payment.titheDistribution)
-              .filter(([key, value]) => key !== 'otherSpecification' && value > 0)
-              .map(([key, value]) => {
-                const formattedKey = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
-                return `
-                <div class="detail-item">
-                  <div class="detail-label">${formattedKey}</div>
-                  <div class="detail-value">KES ${parseFloat(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                </div>
-                `;
-              }).join('')}
-            ${payment.titheDistribution.other > 0 ? `
-            <div class="detail-item">
-              <div class="detail-label">
-                ${payment.titheDistribution.otherSpecification ? 
-                  `Other (${payment.titheDistribution.otherSpecification})` : 'Other'}
-              </div>
-              <div class="detail-value">KES ${parseFloat(payment.titheDistribution.other).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-            </div>
-            ` : ''}
-          </div>
-        </div>
-        ` : ''}
-        
-        <div class="receipt-footer">
-          <p>Thank you for your contribution to TASSIAC Church.</p>
-          <p>This is an official receipt. Please keep it for your records.</p>
-          
-          <div class="signature-line">
-            <div>Authorized Signature</div>
-          </div>
-        </div>
-        
-        <div class="no-print" style="text-align: center; margin-top: 30px;">
-          <button onclick="window.print();" style="padding: 10px 20px; background: #4f46e5; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px;">
-            Print Receipt
-          </button>
-          &nbsp;
-          <button onclick="window.close();" style="padding: 10px 20px; background: #64748b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px;">
-            Close
-          </button>
-        </div>
-      </body>
-      </html>
-    `);
-    
-    printWindow.document.close();
-    
-    // Automatically trigger print when content is loaded
-    printWindow.onload = function() {
-      setTimeout(() => {
-        printWindow.focus();
-      }, 300);
-    };
-  }
-  
-  async sendSms(phoneNumber, name, payment) {
-    try {
-      // Show sending status
-      const smsStatusModal = document.getElementById('sms-status-modal');
-      if (smsStatusModal) {
-        smsStatusModal.style.backgroundColor = 'rgba(59, 130, 246, 0.1)';
-        smsStatusModal.style.borderLeft = '4px solid #3b82f6';
-        smsStatusModal.innerHTML = `
-          <div style="display: flex; align-items: center; gap: 10px;">
-            <div style="width: 20px; height: 20px; border: 2px solid rgba(59, 130, 246, 0.2); border-top-color: #3b82f6; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-            <div>
-              <div style="font-weight: 600; color: #3b82f6; margin-bottom: 4px;">Sending SMS</div>
-              <div style="font-size: 13px; color: #f1f5f9;">Sending message to ${name} at ${phoneNumber}...</div>
-            </div>
-          </div>
-        `;
-        smsStatusModal.style.display = 'block';
-        
-        // Auto hide after 10 seconds if no response
-        setTimeout(() => {
-          if (smsStatusModal.style.display === 'block' && !this.SMS_STATUS.success && !this.SMS_STATUS.error) {
-            smsStatusModal.style.display = 'none';
-          }
-        }, 10000);
-      }
-      
-      this.SMS_STATUS = { sending: true, error: null, success: null };
-      
-      // Format the payment for SMS message
-      const paymentType = this.formatPaymentType(payment.paymentType);
-      const amount = payment.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      const date = new Date(payment.paymentDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-      const receiptNumber = payment.receiptNumber || 'N/A';
-      
-      // Create message
-      const message = `Dear ${name}, your ${paymentType} payment of KES ${amount} on ${date} has been recorded. Receipt: ${receiptNumber}. Thank you for your contribution to TASSIAC Church.`;
-      
-      // Send SMS via API
-      const response = await this.queueApiRequest(() => this.apiService.post('/notifications/send-sms', {
-        phone: phoneNumber,
-        message: message
-      }));
-      
-      if (response && response.success) {
-        // Show success message
-        this.SMS_STATUS = { sending: false, error: null, success: true };
-        
-        if (smsStatusModal) {
-          smsStatusModal.style.backgroundColor = 'rgba(16, 185, 129, 0.1)';
-          smsStatusModal.style.borderLeft = '4px solid #10b981';
-          smsStatusModal.innerHTML = `
-            <div style="display: flex; align-items: start; gap: 10px;">
-              <div style="color: #10b981;">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                </svg>
-              </div>
-              <div>
-                <div style="font-weight: 600; color: #10b981; margin-bottom: 4px;">SMS Sent Successfully</div>
-                <div style="font-size: 13px; color: #f1f5f9;">Message sent to ${name} at ${phoneNumber}.</div>
-              </div>
-              <button style="margin-left: auto; background: none; border: none; cursor: pointer; font-size: 18px; color: #10b981;" onclick="document.getElementById('sms-status-modal').style.display = 'none';">×</button>
-            </div>
-          `;
-          
-          // Auto hide after 5 seconds
-          setTimeout(() => {
-            smsStatusModal.style.display = 'none';
-          }, 5000);
-        }
-      } else {
-        throw new Error(response?.message || 'Failed to send SMS');
-      }
-    } catch (error) {
-      console.error('Error sending SMS:', error);
-      this.SMS_STATUS = { sending: false, error: error.message, success: null };
-      
-      // Show error message
-      const smsStatusModal = document.getElementById('sms-status-modal');
-      if (smsStatusModal) {
-        smsStatusModal.style.backgroundColor = 'rgba(239, 68, 68, 0.1)';
-        smsStatusModal.style.borderLeft = '4px solid #ef4444';
-        smsStatusModal.innerHTML = `
-          <div style="display: flex; align-items: start; gap: 10px;">
-            <div style="color: #ef4444;">
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="8" x2="12" y2="12"></line>
-                <line x1="12" y1="16" x2="12.01" y2="16"></line>
-              </svg>
-            </div>
-            <div>
-              <div style="font-weight: 600; color: #ef4444; margin-bottom: 4px;">SMS Failed to Send</div>
-              <div style="font-size: 13px; color: #f1f5f9;">${error.message}</div>
-            </div>
-            <button style="margin-left: auto; background: none; border: none; cursor: pointer; font-size: 18px; color: #ef4444;" onclick="document.getElementById('sms-status-modal').style.display = 'none';">×</button>
-          </div>
-        `;
-        
-        // Auto hide after 8 seconds
-        setTimeout(() => {
-          smsStatusModal.style.display = 'none';
-        }, 8000);
-      }
-    }
-  }
-  
-  formatPaymentType(type) {
-    if (!type) return 'Unknown';
-    
-    if (type.startsWith('SPECIAL_')) {
-      // Extract the special offering name from the payment type
-      const offeringId = type.replace('SPECIAL_', '');
-      const specialOffering = this.specialOfferings.find(o => 
-        o.paymentType === type || 
-        o.offeringType === type || 
-        (o.id && type.includes(o.id))
-      );
-      
-      if (specialOffering && (specialOffering.name || specialOffering.description)) {
-        return `Special: ${specialOffering.name || specialOffering.description}`;
-      }
-      
-      // Clean up the ID for display if no name found
-      return `Special Offering ${offeringId.substring(0, 6)}`;
-    }
-    
-    switch (type) {
-      case 'TITHE':
-        return 'Tithe';
-      case 'OFFERING':
-        return 'Offering';
-      case 'DONATION':
-        return 'Donation';
-      case 'EXPENSE':
-        return 'Expense';
-      case 'OTHER':
-        return 'Other';
-      default:
-        return type;
-    }
-  }
-  
-  formatDepartment(department) {
-    if (!department) return 'Unknown';
-    
-    // Convert department ID to readable name
-    const departments = {
-      'MUSIC': 'Music Ministry',
-      'CHILDREN': 'Children\'s Ministry',
-      'COMMUNICATION': 'Communication',
-      'EDUCATION': 'Education',
-      'FAMILY': 'Family Ministries',
-      'HEALTH': 'Health Ministries',
-      'MINISTERIAL': 'Ministerial Association',
-      'PLANNED_GIVING': 'Planned Giving & Trust Services',
-      'TREASURY': 'Treasury',
-      'PUBLIC_AFFAIRS': 'Public Affairs & Religious Liberty',
-      'PUBLISHING': 'Publishing',
-      'SABBATH_SCHOOL': 'Sabbath School & Personal Ministries',
-      'WOMEN': 'Women\'s Ministries',
-      'YOUTH': 'Youth Ministries',
-      'OTHER': 'Other',
-      'MAINTENANCE': 'Maintenance',
-      'DEVELOPMENT': 'Development'
-    };
-    
-    return departments[department] || department;
-  }
-  
-  getDepartmentColor(department) {
-    const colorMap = {
-      'MUSIC': '#3b82f6',        // Blue
-      'MAINTENANCE': '#ef4444',  // Red
-      'EDUCATION': '#8b5cf6',    // Purple
-      'CHILDREN': '#10b981',     // Green
-      'YOUTH': '#f59e0b',        // Amber
-      'HEALTH': '#06b6d4',       // Cyan
-      'COMMUNICATION': '#ec4899', // Pink
-      'FAMILY': '#f97316',       // Orange
-      'TREASURY': '#14b8a6',     // Teal
-      'DEVELOPMENT': '#0ea5e9',  // Sky Blue
-      'MINISTERIAL': '#8b5cf6',  // Purple
-      'PLANNED_GIVING': '#14b8a6', // Teal
-      'PUBLIC_AFFAIRS': '#6366f1', // Indigo
-      'PUBLISHING': '#f43f5e',   // Rose
-      'SABBATH_SCHOOL': '#0284c7', // Light Blue
-      'WOMEN': '#d946ef',        // Fuchsia
-      'OTHER': '#64748b'         // Slate
-    };
-    
-    return colorMap[department] || '#64748b';
-  }
-  
-  hexToRgb(hex) {
-    // Remove # if present
-    hex = hex.replace('#', '');
-    
-    // Handle shorthand hex
-    if (hex.length === 3) {
-      hex = hex.split('').map(c => c + c).join('');
-    }
-    
-    // Parse hex values
-    const r = parseInt(hex.substring(0, 2), 16);
-    const g = parseInt(hex.substring(2, 4), 16);
-    const b = parseInt(hex.substring(4, 6), 16);
-    
-    return `${r}, ${g}, ${b}`;
-  }
-  
-  formatDate(date) {
-    const d = date instanceof Date ? date : new Date(date);
-    return d.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric'
-    });
-  }
-  
-  exportPayments(format) {
-    // Build query parameters including current filters
-    const params = new URLSearchParams();
-    
-    Object.entries(this.filters).forEach(([key, value]) => {
-      if (value) {
-        if (key === 'specialOffering' && this.filters.paymentType === 'SPECIAL') {
-          params.append('paymentType', value);
-        } else if (key !== 'specialOffering') {
-          params.append(key, value);
-        }
-      }
-    });
-    
-    params.append('format', format);
-    
-    // Generate a filename with timestamp
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-    const filename = `payments_export_${timestamp}.${format}`;
-    
-    // Build the URL and trigger download
-    const url = `/api/payment/export?${params.toString()}`;
-    window.open(url, '_blank');
-  }
-  
-  exportFilteredResults() {
-    // Use the current filters to export as PDF
-    this.exportPayments('pdf');
-  }
-  
-  resetFilters() {
-    this.filters = {
-      startDate: '',
-      endDate: '',
-      paymentType: '',
-      userId: '',
-      specialOffering: ''
-    };
-    
-    this.currentPage = 1;
-    
-    const form = document.getElementById('payment-filters-form');
-    if (form) {
-      form.reset();
-      
-      // Hide special offering dropdown
-      const specialOfferingGroup = form.querySelector('[name="specialOffering"]').parentNode;
-      specialOfferingGroup.style.display = 'none';
-    }
-    
-    this.isLoading = true;
-    this.updateView();
-  }
-  
-  applyFiltersWithDebounce() {
-    // Clear any existing timer
-    if (this.filterDebounceTimer) {
-      clearTimeout(this.filterDebounceTimer);
-    }
-    
-    // Set a new timer
-    this.filterDebounceTimer = setTimeout(() => {
-      this.currentPage = 1;
-      this.isLoading = true;
-      this.updateView();
-    }, this.FILTER_DEBOUNCE_DELAY);
-  }
-  
-  attachEventListeners() {
-    // Filters form
-    const filtersForm = document.getElementById('payment-filters-form');
-    if (filtersForm) {
-      filtersForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        
-        const formData = new FormData(filtersForm);
-        
-        this.filters = {
-          startDate: formData.get('startDate') || '',
-          endDate: formData.get('endDate') || '',
-          paymentType: formData.get('paymentType') || '',
-          userId: formData.get('userId') || '',
-          specialOffering: formData.get('specialOffering') || ''
-        };
-        
-        this.currentPage = 1;
-        this.isLoading = true;
-        this.updateView();
-      });
-      
-      // Payment type change handler
-      const paymentTypeSelect = filtersForm.querySelector('[name="paymentType"]');
-      const specialOfferingGroup = filtersForm.querySelector('[name="specialOffering"]')?.parentNode;
-      
-      if (paymentTypeSelect && specialOfferingGroup) {
-        paymentTypeSelect.addEventListener('change', () => {
-          specialOfferingGroup.style.display = paymentTypeSelect.value === 'SPECIAL' ? 'block' : 'none';
-        });
-      }
-    }
-    
-    // Pagination links
-    const paginationLinks = document.querySelectorAll('.pagination-item');
-    paginationLinks.forEach(link => {
-      if (!link.classList.contains('disabled')) {
-        link.addEventListener('click', () => {
-          const page = parseInt(link.dataset.page);
-          if (page && page !== this.currentPage) {
-            this.fetchPayments(page);
-          }
-        });
-      }
-    });
-    
-    // View payment buttons
-    const viewButtons = document.querySelectorAll('.view-payment-btn');
-    viewButtons.forEach(button => {
-      button.addEventListener('click', () => {
-        const paymentId = button.dataset.id;
-        this.viewPaymentDetails(paymentId);
-      });
-    });
-    
-    // SMS buttons
-    const smsButtons = document.querySelectorAll('.send-sms-btn');
-    smsButtons.forEach(button => {
-      button.addEventListener('click', () => {
-        const paymentId = button.dataset.id;
-        const phone = button.dataset.phone;
-        const name = button.dataset.name;
-        
-        // Find the payment
-        const payment = this.payments.find(p => p.id === parseInt(paymentId));
-        if (payment && phone) {
-          this.sendSms(phone, name, payment);
-        }
-      });
-    });
-    
-    // Modal close when clicking outside
-    const modal = document.getElementById('payment-detail-modal');
-    if (modal) {
-      modal.addEventListener('click', (e) => {
-        if (e.target === modal) {
-          modal.style.display = 'none';
-        }
-      });
-      
-      // Close on escape key
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && modal.style.display === 'flex') {
-          modal.style.display = 'none';
-        }
-      });
-    }
-  }
-  
-  updateView() {
-    // Prevent updateView while already rendering
-    if (this.isRendering) {
-      console.log('Cannot update view: rendering in progress');
-      return;
-    }
-    
-    const appContainer = document.getElementById('app');
-    if (appContainer) {
-      console.log('Updating view, isLoading:', this.isLoading);
-      
-      // Clear existing content
-      appContainer.innerHTML = '';
-      
-      // Render new content
-      this.render().then(content => {
-        if (content) {
-          appContainer.appendChild(content);
-        }
-      }).catch(error => {
-        console.error('Error in updateView:', error);
-        // Make sure rendering flag is reset on error
-        this.isRendering = false;
-      });
-    }
-  }
-  
-  addGlobalStyles() {
-    if (!document.getElementById('dashboard-global-styles')) {
-      const styleElement = document.createElement('style');
-      styleElement.id = 'dashboard-global-styles';
-      styleElement.textContent = `
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-        
-        body {
-          margin: 0;
-          padding: 0;
-          background-color: #0f172a;
-          color: #f8fafc;
-          font-family: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-          overflow-x: hidden;
-        }
-        
-        * {
-          box-sizing: border-box;
-        }
-        
-        ::-webkit-scrollbar {
-          width: 8px;
-          height: 8px;
-        }
-        
-        ::-webkit-scrollbar-track {
-          background: rgba(15, 23, 42, 0.6);
-        }
-        
-        ::-webkit-scrollbar-thumb {
-          background: rgba(79, 107, 255, 0.5);
-          border-radius: 4px;
-        }
-        
-        ::-webkit-scrollbar-thumb:hover {
-          background: rgba(79, 107, 255, 0.8);
-        }
-        
-        .neo-card {
-          position: relative;
-          backdrop-filter: blur(16px);
-          background: rgba(30, 41, 59, 0.5);
-          border-radius: 16px;
-          border: 1px solid rgba(148, 163, 184, 0.1);
-          box-shadow: 0 4px 24px -8px rgba(0, 0, 0, 0.3), 0 0 1px rgba(255, 255, 255, 0.1) inset;
-          overflow: hidden;
-          transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
-        }
-        
-        .neo-card:hover {
-          box-shadow: 0 8px 32px -8px rgba(0, 0, 0, 0.4), 0 0 1px rgba(255, 255, 255, 0.2) inset;
-        }
-        
-        .card-glow {
-          position: absolute;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          border-radius: 16px;
-          z-index: -1;
-          opacity: 0;
-          transition: opacity 0.5s ease;
-          pointer-events: none;
-        }
-        
-        .neo-card:hover .card-glow {
-          opacity: 0.15;
-        }
-        
-        .futuristic-button {
-          position: relative;
-          color: #e0e7ff;
-          border: none;
-          border-radius: 8px;
-          padding: 10px 16px;
-          font-family: 'Inter', sans-serif;
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.3s ease;
-          backdrop-filter: blur(10px);
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-          overflow: hidden;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 8px;
-        }
-        
-        .futuristic-button::before {
-          content: "";
-          position: absolute;
-          top: 0;
-          left: -100%;
-          width: 100%;
-          height: 100%;
-          background: linear-gradient(
-            to right,
-            rgba(255, 255, 255, 0) 0%,
-            rgba(255, 255, 255, 0.1) 50%,
-            rgba(255, 255, 255, 0) 100%
-          );
-          transition: left 0.7s ease;
-        }
-        
-        .futuristic-button:hover {
-          transform: translateY(-2px);
-          box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 255, 255, 0.1) inset;
-        }
-        
-        .futuristic-button:hover::before {
-          left: 100%;
-        }
-        
-        .futuristic-button:active {
-          transform: translateY(1px);
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) inset;
-        }
-        
-        .form-control {
-          width: 100%;
-          padding: 10px 12px;
-          background: rgba(15, 23, 42, 0.6);
-          border: 1px solid rgba(148, 163, 184, 0.2);
-          border-radius: 8px;
-          color: #f1f5f9;
-          font-size: 14px;
-          transition: all 0.2s ease;
-        }
-        
-        .form-control:focus {
-          border-color: #4f46e5;
-          outline: none;
-          box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.2);
-        }
-        
-        .form-control::placeholder {
-          color: #64748b;
-        }
-        
-        select.form-control {
-          appearance: none;
-          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-          background-repeat: no-repeat;
-          background-position: right 12px center;
-          padding-right: 36px;
-        }
-        
-        .pagination-item {
-          cursor: pointer;
-          padding: 8px 12px;
-          margin: 0 4px;
-          border-radius: 8px;
-          display: inline-block;
-          transition: all 0.2s;
-          font-size: 14px;
-          color: #94a3b8;
-          background: rgba(30, 41, 59, 0.4);
-        }
-        
-        .pagination-item:hover {
-          background: rgba(79, 70, 229, 0.2);
-          color: #f1f5f9;
-        }
-        
-        .pagination-item.active {
-          background: #4f46e5;
-          color: white;
-          font-weight: 500;
-        }
-        
-        .pagination-item.disabled {
-          opacity: 0.5;
-          pointer-events: none;
-        }
-        
-        @keyframes gradientBG {
-          0% { background-position: 0% 50% }
-          50% { background-position: 100% 50% }
-          100% { background-position: 0% 50% }
-        }
-        
-        @keyframes floatParticles {
-          from { background-position: 0 0; }
-          to { background-position: 1000px 1000px; }
-        }
-        
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(10px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        
-        @keyframes slideIn {
-          from { transform: translateY(-20px); opacity: 0; }
-          to { transform: translateY(0); opacity: 1; }
-        }
-        
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-        
-        .loading-spinner {
-          display: inline-block;
-          width: 40px;
-          height: 40px;
-          border: 3px solid rgba(79, 70, 229, 0.2);
-          border-top-color: #4f46e5;
-          border-radius: 50%;
-          animation: spin 1s cubic-bezier(0.68, -0.55, 0.27, 1.55) infinite;
-        }
-        
-        .animated-item {
-          animation: fadeIn 0.6s ease-out forwards;
-        }
-        
-        @media (max-width: 768px) {
-          .payment-details-grid {
-            grid-template-columns: 1fr !important;
-          }
-          
-          .payment-table-wrapper {
-            margin: 0 -10px;
-          }
-          
-          #admin-nav-menu {
-            position: static;
-            margin: 20px;
-            width: auto;
-          }
-        }
-      `;
-      document.head.appendChild(styleElement);
-    }
-  }
-  
-  addAnimationStyles() {
-    if (!document.getElementById('dashboard-animation-styles')) {
-      const styleElement = document.createElement('style');
-      styleElement.id = 'dashboard-animation-styles';
-      styleElement.textContent = `
-        @keyframes float {
-          0% { transform: translateY(0px); }
-          50% { transform: translateY(-10px); }
-          100% { transform: translateY(0px); }
-        }
-        
-        @keyframes pulse-glow {
-          0% { box-shadow: 0 0 5px rgba(99, 102, 241, 0.5); }
-          50% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.8); }
-          100% { box-shadow: 0 0 5px rgba(99, 102, 241, 0.5); }
-        }
-      `;
-      document.head.appendChild(styleElement);
+    } finally {
+      this.pdfState.generating = false;
     }
   }
 
-  renderTopNavigation() {
-    const nav = document.createElement('nav');
-    nav.className = 'admin-top-nav';
-    nav.style.cssText = 'padding: 1rem; border-bottom: 1px solid rgba(148, 163, 184, 0.1); background: rgba(30, 41, 59, 0.5);';
+  async generatePdfInBrowser(payment) {  
+    const printWindow = window.open('', '_blank', 'height=700,width=850,scrollbars=yes,resizable=yes');
+    if (!printWindow) {
+      this.showMessage('Pop-up blocked! Please allow pop-ups for this site to generate the receipt.', 'error', 10000);  
+      throw new Error('Pop-up blocked.');
+    }
+    const user = payment.User || { fullName: 'N/A', phone: 'N/A', email: 'N/A' };
+    const paymentTypeName = this.getPaymentTypeDisplayName(payment);
+    const amount = payment.amount !== null && payment.amount !== undefined ? parseFloat(payment.amount) : 0;
+
+    const htmlContent = `
+      <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Receipt ${payment.id}</title>
+      <style>
+        body{font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;margin:20px;color:#333;max-width:750px;margin-left:auto;margin-right:auto;border:1px solid #dcdcdc;padding:25px; box-shadow: 0 0 15px rgba(0,0,0,0.05);}
+        .header{text-align:center;border-bottom:2px solid #4A90E2;padding-bottom:15px;margin-bottom:25px;}
+        .header h1{margin:0;font-size:26px;color:#4A90E2; font-weight:600;} .header p{margin:5px 0;font-size:14px; color:#555;}
+        .section{margin-bottom:25px;}.section h2{font-size:18px;color:#4A90E2;border-bottom:1px solid #eaeaea;padding-bottom:8px;margin-top:0; font-weight:600;}
+        .details div{display:flex;justify-content:space-between;padding:6px 0;font-size:14px; border-bottom: 1px dotted #f0f0f0;}
+        .details div:last-child{border-bottom:none;}
+        .details div span:first-child{font-weight:500;color:#444;}
+        .details div span:last-child{color:#222; text-align:right;}
+        .total{font-size:17px !important;font-weight:bold !important;color:${payment.isExpense ? '#D9534F' : '#28A745'} !important;}
+        .footer{text-align:center;font-size:12px;color:#777;margin-top:35px;padding-top:15px;border-top:1px solid #eaeaea;}
+        .print-controls{text-align:center;margin-top:25px;}
+        /* Buttons styled via JS for CSP */
+        @media print{
+            .print-controls{display:none !important;}  
+            body{border:none;margin:0.5in; box-shadow:none; font-size:10pt;}  
+            .header h1{font-size:22pt;} .section h2{font-size:14pt;} .details div{font-size:10pt;} .total{font-size:12pt !important;}
+        }
+      </style></head><body>
+      <div class="header"><h1>TASSIAC CHURCH</h1><p>Official Payment Receipt</p></div>
+      <div class="section"><h2>Receipt Details</h2><div class="details">
+        <div><span>Receipt No:</span><span>${this.escapeHtml(payment.receiptNumber) || 'N/A'}</span></div>
+        <div><span>Payment ID:</span><span>${payment.id}</span></div>
+        <div><span>Date & Time:</span><span>${new Date(payment.paymentDate).toLocaleString('en-GB', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}</span></div>
+        <div><span>Status:</span><span>${this.escapeHtml(payment.status)}</span></div>
+      </div></div>
+      ${payment.User ? `<div class="section"><h2>Payer Information</h2><div class="details">
+        <div><span>Name:</span><span>${this.escapeHtml(user.fullName)}</span></div>
+        <div><span>Phone:</span><span>${this.escapeHtml(user.phone)}</span></div>
+        ${user.email ? `<div><span>Email:</span><span>${this.escapeHtml(user.email)}</span></div>` : ''}
+      </div></div>` : ''}
+      <div class="section"><h2>Payment Information</h2><div class="details">
+        <div><span>Type:</span><span>${this.escapeHtml(paymentTypeName)}</span></div>
+        <div><span>Method:</span><span>${this.escapeHtml(payment.paymentMethod)}</span></div>
+        ${payment.description ? `<div><span>Description:</span><span style="white-space:pre-wrap; text-align:left;">${this.escapeHtml(payment.description)}</span></div>` : ''}
+        ${payment.platformFee && parseFloat(payment.platformFee) > 0 ? `<div><span>Platform Fee:</span><span>KES ${parseFloat(payment.platformFee).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>` : ''}
+        <div><span>Amount:</span><span class="total">${payment.isExpense ? '-' : ''}KES ${amount.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
+      </div></div>
+      <div class="footer"><p>Thank you for your transaction. This is an official receipt.</p></div>
+      </body></html>`;
+      
+    printWindow.document.write(htmlContent);
     
+    const controlsDiv = printWindow.document.createElement('div');
+    controlsDiv.className = 'print-controls';
+    const printButton = printWindow.document.createElement('button');
+    printButton.textContent = 'Print Receipt';
+    printButton.style.cssText = 'padding:10px 18px;margin:5px;cursor:pointer;background-color:#4A90E2;color:white;border:none;border-radius:5px;font-size:15px;transition:background-color 0.2s;';
+    const closeButton = printWindow.document.createElement('button');
+    closeButton.textContent = 'Close Window';
+    closeButton.style.cssText = 'padding:10px 18px;margin:5px;cursor:pointer;background-color:#ccc;color:black;border:none;border-radius:5px;font-size:15px;transition:background-color 0.2s;';
+    controlsDiv.append(printButton, closeButton);
+    printWindow.document.body.appendChild(controlsDiv);
+
+    printWindow.document.close();
+
+    printWindow.onload = () => { 
+        const pButton = printWindow.document.querySelector('.print-controls button:first-child');
+        const cButton = printWindow.document.querySelector('.print-controls button:last-child');
+        if(pButton) pButton.addEventListener('click', () => printWindow.print());
+        if(cButton) cButton.addEventListener('click', () => printWindow.close());
+        printWindow.focus();
+        this.showMessage('Receipt ready. Use browser print to save as PDF.', 'success');
+    };
+  }
+  
+  async sendSms(phoneNumber, name, payment) {  
+    const paymentId = payment.id;  
+    const currentState = this.smsState.get(paymentId) || { sent: false, sending: false };
+    if (currentState.sending || currentState.sent) {
+      this.showSmsStatus('SMS already processed for this payment.', 'info'); return;
+    }
+    this.smsState.set(paymentId, { sent: false, sending: true });
+    this.updateSmsButtonState(paymentId, 'sending');
+    this.showSmsStatus(`Sending SMS to ${name}...`, 'info');
+    try {
+      const paymentType = this.getPaymentTypeDisplayName(payment);
+      const amountVal = payment.amount !== null && payment.amount !== undefined ? parseFloat(payment.amount) : 0;
+      const amount = amountVal.toLocaleString('en-US', { minimumFractionDigits: 2 });
+      const date = new Date(payment.paymentDate).toLocaleDateString('en-GB', {day:'numeric', month:'short', year:'numeric'});
+      const message = `Dear ${name}, your ${paymentType} of KES ${amount} on ${date} (Ref: ${payment.receiptNumber||payment.id}) is confirmed. TASSIAC Church.`;
+      const response = await this.queueApiRequest(() => this.apiService.post('/notifications/send-sms', { phone: phoneNumber, message }));
+      if (response && response.success) {
+        this.smsState.set(paymentId, { sent: true, sending: false });
+        this.showSmsStatus(`SMS sent to ${name}.`, 'success');
+      } else { throw new Error(response?.message || 'API error during SMS send.'); }
+    } catch (error) {
+      this.smsState.set(paymentId, { sent: false, sending: false });  
+      this.showSmsStatus(`SMS failed for ${name}: ${error.message}`, 'error');
+    } finally {
+      const finalState = this.smsState.get(paymentId);
+      this.updateSmsButtonState(paymentId, finalState?.sent ? 'sent' : (finalState?.sending ? 'sending' : 'default'));  
+    }
+  }
+
+  updateSmsButtonState(paymentId, state) {  
+    const tableButton = document.querySelector(`.payment-table-wrapper .send-sms-btn[data-id="${paymentId}"]`);
+    if (tableButton) this.styleSmsButton(tableButton, state, false);
+    if (this.selectedPayment && this.selectedPayment.id === paymentId) {
+        const modalButton = document.getElementById('modal-sms-btn');
+        if (modalButton) this.styleSmsButton(modalButton, state, true);
+    }
+  }
+  styleSmsButton(button, state, isModal = false) {  
+    button.disabled = false; button.style.opacity = '1'; button.style.cursor = 'pointer'; button.innerHTML = '';
+    let iconSvg = (state !== 'sending' && state !== 'sent') ? this.createSvgIcon('sms') : null;
+    switch (state) {
+        case 'sending':  
+            button.disabled = true; button.style.opacity = '0.5';  
+            if (iconSvg && isModal) button.appendChild(iconSvg);  
+            button.appendChild(document.createTextNode(isModal ? ' Sending...' : 'Sending...'));  
+            break;
+        case 'sent':  
+            button.style.background = 'rgba(16, 185, 129, 0.2)'; button.style.color = '#10b981';  
+            button.appendChild(document.createTextNode('✓ Sent'));  
+            break;
+        case 'default':  
+        default:  
+            const defaultRgb = this.hexToRgb(isModal ? '#8b5cf6' : '#8b5cf6');  
+            if (defaultRgb) {
+                button.style.setProperty('--btn-color-r', defaultRgb.r.toString());
+                button.style.setProperty('--btn-color-g', defaultRgb.g.toString());
+                button.style.setProperty('--btn-color-b', defaultRgb.b.toString());
+                button.style.background = `linear-gradient(135deg, rgba(${defaultRgb.r}, ${defaultRgb.g}, ${defaultRgb.b}, 0.2), rgba(${defaultRgb.r}, ${defaultRgb.g}, ${defaultRgb.b}, 0.1))`;
+                button.style.border = `1px solid rgba(${defaultRgb.r}, ${defaultRgb.g}, ${defaultRgb.b}, 0.3)`;
+                button.style.color = '#e0e7ff';  
+            }
+            if (iconSvg) button.appendChild(iconSvg);
+            button.appendChild(document.createTextNode(isModal ? 'Send SMS' : 'SMS'));  
+            break;
+    }
+  }
+
+  showBatchSmsModal() {  
+    const modal = document.getElementById('batch-sms-modal');
+    if (modal) {
+        const recipientsContainer = modal.querySelector('#batch-sms-recipients');
+        const countEl = modal.querySelector('#batch-sms-recipient-count');
+        if (!recipientsContainer || !countEl) return;
+
+        recipientsContainer.innerHTML = '';  
+        // Batch SMS recipients are based on the current main view filters (which is just search now)
+        const eligiblePayments = this.applyClientSideFilters(this.filters).filter(p => p.User && p.User.phone);  
+        
+        countEl.textContent = `Recipients (${eligiblePayments.length} from current view):`;
+        if (eligiblePayments.length > 0) {
+            eligiblePayments.forEach(p => {
+                const div = this.createElement('div', {className: 'batch-recipient-item'});
+                const checkbox = this.createElement('input', { type: 'checkbox', id: `batch-${p.id}`, 'data-payment-id': p.id, checked: true });
+                const label = this.createElement('label', { htmlFor: `batch-${p.id}`}, `${this.escapeHtml(p.User.fullName)} (${p.User.phone})`);
+                div.append(checkbox, label);
+                recipientsContainer.appendChild(div);
+            });
+        } else {
+            recipientsContainer.innerHTML = `<p class="no-recipients-text">No eligible recipients in current filtered view.</p>`;
+        }
+        modal.style.display = 'flex';
+    }
+  }
+
+  async sendBatchSms() {  
+    if (this.batchSmsState.sending) return;
+    const modal = document.getElementById('batch-sms-modal');  
+    const messageTemplate = document.getElementById('batch-sms-message').value.trim();
+    const checkboxes = modal ? modal.querySelectorAll('#batch-sms-recipients input[type="checkbox"]:checked') : [];
+
+    if (!messageTemplate) { this.showMessage('Enter message template.', 'error'); return; }
+    if (checkboxes.length === 0) { this.showMessage('Select recipients.', 'error'); return; }
+
+    this.batchSmsState = { sending: true, queue: [], results: [], progress: 0, total: checkboxes.length };
+    checkboxes.forEach(cb => {
+        const paymentId = parseInt(cb.dataset.paymentId);
+        const payment = this.allPaymentsMasterList.find(p => p.id === paymentId);  
+        if (payment) this.batchSmsState.queue.push(payment);
+    });
+    
+    if (modal) modal.style.display = 'none';
+    this.showMessage(`Batch SMS: 0/${this.batchSmsState.total} sent...`, 'info', 60000);  
+
+    let successCount = 0, errorCount = 0;
+    for (let i = 0; i < this.batchSmsState.queue.length; i++) {
+        const payment = this.batchSmsState.queue[i];
+        this.batchSmsState.progress = i + 1;
+        if (!payment || !payment.User || !payment.User.phone) { errorCount++; continue; }
+        try {
+            const paymentType = this.getPaymentTypeDisplayName(payment);
+            const amountVal = payment.amount !== null && payment.amount !== undefined ? parseFloat(payment.amount) : 0;
+            const amount = amountVal.toLocaleString('en-US', { minimumFractionDigits: 2 });
+            const date = new Date(payment.paymentDate).toLocaleDateString('en-GB', {day:'numeric', month:'short', year:'numeric'});
+            const personalizedMessage = messageTemplate
+                .replace(/{name}/g, payment.User.fullName)
+                .replace(/{amount}/g, amount)
+                .replace(/{type}/g, paymentType)
+                .replace(/{receiptNumber}/g, payment.receiptNumber || payment.id.toString())
+                .replace(/{date}/g, date);
+
+            const response = await this.queueApiRequest(() => this.apiService.post('/notifications/send-sms', { phone: payment.User.phone, message: personalizedMessage }));
+            if (response && response.success) {
+                successCount++;
+                this.smsState.set(payment.id, { sent: true, sending: false });
+                this.updateSmsButtonState(payment.id, 'sent');  
+            } else { errorCount++; console.warn(`SMS API error for ${payment.User.phone}: ${response?.message}`);}
+        } catch (err) { errorCount++; console.error(`Exception during SMS to ${payment.User.phone}:`, err); }
+        
+        if ((i + 1) % 5 === 0 || i + 1 === this.batchSmsState.total) {  
+             this.showMessage(`Batch SMS: ${successCount} sent, ${errorCount} failed (${this.batchSmsState.progress}/${this.batchSmsState.total})...`, 'info', 60000);
+        }
+        await new Promise(resolve => setTimeout(resolve, this.requestThrottleTime + 150));  
+    }
+    this.batchSmsState.sending = false;
+    this.showMessage(`Batch SMS complete: ${successCount} sent, ${errorCount} failed.`, successCount > 0 && errorCount === 0 ? 'success' : (errorCount > 0 ? 'error' : 'info'));
+  }
+
+  showSmsStatus(message, type) {  
+    const modal = document.getElementById('sms-status-modal');
+    if (!modal) return;
+    const configs = {  
+        success: { icon: '✓', color: '#10b981', bg: 'rgba(16,185,129,0.2)' },  
+        error: { icon: '⚠', color: '#ef4444', bg: 'rgba(239,68,68,0.2)' },  
+        info: { icon: 'ℹ', color: '#3b82f6', bg: 'rgba(59,130,246,0.2)' }
+    };  
+    const config = configs[type] || configs.info;
+    Object.assign(modal.style, { backgroundColor: config.bg, borderLeft: `4px solid ${config.color}`, display: 'block' });
+    modal.innerHTML = `<div class="sms-status-content"><span class="sms-status-icon" style="color:${config.color};">${config.icon}</span><div class="sms-status-message">${this.escapeHtml(message)}</div><button class="sms-status-close" onclick="this.parentElement.parentElement.style.display='none'">×</button></div>`;
+    setTimeout(() => { if(modal.style.display === 'block') modal.style.display = 'none'; }, type === 'error' ? 8000 : 5000);
+  }
+  showMessage(message, type, duration) {  
+    this.error = null; this.success = null;
+    const defaultDurations = { success: 4000, error: 7000, info: 5000 };
+    const effectiveDuration = duration || defaultDurations[type] || 5000;
+
+    if (type === 'success') this.success = message;
+    else if (type === 'error') this.error = message;
+    else this.success = message;  // Default to success styling for 'info'
+
+    if(this.isRendered && !this.isRendering) this.updateView(); 
+    setTimeout(() => {
+      if ((type === 'success' || type === 'info') && this.success === message) this.success = null;
+      if (type === 'error' && this.error === message) this.error = null;
+      this.updateViewIfNoPersistentMessage();
+    }, effectiveDuration);
+  }
+  updateViewIfNoPersistentMessage() {  
+    if (!this.error && !this.success && this.isRendered && !this.isRendering) this.updateView();
+  }
+  
+  formatPaymentType(type, isExpense = false) {  
+    return this.getPaymentTypeDisplayName({paymentType: type, isExpense});
+  }
+  getFriendlySpecialOfferingName(paymentType) {  
+    if (paymentType && paymentType.startsWith('SPECIAL_')) {
+      const uniquePart = paymentType.replace('SPECIAL_', '').replace(/_/g, ' ');
+      return `Special: ${this.escapeHtml(uniquePart.charAt(0).toUpperCase() + uniquePart.slice(1).toLowerCase())}`;
+    }
+    return 'Special Offering';
+  }
+  formatDepartment(department) {  
+    const departments = {  
+        'MUSIC': 'Music Ministry', 'CHILDREN': "Children's Ministry", 'COMMUNICATION': 'Communication',
+        'EDUCATION': 'Education', 'FAMILY': 'Family Ministries', 'HEALTH': 'Health Ministries',
+        'MINISTERIAL': 'Ministerial Association', 'PLANNED_GIVING': 'Planned Giving & Trust Services',
+        'TREASURY': 'Treasury', 'PUBLIC_AFFAIRS': 'Public Affairs & Religious Liberty',
+        'PUBLISHING': 'Publishing', 'SABBATH_SCHOOL': 'Sabbath School & Personal Ministries',
+        'WOMEN': "Women's Ministries", 'YOUTH': 'Youth Ministries', 'OTHER': 'Other',
+        'MAINTENANCE': 'Maintenance', 'DEVELOPMENT': 'Development'
+    };  
+    return departments[department] || this.escapeHtml(department.replace(/_/g, ' '));
+  }
+  getDepartmentColor(department) {  
+    const colors = {  
+        'MUSIC': '#3b82f6', 'MAINTENANCE': '#ef4444', 'EDUCATION': '#8b5cf6',
+        'CHILDREN': '#10b981', 'YOUTH': '#f59e0b', 'HEALTH': '#06b6d4',
+        'COMMUNICATION': '#ec4899', 'FAMILY': '#f97316', 'TREASURY': '#14b8a6',
+        'DEVELOPMENT': '#0ea5e9', 'OTHER': '#64748b'
+    };  
+    return colors[department] || '#64748b';
+  }
+  hexToRgb(hex) {  
+    if (!hex) return {r: 100, g: 100, b: 100}; 
+    let sanitizedHex = hex.replace('#', '');
+    if (sanitizedHex.length === 3) sanitizedHex = sanitizedHex.split('').map(c => c + c).join('');
+    if (sanitizedHex.length !== 6) return {r: 100, g: 100, b: 100}; 
+
+    return {  
+        r: parseInt(sanitizedHex.substring(0, 2), 16),  
+        g: parseInt(sanitizedHex.substring(2, 4), 16),  
+        b: parseInt(sanitizedHex.substring(4, 6), 16)  
+    };
+  }
+  formatDate(date) {  
+    const d = date instanceof Date ? date : new Date(date);
+    if (isNaN(d.getTime())) return 'Invalid Date';
+    return d.toLocaleDateString('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });  
+  }
+  
+  resetFilters() {  
+    this.filters.search = ''; // Only reset search
+    this.currentPage = 1;
+    const form = document.getElementById('payment-filters-form');
+    if (form) {
+      const searchInput = form.querySelector('input[name="search"]');
+      if (searchInput) searchInput.value = '';
+    }
+    this.applyFiltersAndPagination(this.filters);  
+    this.updateView();
+  }
+  
+  applyFiltersWithDebounce() {  // isSearch parameter is no longer needed as only search uses debounce
+    if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
+    this.searchDebounceTimer = setTimeout(() => {
+      this.currentPage = 1;
+      this.applyFiltersAndPagination(this.filters);  
+      this.updateView();  
+    }, this.SEARCH_DEBOUNCE_DELAY);
+  }
+  
+  attachEventListeners() {  
+    const filtersForm = document.getElementById('payment-filters-form');
+    if (filtersForm) {
+      const searchInput = filtersForm.elements.search;
+      if (searchInput) {
+          searchInput.addEventListener('input', () => {
+              this.updateFiltersFromForm(); 
+              this.applyFiltersWithDebounce(); // No need for isSearch argument
+          });
+      }
+    }
+    
+    const appContainer = document.getElementById('app') || document.body;  
+    appContainer.addEventListener('click', (e) => {
+        const target = e.target;
+        const pageButton = target.closest('.pagination-item[data-page]');
+        if (pageButton) {
+            const page = parseInt(pageButton.dataset.page);
+            if (page && page !== this.currentPage && page > 0 && page <= this.totalPages) {
+                this.currentPage = page;
+                this.updateView();  
+            }
+            return;
+        }
+        const viewBtn = target.closest('.view-payment-btn[data-id]');
+        if (viewBtn) { this.viewPaymentDetails(viewBtn.dataset.id); return; }
+        
+        const smsBtnTable = target.closest('.action-button.send-sms-btn[data-id]');
+        if (smsBtnTable && !target.closest('#payment-detail-modal')) {  
+            const paymentId = parseInt(smsBtnTable.dataset.id);
+            const payment = this.allPaymentsMasterList.find(p => p.id === paymentId);
+            if (payment && payment.User?.phone) {
+                const state = this.smsState.get(paymentId) || {};
+                if (!state.sending && !state.sent) this.sendSms(payment.User.phone, payment.User.fullName, payment);
+            }
+            return;
+        }
+        if (target.matches('.close-modal') || target.closest('.close-modal')) {
+            const modal = target.closest('.modal-backdrop');
+            if (modal && modal.id !== 'batch-sms-modal' && modal.id !== 'export-filter-modal') { // Ensure not to close batch/export modals this way
+                 modal.style.display = 'none';
+            } else if (modal && (modal.id === 'export-filter-modal')) { // Specific close for export modal
+                 modal.style.display = 'none';
+            }
+            return;
+        }
+        if (target.matches('.close-batch-modal') || target.closest('.close-batch-modal')) {
+            const batchSmsModalEl = document.getElementById('batch-sms-modal'); 
+            if (batchSmsModalEl) batchSmsModalEl.style.display = 'none';
+            return;
+        }
+        
+        if(target.id === 'proceed-with-export-btn') {
+            this.handleProceedWithExport();
+            return;
+        }
+    });
+    
+    const paymentDetailModal = document.getElementById('payment-detail-modal');
+    if (paymentDetailModal) paymentDetailModal.addEventListener('click', (e) => { if (e.target === paymentDetailModal) paymentDetailModal.style.display = 'none'; });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && paymentDetailModal?.style.display === 'flex') paymentDetailModal.style.display = 'none'; });
+    
+    const batchSmsModalEl = document.getElementById('batch-sms-modal');  
+    if (batchSmsModalEl) {
+      batchSmsModalEl.addEventListener('click', (e) => { if (e.target === batchSmsModalEl) batchSmsModalEl.style.display = 'none'; });
+      const sendButton = batchSmsModalEl.querySelector('#send-batch-sms');
+      if (sendButton) sendButton.onclick = () => this.sendBatchSms();
+    }
+
+    const exportFilterModalEl = document.getElementById('export-filter-modal');
+    if (exportFilterModalEl) {
+        exportFilterModalEl.addEventListener('click', (e) => { if (e.target === exportFilterModalEl) exportFilterModalEl.style.display = 'none'; });
+        const exportPaymentTypeSelect = exportFilterModalEl.querySelector('#export-payment-type');
+        if(exportPaymentTypeSelect) {
+            exportPaymentTypeSelect.addEventListener('change', (e) => {
+                const group = exportFilterModalEl.querySelector('#export-special-offering-group');
+                if(group) group.style.display = e.target.value === 'SPECIAL' ? 'grid' : 'none';
+                if (e.target.value !== 'SPECIAL') { // Clear special offering if type is not SPECIAL
+                    const soSelect = exportFilterModalEl.querySelector('#export-special-offering');
+                    if (soSelect) soSelect.value = '';
+                }
+            });
+        }
+    }
+  }
+  
+  updateFiltersFromForm() {  
+    const form = document.getElementById('payment-filters-form');
+    if (!form) return;
+    const searchInput = form.querySelector('input[name="search"]');
+    if (searchInput) {
+        this.filters.search = searchInput.value || '';
+    }
+    // No other filters to update from the main form
+  }
+  
+  updateView() {  
+    if (this.isRendering && document.readyState !== 'complete') return;  
+    this.isRendering = true;  
+    const appContainer = document.getElementById('app');
+    if (appContainer) {
+      const scrollTop = appContainer.scrollTop;  
+      
+      // Clear only if already rendered, to prevent flicker on first load
+      // if (this.isRendered) appContainer.innerHTML = '';  
+      
+      this.render().then(content => {  
+        if (content) {
+          // Always clear before appending new content if updateView is called
+          appContainer.innerHTML = '';  
+          appContainer.appendChild(content);
+        }
+        appContainer.scrollTop = scrollTop;  
+        // isRendered is set within render now.
+        this.isRendering = false;  
+      }).catch(error => {
+        console.error('Critical error in updateView -> render:', error);
+        appContainer.innerHTML = `<div class="critical-error-display">A major error occurred. Please refresh. Details: ${this.escapeHtml(error.message)}</div>`;
+        this.isRendering = false;  
+      });
+    } else {
+        this.isRendering = false;  
+    }
+  }
+  
+  renderTopNavigation() {  
+    const nav = this.createElement('nav', { className: 'admin-top-nav' });
     const links = [
       { path: '/admin/dashboard', text: 'Dashboard', icon: '📊' },
       { path: '/admin/payments', text: 'Payments', icon: '💰', active: true },
       { path: '/admin/users', text: 'Users', icon: '👥' },
-      { path: '/admin/expenses', text: 'Expenses', icon: '📉' }
+      { path: '/admin/expenses', text: 'Expenses', icon: '📉' },
+      { path: '/admin/add-payment', text: 'Add Payment', icon: '➕' }
     ];
-    
-    const navContent = document.createElement('div');
-    navContent.style.cssText = 'max-width: 1200px; margin: 0 auto; display: flex; gap: 1rem;';
-    
+    const navContent = this.createElement('div', { className: 'admin-nav-content' });
     links.forEach(link => {
-      const a = document.createElement('a');
-      a.href = link.path;
-      a.className = `nav-link ${link.active ? 'active' : ''}`;
-      a.style.cssText = `
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 0.5rem 1rem;
-        color: ${link.active ? '#fff' : '#94a3b8'};
-        text-decoration: none;
-        border-radius: 0.5rem;
-        background: ${link.active ? 'rgba(79, 70, 229, 0.2)' : 'transparent'};
-        transition: all 0.2s;
-      `;
-      
+      const a = this.createElement('a', { href: link.path, className: `nav-link ${link.active ? 'active' : ''}` });
       a.innerHTML = `${link.icon} ${link.text}`;
-      
-      // Hover effect
-      a.addEventListener('mouseenter', () => {
-        if (!link.active) {
-          a.style.background = 'rgba(30, 41, 59, 0.5)';
-          a.style.color = '#fff';
-        }
-      });
-      
-      a.addEventListener('mouseleave', () => {
-        if (!link.active) {
-          a.style.background = 'transparent';
-          a.style.color = '#94a3b8';
-        }
-      });
-      
+      a.addEventListener('mouseenter', () => { if (!link.active) { a.classList.add('hover'); }});
+      a.addEventListener('mouseleave', () => { if (!link.active) { a.classList.remove('hover'); }});
       navContent.appendChild(a);
     });
-    
     nav.appendChild(navContent);
     return nav;
   }
-} // End of class AdminPaymentsView
+  renderPaymentDetailModal() {  
+    const modalBackdrop = this.createElement('div', { id: 'payment-detail-modal', className: 'modal-backdrop' });
+    const modalContent = this.createElement('div', { className: 'modal-content neo-card' });  
+    modalContent.appendChild(this.createElement('div', { className: 'card-glow' }));
+
+    const modalHeader = this.createElement('div', { className: 'modal-header' });
+    const modalTitle = this.createElement('h3', { id: 'modal-title' }, 'Payment Details');
+    const closeButton = this.createElement('button', { className: 'close-modal' }, '×');
+    modalHeader.append(modalTitle, closeButton);
+
+    const modalBody = this.createElement('div', { id: 'modal-body', className: 'modal-body' });
+    modalBody.innerHTML = `<div class="modal-loading"><div class="loading-spinner"></div>Loading...</div>`;
+
+    const modalFooter = this.createElement('div', { className: 'modal-footer' });
+    const closeModalButtonFooter = this.createFuturisticButton('Close', '#64748b', () => { modalBackdrop.style.display = 'none'; });
+    
+    const downloadButton = this.createFuturisticButton('', '#3b82f6', null);  
+    downloadButton.id = 'modal-download-btn';
+    const downloadIcon = this.createSvgIcon('download');
+    if (downloadIcon) downloadButton.prepend(downloadIcon);
+    downloadButton.appendChild(document.createTextNode('Receipt PDF'));
+
+    const sendSmsButton = this.createFuturisticButton('', '#8b5cf6', null);  
+    sendSmsButton.id = 'modal-sms-btn';
+    // Icon and text for SMS button are handled by styleSmsButton
+
+    modalFooter.append(closeModalButtonFooter, sendSmsButton, downloadButton);
+    modalContent.append(modalHeader, modalBody, modalFooter);
+    modalBackdrop.appendChild(modalContent);
+    return modalBackdrop;
+  }
+  renderSmsStatusModal() {  
+    return this.createElement('div', { id: 'sms-status-modal', className: 'neo-card sms-status-toast' });
+  }
+  renderBatchSmsModal() {  
+    const modalBackdrop = this.createElement('div', { id: 'batch-sms-modal', className: 'modal-backdrop' });
+    const modalContent = this.createElement('div', { className: 'modal-content neo-card batch-sms-modal-content' });
+    
+    modalContent.innerHTML = `
+      <div class="modal-header">
+        <h3 id="batch-sms-modal-title">📱 Batch SMS</h3>
+        <button class="close-batch-modal">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="batch-sms-message" class="form-label">Message Template</label>
+          <textarea id="batch-sms-message" rows="4" class="form-control" placeholder="Use {name}, {amount}, {type}, {receiptNumber}, {date}.">Dear {name}, your {type} payment of KES {amount} on {date} (Receipt: {receiptNumber}) has been recorded. Thank you for your contribution to TASSIAC Church.</textarea>
+        </div>
+        <div class="form-group">
+          <div id="batch-sms-recipient-count" class="form-label">Recipients (0 from current view):</div>
+          <div id="batch-sms-recipients">
+              <p class="no-recipients-text">Loading recipients...</p>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="close-batch-modal futuristic-button" style="--btn-color-r:100; --btn-color-g:116; --btn-color-b:139;">Cancel</button>
+        <button id="send-batch-sms" class="futuristic-button" style="--btn-color-r:139; --btn-color-g:92; --btn-color-b:246;">Send Batch SMS</button>
+      </div>`;
+    modalBackdrop.appendChild(modalContent);
+    return modalBackdrop;
+  }
+
+  renderExportFilterModal() {
+    const modalBackdrop = this.createElement('div', { id: 'export-filter-modal', className: 'modal-backdrop' });
+    const modalContent = this.createElement('div', { className: 'modal-content neo-card export-filter-modal-content' });
+
+    // The search term info paragraph is added here
+    modalContent.innerHTML = `
+        <div class="modal-header">
+            <h3 id="export-filter-modal-title">Export Options</h3>
+            <button class="close-modal">×</button> 
+        </div>
+        <div class="modal-body">
+            <p id="export-search-info" style="font-size:14px; color:#cbd5e1; margin-bottom:20px;">Select filters for your export. The current main search term ("<strong style="color:#e0e7ff;">${this.escapeHtml(this.filters.search) || 'None'}</strong>") will also be applied.</p>
+            <div class="export-filters-form-grid">
+                ${this.createFormGroup('Start Date (Export)', 'export-start-date', 'date').outerHTML}
+                ${this.createFormGroup('End Date (Export)', 'export-end-date', 'date').outerHTML}
+                ${this.createFormGroup('Payment Type (Export)', 'export-payment-type', 'select').outerHTML}
+                <div id="export-special-offering-group" style="display:none;">
+                    ${this.createFormGroup('Special Offering (Export)', 'export-special-offering', 'select').outerHTML}
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="close-modal futuristic-button" style="--btn-color-r:100; --btn-color-g:116; --btn-color-b:139;">Cancel</button>
+            <button id="proceed-with-export-btn" class="futuristic-button" style="--btn-color-r:79; --btn-color-g:70; --btn-color-b:229;">Proceed with Export</button>
+        </div>
+    `;
+    // Populate payment type dropdown
+    const paymentTypeSelect = modalContent.querySelector('#export-payment-type');
+    if(paymentTypeSelect) {
+        const paymentTypes = [  
+            { value: '', label: 'All Types' }, { value: 'TITHE', label: 'Tithe' },  
+            { value: 'OFFERING', label: 'Offering' }, { value: 'DONATION', label: 'Donation' },
+            { value: 'EXPENSE', label: 'Expense' }, { value: 'SPECIAL', label: 'Special Offerings' }
+        ];
+        paymentTypes.forEach(type => paymentTypeSelect.add(new Option(type.label, type.value)));
+    }
+    // Special offerings dropdown will be populated by populateExportFilterSpecialOfferings() when modal is shown
+    modalBackdrop.appendChild(modalContent);
+    return modalBackdrop;
+  }
+
+  renderLoading() {  
+    const loadingContainer = this.createElement('div', { className: 'loading-container neo-card' });
+    loadingContainer.innerHTML = `<div class="loading-spinner"></div><p>Loading data...</p>`;
+    return loadingContainer;
+  }
+  renderError(error) {  
+    const errorContainer = this.createElement('div', { className: 'error-container neo-card' });
+    errorContainer.innerHTML = `⚠️<h2>Error Encountered</h2><p>${this.escapeHtml(error.message)}</p><button id="retry-load-btn" class="futuristic-button" style="--btn-color-r:239; --btn-color-g:68; --btn-color-b:68;">Retry Load</button>`;
+    
+    setTimeout(() => {
+        const retryBtn = document.getElementById('retry-load-btn');
+        if(retryBtn && !retryBtn.dataset.listenerAttached) { 
+            retryBtn.dataset.listenerAttached = 'true';
+            retryBtn.onclick = () => { this.error = null; this.fetchAllPaymentsData(); };
+        }
+    },0);
+    return errorContainer;
+  }
+  renderUnauthorized() {  
+    const unauthContainer = this.createElement('div', { className: 'unauthorized-container neo-card' });
+    unauthContainer.innerHTML = `
+        <div style="font-size: 50px; margin-bottom: 15px;">🔒</div>
+        <h2>Access Denied</h2>
+        <p>You do not have permission to view this page.</p>
+        <a href="/dashboard" class="futuristic-button" style="--btn-color-r:79; --btn-color-g:70; --btn-color-b:229;">🏠 Go to Dashboard</a>
+    `;
+    return unauthContainer;
+  }
+  
+  addGlobalStyles() {  
+    if (document.getElementById('dashboard-global-styles')) return;
+    const styleElement = document.createElement('style');
+    styleElement.id = 'dashboard-global-styles';
+    styleElement.textContent = `
+      /* Base styles */
+      body { margin: 0; background-color: #0f172a; color: #eef2ff; font-family: 'Inter', sans-serif; overflow-x:hidden; }
+      * { box-sizing: border-box; }
+      .dashboard-container { max-width: 1400px; margin: 0 auto; padding: 20px; position: relative; z-index: 1; }
+      /* Scrollbar */
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.5); }
+      ::-webkit-scrollbar-thumb { background: rgba(79, 107, 255, 0.6); border-radius: 4px; }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(79, 107, 255, 0.8); }
+      /* Cards */
+      .neo-card { position: relative; backdrop-filter: blur(12px) saturate(150%); background: rgba(30, 41, 59, 0.7); border-radius: 12px; border: 1px solid rgba(148, 163, 184, 0.2); box-shadow: 0 6px 20px -10px rgba(0,0,0,0.4), 0 0 1px rgba(255,255,255,0.08) inset; overflow: hidden; transition: box-shadow 0.3s ease; }
+      .neo-card:hover { box-shadow: 0 10px 30px -12px rgba(0,0,0,0.5), 0 0 1px rgba(255,255,255,0.12) inset; }
+      .card-glow { position: absolute; top: -50%; left: -50%; width: 200%; height: 200%; background: radial-gradient(circle, rgba(var(--glow-r, 99), var(--glow-g, 102), var(--glow-b, 241), 0.15) 0%, transparent 70%); animation: rotateGlow 10s linear infinite; z-index: 0; pointer-events:none; opacity:0; transition: opacity 0.5s; }
+      .neo-card:hover .card-glow { opacity:1; }
+      @keyframes rotateGlow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      /* Page Header */
+      .page-header-card { margin-bottom: 30px; padding: 25px; --glow-r:99; --glow-g:102; --glow-b:241; }
+      .header-particle { position: absolute; border-radius: 50%; background: rgba(129, 140, 248, 0.3); animation: float 3s ease-in-out infinite; z-index:1;}
+      .page-header-content { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px; position: relative; z-index: 2; }
+      .page-header-title { font-size: 28px; font-weight: 700; margin: 0; background: linear-gradient(to right, #ffffff, #e0e7ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+      .export-buttons-group { display: flex; gap: 12px; flex-wrap: wrap; }
+      /* Futuristic Button */
+      .futuristic-button { position: relative; color: #e0e7ff; border: 1px solid rgba(var(--btn-color-r,79), var(--btn-color-g,70), var(--btn-color-b,229), 0.3); background: linear-gradient(135deg, rgba(var(--btn-color-r,79), var(--btn-color-g,70), var(--btn-color-b,229), 0.2), rgba(var(--btn-color-r,79), var(--btn-color-g,70), var(--btn-color-b,229), 0.1)); border-radius: 6px; padding: 8px 14px; font-weight: 500; font-size: 13px; cursor: pointer; transition: all 0.25s ease; backdrop-filter: blur(8px); box-shadow: 0 2px 6px rgba(0,0,0,0.15); overflow: hidden; display: inline-flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none; }
+      .futuristic-button .svg-icon-wrapper { margin-right: 4px; display: inline-flex; align-items: center;}
+      .futuristic-button::before { content: ""; position: absolute; top: 0; left: -120%; width: 100%; height: 100%; background: linear-gradient(to right, transparent 0%, rgba(255,255,255,0.15) 50%, transparent 100%); transform: skewX(-25deg); transition: left 0.7s cubic-bezier(0.23, 1, 0.32, 1); }
+      .futuristic-button:hover { transform: translateY(-2px); box-shadow: 0 5px 12px rgba(var(--btn-color-r,79), var(--btn-color-g,70), var(--btn-color-b,229),0.2), 0 0 0 1px rgba(var(--btn-color-r,79), var(--btn-color-g,70), var(--btn-color-b,229),0.1) inset; color: #fff; }
+      .futuristic-button:hover::before { left: 120%; }
+      .futuristic-button:active { transform: translateY(0); }
+      .futuristic-button:disabled { opacity: 0.6; cursor: not-allowed; transform: translateY(0); box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
+      .futuristic-button:disabled::before { display:none; }
+      /* Alerts */
+      .alert-card { padding: 14px 18px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; animation: fadeIn 0.3s ease-out; }
+      .alert-icon { font-weight: bold; font-size: 1.2em; } .alert-message { font-size: 14px; color: #f1f5f9; }
+      .alert-success { background-color: rgba(16,185,129,0.1); border-left: 4px solid #10b981; }
+      .alert-error { background-color: rgba(239,68,68,0.1); border-left: 4px solid #ef4444; }
+      /* Filters Card */
+      .filters-card { margin-bottom: 20px; animation-delay: '0.1s'; --glow-r:99; --glow-g:102; --glow-b:241;}
+      .filters-header { padding: 14px 20px; border-bottom: 1px solid rgba(148,163,184,0.1); }
+      .filters-title { font-size: 16px; font-weight: 600; margin: 0; color: #f1f5f9; display: flex; align-items: center; gap: 6px; }
+      .filters-content { padding: 20px; }
+      .filters-form { display: grid; grid-template-columns: 1fr auto; /* Search takes full width, actions to the side */ gap: 18px; align-items: end; }
+      .form-group { display: grid; gap: 6px; }  
+      .form-label { font-size: 13px; font-weight: 500; color: #94a3b8; }
+      .form-control { width: 100%; padding: 9px 12px; background: rgba(15,23,42,0.75); border: 1px solid rgba(148,163,184,0.3); border-radius: 6px; color: #f1f5f9; font-size: 14px; transition: all 0.2s ease; }
+      .form-control:focus { border-color: #4f46e5; outline: none; box-shadow: 0 0 0 3px rgba(79,70,229,0.3); background: rgba(15,23,42,0.9); }
+      select.form-control { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 35px; }
+      .filters-form-actions { display: flex; gap: 12px; justify-content: flex-end; } /* Removed grid-column for simpler layout */
+      /* Payments Table */
+      .payments-table-card { animation-delay: '0.2s'; --glow-r:59; --glow-g:130; --glow-b:246;}
+      .payments-table-header { padding: 14px 20px; border-bottom: 1px solid rgba(148,163,184,0.1); display: flex; justify-content: space-between; align-items: center; }
+      .payments-table-title { font-size: 16px; font-weight: 600; margin: 0; color: #f1f5f9; display: flex; align-items: center; gap: 6px; }
+      .payment-count { font-size: 13px; color: #94a3b8; }
+      .payment-table-wrapper { overflow-x: auto; padding: 0 8px; }
+      .payments-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      .payments-table thead { background: rgba(30,41,59,0.6); }
+      .payments-table th { padding: 12px 14px; font-size: 12px; font-weight: 600; color: #94a3b8; border-bottom: 1px solid rgba(148,163,184,0.2); white-space: nowrap; text-align:left; }
+      .payments-table td { padding: 12px 14px; font-size: 13px; color: #f1f5f9; border-bottom: 1px solid rgba(148,163,184,0.1); }
+      .payments-table td:nth-child(2), .payments-table td:nth-child(5) { color: #94a3b8; }  
+      .payments-table tr:hover td { background-color: rgba(30, 41, 59, 0.5); }
+      .user-cell .user-name { font-weight:500; color:#f1f5f9; font-size:13px; } .user-cell .user-phone { font-size:12px; color:#94a3b8; }
+      .amount-cell { font-family: 'SF Mono', 'Consolas', monospace; font-weight:600; font-size:13px; }
+      .status-badge { display: inline-block; padding: 3px 9px; border-radius: 12px; font-size: 11px; font-weight: 500; }
+      .payment-type-badge { display: inline-block; padding: 3px 9px; border-radius: 12px; font-size: 11px; font-weight: 500; }
+      .action-buttons-container { display: flex; gap: 6px; flex-wrap: wrap; }
+      .action-button { display: inline-flex; align-items: center; gap: 4px; padding: 5px 9px; border:none; border-radius: 5px; font-size: 11px; font-weight: 500; cursor: pointer; transition: all 0.2s ease; }
+      .action-button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.2); }
+      .action-button .svg-icon-wrapper { margin-right:3px; display: inline-flex; align-items: center;}
+      .view-payment-btn { background: rgba(59,130,246,0.2); color: #3b82f6; }
+      .send-sms-btn { /* Default styles set by futuristic-button and its CSS vars or specific JS override */ }  
+      /* Empty State */
+      .empty-state-container { padding: 50px 20px; text-align: center; }
+      .empty-state-icon { margin: 0 auto 16px; width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; font-size: 40px; color: #64748b; }
+      .empty-state-title { font-size: 20px; font-weight: 600; margin: 0 0 8px 0; color: #f1f5f9; }
+      .empty-state-text { font-size: 14px; color: #94a3b8; margin: 0 0 20px 0; }
+      .add-payment-empty { margin-top:10px; }
+      /* Pagination */
+      .pagination-container { display: flex; justify-content: center; padding: 16px; border-top: 1px solid rgba(148,163,184,0.1); gap: 5px; flex-wrap: wrap; }
+      .pagination-item { cursor: pointer; padding: 7px 12px; margin: 0 2px; border-radius: 6px; transition: all 0.2s; font-size: 13px; color: #94a3b8; background: rgba(30,41,59,0.5); border: 1px solid transparent; font-family: inherit; }
+      .pagination-item:hover:not(.disabled) { background: rgba(79,70,229,0.25); color: #f1f5f9; border-color: rgba(79,70,229,0.4); }
+      .pagination-item.active { background: #4f46e5; color: white; font-weight: 600; border-color: #4f46e5; }
+      .pagination-ellipsis { padding: 7px 5px; color: #94a3b8; }
+      /* Modals */
+      .modal-backdrop { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(15,23,42,0.8); z-index: 1000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px); animation: fadeInModal 0.3s ease-out; }
+      @keyframes fadeInModal { from { opacity:0; } to { opacity:1; } }
+      .modal-content { position: relative; width: 90%; max-width: 700px; max-height: 85vh; overflow: hidden; display:flex; flex-direction:column; background: rgba(30,41,59,0.9); border-radius:10px; border:1px solid rgba(148,163,184,0.25); box-shadow: 0 10px 30px rgba(0,0,0,0.3); animation: slideInModal 0.3s ease-out; }
+      @keyframes slideInModal { from { opacity:0; transform: translateY(20px) scale(0.98); } to { opacity:1; transform: translateY(0) scale(1); } }
+      .modal-header { padding: 16px 20px; border-bottom: 1px solid rgba(148,163,184,0.15); display: flex; justify-content: space-between; align-items: center; }
+      .modal-header h3 { margin:0; font-size:18px; font-weight:600; color:#f1f5f9; }
+      .close-modal { background:none; border:none; color:#94a3b8; cursor:pointer; font-size:24px; transition: color 0.2s ease; padding:0; line-height:1; }
+      .close-modal:hover { color: #fff; }
+      .modal-body { padding: 20px; flex-grow:1; overflow-y:auto; }
+      .modal-loading { text-align:center; padding:40px 0; color:#94a3b8; display:flex; flex-direction:column; align-items:center; gap:10px; }
+      .modal-error { text-align:center; padding:30px; color:#ef4444; font-size:14px; }
+      .payment-details-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:20px; }
+      .detail-section { padding:16px; background:rgba(15,23,42,0.5) !important; border-radius: 8px; }  
+      .detail-section h4 { margin:0 0 12px 0; font-size:15px; font-weight:600; color:#c7d2fe; border-bottom:1px solid rgba(148,163,184,0.1); padding-bottom:8px;}
+      .detail-section div { margin-bottom:8px; font-size:13px; display:flex; justify-content:space-between; }
+      .detail-section div span:first-child { font-weight:500; color:#94a3b8; margin-right:10px; }
+      .detail-section div span:last-child { color:#f1f5f9; text-align:right; }
+      .description-detail { flex-direction:column; align-items:flex-start;}
+      .description-detail span:first-child { margin-bottom:4px;}
+      .description-detail p { margin: 2px 0 0 0; white-space:pre-wrap; color:#f1f5f9; text-align:left; width:100%;}
+      .modal-footer { padding: 16px 20px; border-top: 1px solid rgba(148,163,184,0.15); display: flex; justify-content: flex-end; gap: 12px; background:rgba(30,41,59,0.8); }
+      /* SMS Status Toast */
+      .sms-status-toast { display:none; position:fixed; top:20px; right:20px; z-index:2000; padding:14px; border-radius:8px; box-shadow:0 5px 15px rgba(0,0,0,0.25); max-width:350px; width:calc(100% - 40px); animation: slideInToast 0.3s ease-out; }
+      @keyframes slideInToast { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
+      .sms-status-content { display:flex; align-items:flex-start; gap:10px; }
+      .sms-status-icon { font-weight:bold; font-size:18px; margin-top:1px; }
+      .sms-status-message { flex:1; font-size:14px; color:#f1f5f9; line-height:1.4; }
+      .sms-status-close { background:none; border:none; color:inherit; opacity:0.7; cursor:pointer; font-size:20px; padding:0; line-height:1; }
+      .sms-status-close:hover { opacity:1; }
+      /* Batch SMS & Export Filter Modals */
+      #batch-sms-modal .modal-content, .export-filter-modal-content { max-width: 550px; }  
+      .batch-sms-modal-content .modal-body, .export-filter-modal-content .modal-body { display:flex; flex-direction:column; gap:16px; }
+      #batch-sms-recipients { max-height: 200px; overflow-y: auto; border: 1px solid rgba(148,163,184,0.2); border-radius: 6px; padding: 10px; background:rgba(15,23,42,0.6); }
+      .batch-recipient-item { display:flex; align-items:center; padding:5px 0; font-size:13px; }
+      .batch-recipient-item input[type="checkbox"] { margin-right:10px; cursor:pointer; transform:scale(1.1); accent-color: #4f46e5; }
+      .batch-recipient-item label { color:#f1f5f9; cursor:pointer; flex-grow:1; }
+      .no-recipients-text { color:#94a3b8; font-size:13px; text-align:center; padding:10px; }
+      .export-filters-form-grid { display:grid; grid-template-columns:1fr; gap:15px; }
+      @media (min-width: 500px) { .export-filters-form-grid { grid-template-columns:1fr 1fr; } } 
+
+      /* Loading & Error States */
+      .loading-container { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:60px 20px; text-align:center; }
+      .loading-spinner { display: inline-block; width: 40px; height: 40px; border: 3px solid rgba(79,70,229,0.3); border-top-color: #6366f1; border-radius: 50%; animation: spin 0.8s cubic-bezier(0.68,-0.55,0.27,1.55) infinite; }
+      .loading-container p { color:#94a3b8; font-size:16px; font-weight:500; margin-top:15px; }
+      .error-container { padding:40px 20px; text-align:center; margin:20px auto; max-width:600px; background-color:rgba(239,68,68,0.05); border-left:4px solid #ef4444; }
+      .error-container h2 { font-size:22px; color:#f1f5f9; margin:0 0 10px; } .error-container p { color:#cbd5e1; margin:0 0 20px; }
+      .unauthorized-container { max-width:600px; margin:40px auto; padding:40px 30px; text-align:center; }
+      .unauthorized-container h2 {font-size:24px; font-weight:700; color:#f1f5f9; margin:0 0 12px;}
+      .unauthorized-container p {font-size:14px; color:#94a3b8; margin:0 0 30px;}
+      .critical-error-display { color:red; text-align:center; padding:30px; font-size:16px; background:rgba(255,0,0,0.1); border:1px solid red; border-radius:8px; }
+      /* Animations */
+      @keyframes float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-10px); } }
+      @keyframes fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+      .animated-item { animation: fadeIn 0.5s ease-out forwards; }
+      /* Admin Nav Specific Styles */
+      .admin-top-nav { padding: 12px; border-bottom: 1px solid rgba(148,163,184,0.1); background: rgba(30,41,59,0.5); margin-bottom: 20px; border-radius: 8px; }
+      .admin-nav-content { max-width:1200px; margin:0 auto; display:flex; gap:12px; flex-wrap:wrap; }
+      .nav-link { display:flex; align-items:center; gap:6px; padding:8px 12px; color:#94a3b8; text-decoration:none; border-radius:6px; background:transparent; transition:all 0.2s; font-size:14px; font-weight:500; }
+      .nav-link.active { color:#fff; background:rgba(79,70,229,0.2); }
+      .nav-link:hover { background:rgba(40,51,79,0.7); color:#fff; }  
+
+      /* Responsive */
+      @media (max-width: 768px) {
+        .dashboard-container { padding:15px; } .page-header-title { font-size:24px; }
+        .filters-form { grid-template-columns:1fr; gap:15px; } /* Single column for filters on mobile */
+        .filters-form-actions { justify-content: center; } /* Center reset button on mobile */
+        .futuristic-button { padding:7px 12px; font-size:12px; }
+        .modal-content { max-width:95%; max-height:90vh; }
+        .admin-nav-content { gap:8px; } .nav-link { padding:7px 10px; font-size:13px; }
+      }
+      @media (max-width: 480px) {
+        .dashboard-container { padding:10px; } .page-header-title { font-size:20px; }
+        .export-buttons-group { flex-direction:column; align-items:stretch; width:100%; }
+        .export-buttons-group .futuristic-button { width:100%; justify-content:center; }
+        .payments-table th, .payments-table td { padding:10px 8px; font-size:12px; }
+        .action-button { padding:4px 7px; font-size:10px; }
+      }
+      .gradient-background { position:fixed; top:0; left:0; width:100%; height:100%; background:linear-gradient(125deg, #0f172a 0%, #1e293b 40%, #0f172a 100%); background-size:400% 400%; z-index:-2; animation:gradientBG 15s ease infinite; }
+      .particle-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M11 18c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm48 25c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7z' fill='%234f6bff' fill-opacity='0.03'/%3E%3C/svg%3E"); background-size:100px 100px; z-index:-1; animation:floatParticles 150s linear infinite; }
+      @keyframes gradientBG { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
+      @keyframes floatParticles { from{background-position:0 0;} to{background-position:1000px 1000px;} }
+    `;
+    document.head.appendChild(styleElement);
+  }
+
+  destroy() {
+    if (this.handleResize) window.removeEventListener('resize', this.handleResize);
+    if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer); // Only search timer now
+    
+    this.allPaymentsMasterList = [];
+    this.payments = [];
+    this.specialOfferings = [];
+    this.specialOfferingsCache = null;
+    
+    this.smsState.clear();
+    this.batchSmsState = { sending: false, queue: [], results: [], progress: 0, total: 0 };
+    this.pdfState = { generating: false };
+    this.isRendered = false;  
+    this.isRendering = false;
+  }
+}
