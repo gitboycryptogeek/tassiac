@@ -28,11 +28,7 @@ function debugLog(message, data = null) {
     }
   }
   console.log(logMessage);
-  try {
-    fs.appendFileSync(LOG_FILE, logMessage + '\n');
-  } catch (err) {
-    // console.error('Failed to write to debug log file:', err);
-  }
+  
   return logMessage;
 }
 
@@ -65,6 +61,9 @@ async function logAdminActivity(actionType, targetId, initiatedBy, actionData = 
         initiatedBy,
         actionData,
         status: 'COMPLETED',
+        initiator: {
+          connect: { id: initiatedBy } // Connect to the user who initiated the action
+        }
       },
     });
     debugLog(`Admin activity logged: ${actionType} for target ${targetId} by user ${initiatedBy}`);
@@ -336,7 +335,7 @@ exports.initiatePayment = async (req, res) => {
         paymentDate: new Date(),
         isExpense: false,
         isTemplate: false,
-        processedBy: userId,
+        processedById: userId,
       };
 
       if (paymentType === 'TITHE' && titheDistributionSDA) {
@@ -423,7 +422,10 @@ exports.addManualPayment = async (req, res) => {
 
   try {
     const payment = await prisma.$transaction(async (tx) => {
-      const user = await tx.user.findUnique({ where: { id: parseInt(userId) } });
+      const user = await tx.user.findUnique({ 
+        where: { id: parseInt(userId) },
+        select: { id: true, fullName: true, phone: true, email: true }
+      });
       if (!user) throw new Error('User not found.');
 
       let paymentData = {
@@ -434,7 +436,7 @@ exports.addManualPayment = async (req, res) => {
         description: description || `${paymentType} (${paymentMethod})`,
         status: 'COMPLETED',
         paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
-        processedBy: processedByAdminId,
+        processedById: processedByAdminId,
         isExpense: !!isExpense,
         platformFee: 0,
         isTemplate: false,
@@ -468,25 +470,36 @@ exports.addManualPayment = async (req, res) => {
         paymentData.description = description || `Contribution to ${offering.name}`;
       }
 
-      const createdPayment = await tx.payment.create({ data: paymentData });
+      const createdPayment = await tx.payment.create({ 
+        data: paymentData,
+        include: { user: true }  // Include user relation in the created payment
+      });
       debugLog('Manual payment record created:', createdPayment.id);
 
       if (!createdPayment.isExpense && createdPayment.status === 'COMPLETED') {
         const receiptNumber = generateReceiptNumber(createdPayment.paymentType);
         await tx.receipt.create({
           data: {
-            receiptNumber,
+            receiptNumber: receiptNumber,
             paymentId: createdPayment.id,
             userId: createdPayment.userId,
-            generatedBy: processedByAdminId,
+            generatedById: createdPayment.processedById,
             receiptDate: new Date(),
             receiptData: {
-              paymentId: createdPayment.id, amount: createdPayment.amount, paymentType: createdPayment.paymentType,
-              userName: user.fullName, paymentDate: createdPayment.paymentDate, description: createdPayment.description
+              paymentId: createdPayment.id,
+              amount: createdPayment.amount,
+              paymentType: createdPayment.paymentType,
+              userName: user.fullName, // Use the user object we queried earlier
+              paymentDate: createdPayment.paymentDate,
+              description: createdPayment.description
             },
           }
         });
-        const finalPayment = await tx.payment.update({ where: { id: createdPayment.id }, data: { receiptNumber } });
+        const finalPayment = await tx.payment.update({ 
+          where: { id: createdPayment.id }, 
+          data: { receiptNumber },
+          include: { user: true }  // Include user relation in the final payment
+        });
         debugLog(`Receipt ${receiptNumber} generated for payment ${createdPayment.id}`);
         await logAdminActivity('ADMIN_ADD_MANUAL_PAYMENT', finalPayment.id, req.user.id, { amount: finalPayment.amount, type: finalPayment.paymentType, userId: finalPayment.userId });
         return finalPayment;
@@ -576,7 +589,7 @@ exports.mpesaCallback = async (req, res) => {
                 receiptNumber: internalReceiptNumber,
                 paymentId: payment.id,
                 userId: payment.userId,
-                generatedBy: null, // System generated
+                generatedById: null, // System generated
                 receiptDate: new Date(),
                 receiptData: {
                     paymentId: payment.id, amount: payment.amount, paymentType: payment.paymentType,

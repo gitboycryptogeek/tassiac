@@ -7,37 +7,40 @@ export class AdminPaymentsView extends BaseComponent {
     
     this.authService = window.authService;
     if (!this.authService) {
+      console.error('AuthService not initialized at AdminPaymentsView construction');
       throw new Error('AuthService not initialized');
     }
 
+    this.apiService = window.apiService;  
+    if (!this.apiService) { // Added check for apiService
+      console.error('ApiService not initialized at AdminPaymentsView construction');
+      throw new Error('ApiService not initialized');
+    }
+    
     this.title = 'Payment Management';
     this.user = this.authService ? this.authService.getUser() : null;
-    this.apiService = window.apiService;  
     
     this.allPaymentsMasterList = [];  
-    this.payments = []; // Stores the currently filtered and paginated list for display
+    this.payments = []; 
     this.specialOfferings = [];
 
     this.currentPage = 1;
     this.totalPages = 1;
     this.totalFilteredPayments = 0;  
-    this.isLoading = true; // True initially until first data load attempt
+    this.isLoading = true; 
     this.error = null;
     this.success = null;
 
-    // Filters for the main view - simplified to only search
     this.filters = {
       search: ''  
     };
 
-    // State for export-specific filters, populated by the export modal
     this.exportFilterState = {
         startDate: '',
         endDate: '',
         paymentType: '',
         specialOffering: '',
-        format: '' // Stores the format like 'csv' or 'pdf'
-        // Search term for export will be taken from this.filters.search
+        format: '' 
     };
 
     this.selectedPayment = null;
@@ -53,7 +56,7 @@ export class AdminPaymentsView extends BaseComponent {
     this.pdfState = { generating: false };  
     this.batchSmsState = { sending: false, queue: [], results: [], progress: 0, total: 0 };
     
-    this.searchDebounceTimer = null; // Only search debounce needed for main filter
+    this.searchDebounceTimer = null; 
     this.SEARCH_DEBOUNCE_DELAY = 550;
     
     this.isRendering = false;  
@@ -72,8 +75,11 @@ export class AdminPaymentsView extends BaseComponent {
     window.addEventListener('resize', this.handleResize);
 
     // Initial data fetch
+    // Consider wrapping these in an async init() method for clearer control
+    // For now, keeping as is, assuming the main issue is backend.
+    console.log('AdminPaymentsView: Kicking off initial data fetches.');
     this.fetchAllPaymentsData();
-    this.fetchSpecialOfferings(); // Still needed for display and export modal
+    this.fetchSpecialOfferings(); 
   }
   
   handleResize() {
@@ -92,7 +98,11 @@ export class AdminPaymentsView extends BaseComponent {
   }
 
   async render() {
-    if (this.isRendering && document.readyState !== 'complete') return null;  
+    // console.log('AdminPaymentsView: render() called. isLoading:', this.isLoading, '_fetchInProgress:', this._fetchInProgress, 'isRendering:', this.isRendering);
+    if (this.isRendering && document.readyState !== 'complete') {
+        // console.log('AdminPaymentsView: Bailing from render due to isRendering and document.readyState');
+        return null;
+    }
     this.isRendering = true;
     
     try {
@@ -114,8 +124,10 @@ export class AdminPaymentsView extends BaseComponent {
       container.appendChild(this.renderFiltersCard());  
       
       if (this.isLoading && this._fetchInProgress) {  
+        // console.log('AdminPaymentsView: Rendering loading state.');
         container.appendChild(this.renderLoading());  
       } else { 
+        // console.log('AdminPaymentsView: Rendering payments table.');
         container.appendChild(this.renderPaymentsTable());  
       }
       
@@ -132,9 +144,10 @@ export class AdminPaymentsView extends BaseComponent {
       
       this.isRendered = true;  
       this.isRendering = false;
+      // console.log('AdminPaymentsView: render() completed.');
       return container;
     } catch (error) {
-      console.error('Render error:', error);
+      console.error('Render error in AdminPaymentsView:', error);
       this.isRendering = false;
       return this.renderError(error);  
     }
@@ -230,7 +243,7 @@ export class AdminPaymentsView extends BaseComponent {
     filtersCard.appendChild(this.createElement('div', { className: 'card-glow' }));
     
     const filtersHeader = this.createElement('div', { className: 'filters-header' });
-    filtersHeader.appendChild(this.createElement('h2', { className: 'filters-title' }, '🔍 Search Payments')); // Simplified title
+    filtersHeader.appendChild(this.createElement('h2', { className: 'filters-title' }, '🔍 Search Payments'));
     filtersCard.appendChild(filtersHeader);
     
     const filtersContent = this.createElement('div', { className: 'filters-content' });
@@ -243,7 +256,6 @@ export class AdminPaymentsView extends BaseComponent {
     const resetButton = this.createFuturisticButton('Reset Search', '#64748b', () => this.resetFilters());
     formActions.append(resetButton);
 
-    // Only append search group and actions
     filtersForm.append(searchGroup, formActions); 
     filtersContent.appendChild(filtersForm);
     filtersCard.appendChild(filtersContent);
@@ -277,12 +289,12 @@ export class AdminPaymentsView extends BaseComponent {
     const endIndex = startIndex + this.pageSize;
     const paginatedPayments = this.payments.slice(startIndex, endIndex);  
 
-    if (paginatedPayments.length === 0 && !this.isLoading) { // Added !this.isLoading to prevent showing "No payments" during load
+    if (paginatedPayments.length === 0 && !this.isLoading) { 
       const emptyState = this.createElement('div', { className: 'empty-state-container' });
       emptyState.innerHTML = `
         <div class="empty-state-icon">📋</div>
         <h3 class="empty-state-title">No payments match your criteria.</h3>
-        <p class="empty-state-text">Try adjusting your search or add a new payment.</p>`; // Adjusted text
+        <p class="empty-state-text">Try adjusting your search or add a new payment.</p>`;
       const addPaymentButton = this.createElement('a', { href: '/admin/add-payment', className: 'futuristic-button add-payment-empty' });
       addPaymentButton.textContent = '➕ Add New Payment';  
       const addBtnRgb = this.hexToRgb('#4f46e5');
@@ -317,7 +329,7 @@ export class AdminPaymentsView extends BaseComponent {
       const cellData = [
           payment.id,
           this.formatDate(new Date(payment.paymentDate)),
-          this.renderUserCell(payment.User),
+          this.renderUserCell(payment.User), // Changed from payment.user to payment.User
           this.createPaymentTypeBadge(payment),
           payment.paymentMethod,
           this.renderAmountCell(payment),
@@ -379,7 +391,7 @@ export class AdminPaymentsView extends BaseComponent {
     viewButton.appendChild(document.createTextNode('View'));
     actionsContainer.appendChild(viewButton);
 
-    if (payment.User && payment.User.phone) {
+    if (payment.User && payment.User.phone) { // Changed from payment.user to payment.User
       const smsButton = this.createElement('button', { className: 'action-button send-sms-btn', 'data-id': payment.id, 'data-phone': payment.User.phone, 'data-name': payment.User.fullName });
       const smsStateData = this.smsState.get(payment.id) || { sent: false, sending: false };
       this.styleSmsButton(smsButton, smsStateData.sending ? 'sending' : (smsStateData.sent ? 'sent' : 'default'));
@@ -419,9 +431,8 @@ export class AdminPaymentsView extends BaseComponent {
     if (payment.paymentType === 'DONATION') return 'Donation';
     
     if (payment.paymentType && payment.paymentType.startsWith('SPECIAL_')) {
-      // this.specialOfferings is populated by fetchSpecialOfferings
       const specialOffering = this.specialOfferings.find(o =>  
-        o.paymentType === payment.paymentType || o.offeringType === payment.paymentType
+        o.paymentType === payment.paymentType || o.offeringType === payment.paymentType || o.offeringCode === payment.paymentType // Added offeringCode check
       );
       if (specialOffering) {
         return this.escapeHtml(specialOffering.description || specialOffering.name || `Special: ${payment.paymentType.replace('SPECIAL_', '')}`);
@@ -429,7 +440,7 @@ export class AdminPaymentsView extends BaseComponent {
       return `Special: ${this.escapeHtml(payment.paymentType.replace('SPECIAL_', '').replace(/_/g, ' '))}`;
     }
     
-    const knownTypes = { 'OTHER': 'Other' };
+    const knownTypes = { 'OTHER': 'Other', 'SPECIAL_OFFERING_CONTRIBUTION': 'Special Contribution' }; // Added for clarity
     return knownTypes[payment.paymentType] || (payment.paymentType ? this.escapeHtml(payment.paymentType.charAt(0).toUpperCase() + payment.paymentType.slice(1).toLowerCase().replace(/_/g, ' ')) : 'Unknown');
   }
 
@@ -440,7 +451,7 @@ export class AdminPaymentsView extends BaseComponent {
     else if (payment.paymentType === 'TITHE') badgeColor = { bg: 'rgba(59, 130, 246, 0.2)', color: '#3b82f6' };
     else if (payment.paymentType === 'OFFERING') badgeColor = { bg: 'rgba(16, 185, 129, 0.2)', color: '#10b981' };
     else if (payment.paymentType === 'DONATION') badgeColor = { bg: 'rgba(245, 158, 11, 0.2)', color: '#f59e0b' };
-    else if (payment.paymentType && payment.paymentType.startsWith('SPECIAL_')) badgeColor = { bg: 'rgba(139, 92, 246, 0.2)', color: '#8b5cf6' };
+    else if (payment.paymentType && (payment.paymentType.startsWith('SPECIAL_') || payment.paymentType === 'SPECIAL_OFFERING_CONTRIBUTION')) badgeColor = { bg: 'rgba(139, 92, 246, 0.2)', color: '#8b5cf6' };
     
     const badge = this.createElement('span', { className: 'payment-type-badge' }, typeName.length > 25 ? typeName.substring(0,22) + '...' : typeName);
     Object.assign(badge.style, { backgroundColor: badgeColor.bg, color: badgeColor.color });
@@ -457,56 +468,73 @@ export class AdminPaymentsView extends BaseComponent {
     if (this.apiRequestQueue.length === 0) { this.isProcessingQueue = false; return; }
     this.isProcessingQueue = true;
     const { request, resolve, reject } = this.apiRequestQueue.shift();
-    try { resolve(await request()); } catch (error) { reject(error); }  
-    finally { setTimeout(() => this.processApiRequestQueue(), this.requestThrottleTime); }
+    try { 
+        // console.log('AdminPaymentsView: Processing API request from queue.');
+        resolve(await request()); 
+    } catch (error) { 
+        // console.error('AdminPaymentsView: Error in queued API request:', error);
+        reject(error); 
+    } finally { 
+        setTimeout(() => this.processApiRequestQueue(), this.requestThrottleTime); 
+    }
   }
     
   async fetchAllPaymentsData() {
-    if (this._fetchInProgress) return;  
+    // console.log('AdminPaymentsView: fetchAllPaymentsData() started.');
+    if (this._fetchInProgress) {
+        // console.log('AdminPaymentsView: fetchAllPaymentsData() already in progress, returning.');
+        return;
+    }
     this._fetchInProgress = true;
     this.isLoading = true;
     this.error = null;  
-    if(this.isRendered) this.updateView();  
+    if(this.isRendered && !this.isRendering) this.updateView(); // Avoid calling updateView if another render is in progress
 
     try {
+      // console.log('AdminPaymentsView: Calling API for /payment/all');
       const response = await this.queueApiRequest(() => this.apiService.get('/payment/all'));  
+      // console.log('AdminPaymentsView: API response for /payment/all:', response);
 
+      // apiService.get returns the 'data' object from the backend.
+      // paymentController.getAllPayments returns: { payments, totalPages, currentPage, totalPayments }
+      // So, response here is { payments, totalPages, ... }
       if (response && Array.isArray(response.payments)) {
-        this.allPaymentsMasterList = response.payments.sort((a, b) => b.id - a.id);  
+        this.allPaymentsMasterList = response.payments.sort((a, b) => new Date(b.paymentDate).getTime() - new Date(a.paymentDate).getTime()); // Ensure correct date sorting
+        // console.log('AdminPaymentsView: Payments data processed, count:', this.allPaymentsMasterList.length);
       } else {
         this.allPaymentsMasterList = [];
-        console.warn("No payments data received or in unexpected format:", response);
+        console.warn("AdminPaymentsView: No payments data received or in unexpected format from /payment/all:", response);
       }
       this.applyFiltersAndPagination(this.filters);  
     } catch (error) {
-      console.error('Error fetching all payments data:', error);
+      console.error('AdminPaymentsView: Error fetching all payments data:', error);
       this.error = `Failed to load payment data: ${error.message || 'Unknown API error'}`;
       this.allPaymentsMasterList = [];
       this.applyFiltersAndPagination(this.filters);  
     } finally {
+      // console.log('AdminPaymentsView: fetchAllPaymentsData() finally block. Setting isLoading=false, _fetchInProgress=false.');
       this.isLoading = false;
       this._fetchInProgress = false;
-      this.updateView();  
+      if(!this.isRendering) this.updateView(); // Avoid calling updateView if another render is in progress
     }
   }
 
   applyClientSideFilters(sourceFilters) {
     let filtered = [...this.allPaymentsMasterList];
 
-    // Search filter (always from sourceFilters.search, which might be from main filter or export filter)
     if (sourceFilters.search) {
       const searchTerm = sourceFilters.search.toLowerCase();
       filtered = filtered.filter(p =>  
-        (p.User?.fullName?.toLowerCase().includes(searchTerm)) ||
-        (p.User?.phone?.includes(searchTerm)) ||
+        (p.User?.fullName?.toLowerCase().includes(searchTerm)) || // Changed from p.user to p.User
+        (p.User?.phone?.includes(searchTerm)) || // Changed from p.user to p.User
         (p.description?.toLowerCase().includes(searchTerm)) ||
         (p.paymentMethod?.toLowerCase().includes(searchTerm)) ||
         (p.id?.toString().includes(searchTerm)) ||  
-        (this.getPaymentTypeDisplayName(p).toLowerCase().includes(searchTerm))
+        (this.getPaymentTypeDisplayName(p).toLowerCase().includes(searchTerm)) ||
+        (p.receiptNumber?.toLowerCase().includes(searchTerm)) // Added receipt number to search
       );
     }
 
-    // The following filters are primarily for the export functionality
     if (sourceFilters.startDate) {
         try {
             const startDate = new Date(sourceFilters.startDate);
@@ -527,40 +555,37 @@ export class AdminPaymentsView extends BaseComponent {
     }
     
     if (sourceFilters.paymentType) {
-        if (sourceFilters.paymentType === 'SPECIAL') {
-            if (sourceFilters.specialOffering) {  
-                filtered = filtered.filter(p => p.paymentType === sourceFilters.specialOffering);
-            } else {  
-                filtered = filtered.filter(p => p.paymentType && p.paymentType.startsWith('SPECIAL_'));
+        if (sourceFilters.paymentType === 'SPECIAL') { // For export filter: general "Special" category
+            if (sourceFilters.specialOffering) {  // A specific special offering is chosen from dropdown
+                // Filter by the specific offering code/ID (value from select)
+                filtered = filtered.filter(p => p.paymentType === sourceFilters.specialOffering || p.specialOffering?.offeringCode === sourceFilters.specialOffering || p.specialOffering?.id?.toString() === sourceFilters.specialOffering);
+            } else {  // All types of special offerings
+                filtered = filtered.filter(p => p.paymentType === 'SPECIAL_OFFERING_CONTRIBUTION' || (p.paymentType && p.paymentType.startsWith('SPECIAL_')));
             }
-        } else {  
+        } else {  // Specific non-special type
             filtered = filtered.filter(p => p.paymentType === sourceFilters.paymentType);
         }
     }
     
-    // This userId filter is only relevant if export filters include it, not for main view
     if (sourceFilters.userId) {  
-        filtered = filtered.filter(p => p.User && p.User.id?.toString() === sourceFilters.userId);
+        filtered = filtered.filter(p => p.User && p.User.id?.toString() === sourceFilters.userId);  // Changed from p.user to p.User
     }
     
     return filtered;
   }
 
   applyFiltersAndPagination(filterSetToUse) {
-    // filterSetToUse will be this.filters for main view (only search)
-    // or exportSpecificFilters for export (search + dates, type, etc.)
     const filteredPayments = this.applyClientSideFilters(filterSetToUse);
     this.totalFilteredPayments = filteredPayments.length;
     this.totalPages = Math.ceil(this.totalFilteredPayments / this.pageSize) || 1;
     this.currentPage = Math.max(1, Math.min(this.currentPage, this.totalPages));  
-    this.payments = filteredPayments;  
+    this.payments = filteredPayments;  // This now holds the filtered (but not paginated) list
   }
   
   showExportFilterModal(format) {
-    this.exportFilterState.format = format; // Store intended format
+    this.exportFilterState.format = format; 
     const modal = document.getElementById('export-filter-modal');
     if (modal) {
-        // Populate with current exportFilterState or empty
         modal.querySelector('#export-start-date').value = this.exportFilterState.startDate || '';
         modal.querySelector('#export-end-date').value = this.exportFilterState.endDate || '';
         
@@ -570,17 +595,16 @@ export class AdminPaymentsView extends BaseComponent {
         const specialOfferingGroup = modal.querySelector('#export-special-offering-group');
         const specialOfferingSelect = modal.querySelector('#export-special-offering');
         
-        this.populateExportFilterSpecialOfferings(); // Make sure options are up-to-date
+        this.populateExportFilterSpecialOfferings(); 
 
         if (paymentTypeSelect.value === 'SPECIAL') {
             specialOfferingGroup.style.display = 'grid';
             specialOfferingSelect.value = this.exportFilterState.specialOffering || '';
         } else {
             specialOfferingGroup.style.display = 'none';
-            specialOfferingSelect.value = ''; // Clear if not 'SPECIAL'
+            specialOfferingSelect.value = ''; 
         }
         
-        // Update the info text about the search term
         const searchInfoP = modal.querySelector('#export-search-info');
         if (searchInfoP) {
             searchInfoP.innerHTML = `The current main search term ("<strong style="color:#e0e7ff;">${this.escapeHtml(this.filters.search) || 'None'}</strong>") will also be applied.`;
@@ -594,27 +618,24 @@ export class AdminPaymentsView extends BaseComponent {
     const modal = document.getElementById('export-filter-modal');
     if (!modal) return;
 
-    // Read values from the export modal
     const exportFilters = {
         startDate: modal.querySelector('#export-start-date').value,
         endDate: modal.querySelector('#export-end-date').value,
         paymentType: modal.querySelector('#export-payment-type').value,
         specialOffering: '', 
-        search: this.filters.search // Carry over main search term
+        search: this.filters.search 
     };
 
     if (exportFilters.paymentType === 'SPECIAL') {
         exportFilters.specialOffering = modal.querySelector('#export-special-offering').value;
     }
 
-    // Update exportFilterState with the chosen values for persistence
     this.exportFilterState.startDate = exportFilters.startDate;
     this.exportFilterState.endDate = exportFilters.endDate;
     this.exportFilterState.paymentType = exportFilters.paymentType;
     this.exportFilterState.specialOffering = exportFilters.specialOffering;
-    // this.exportFilterState.format is already set
     
-    modal.style.display = 'none'; // Hide modal
+    modal.style.display = 'none'; 
     this.exportPayments(this.exportFilterState.format, exportFilters);
   }
 
@@ -622,7 +643,6 @@ export class AdminPaymentsView extends BaseComponent {
   async exportPayments(format, exportSpecificFilters) {
     this.showMessage(`Preparing ${format.toUpperCase()} export...`, 'info');
     
-    // applyClientSideFilters will use the exportSpecificFilters (which include date, type, SO, and main search)
     const paymentsToExport = this.applyClientSideFilters(exportSpecificFilters);  
 
     if (paymentsToExport.length === 0) {
@@ -640,8 +660,8 @@ export class AdminPaymentsView extends BaseComponent {
           const row = [
             p.id,
             this.formatDate(new Date(p.paymentDate)),
-            `"${p.User?.fullName?.replace(/"/g, '""') || ''}"`,  
-            p.User?.phone || '',
+            `"${p.User?.fullName?.replace(/"/g, '""') || ''}"`,  // Changed from p.user to p.User
+            p.User?.phone || '', // Changed from p.user to p.User
             this.getPaymentTypeDisplayName(p),
             `"${p.description?.replace(/"/g, '""') || ''}"`,  
             p.paymentMethod || '',
@@ -676,7 +696,7 @@ export class AdminPaymentsView extends BaseComponent {
           return;
         }
         this.pdfState.generating = true;
-        this.showMessage('Generating PDF report...', 'info'); // Indicate report generation
+        this.showMessage('Generating PDF report...', 'info'); 
         await this.generateBatchPdfInBrowser(paymentsToExport);
       } catch (error) {
         console.error('Error generating batch PDF:', error);
@@ -702,7 +722,6 @@ export class AdminPaymentsView extends BaseComponent {
             th { background-color: #e9e9e9; font-weight: bold; }
             h1 { text-align: center; margin-bottom: 20px; font-size: 18px; }
             .print-controls { text-align: center; margin-top: 20px; padding-top: 10px; border-top: 1px solid #ccc; }
-            /* Buttons styled via JS for CSP */
             @media print { .print-controls { display: none !important; } body { margin: 0.5in; font-size: 10pt;} table{font-size: 9pt;} }
         </style>
     `);
@@ -718,7 +737,7 @@ export class AdminPaymentsView extends BaseComponent {
         printWindow.document.write('<tr>');
         printWindow.document.write(`<td>${p.id}</td>`);
         printWindow.document.write(`<td>${this.formatDate(new Date(p.paymentDate))}</td>`);
-        printWindow.document.write(`<td>${this.escapeHtml(p.User?.fullName) || 'N/A'} (${this.escapeHtml(p.User?.phone) || 'N/A'})</td>`);
+        printWindow.document.write(`<td>${this.escapeHtml(p.User?.fullName) || 'N/A'} (${this.escapeHtml(p.User?.phone) || 'N/A'})</td>`); // Changed from p.user to p.User
         printWindow.document.write(`<td>${this.getPaymentTypeDisplayName(p)}</td>`);
         printWindow.document.write(`<td>${this.escapeHtml(p.paymentMethod) || ''}</td>`);
         printWindow.document.write(`<td style="text-align:right;">${p.isExpense ? '-' : ''}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>`);
@@ -755,30 +774,36 @@ export class AdminPaymentsView extends BaseComponent {
   }
   
   async fetchSpecialOfferings() {  
+    // console.log('AdminPaymentsView: fetchSpecialOfferings() started.');
     try {
       if (this.specialOfferingsCache && (Date.now() - this.specialOfferingsCache.timestamp < this.CACHE_LIFETIME)) {
         this.specialOfferings = this.specialOfferingsCache.data;
+        // console.log('AdminPaymentsView: Using cached special offerings.');
       } else {
-        // Using the apiService method for special offerings
+        // console.log('AdminPaymentsView: Calling API for special offerings.');
         const response = await this.queueApiRequest(() => this.apiService.getSpecialOfferings());
+        // console.log('AdminPaymentsView: API response for special offerings:', response);
+        // apiService.getSpecialOfferings() returns the 'data' object from the backend.
+        // specialOfferingController.getAllSpecialOfferings returns: { specialOfferings, totalPages, ... }
+        // So, response here is { specialOfferings, ... }
         this.specialOfferings = (response && Array.isArray(response.specialOfferings)) ? response.specialOfferings : [];
         this.specialOfferingsCache = { data: this.specialOfferings, timestamp: Date.now() };
+        // console.log('AdminPaymentsView: Special offerings fetched, count:', this.specialOfferings.length);
       }
     } catch (error) {
-      console.error('Error fetching special offerings:', error);
-      this.specialOfferings = []; // Default to empty array on error
+      console.error('AdminPaymentsView: Error fetching special offerings:', error);
+      this.specialOfferings = []; 
+      // Optionally set an error message if this fetch is critical and separate from payments fetch error
+      // if (!this.error) this.error = `Failed to load special offerings: ${error.message}`;
     }
-    // Only populate for export filter modal as main filter doesn't have it anymore
     this.populateExportFilterSpecialOfferings();  
+    // console.log('AdminPaymentsView: fetchSpecialOfferings() completed.');
   }
   
-  // Removed populateMainFilterSpecialOfferings as it's no longer needed
-
   populateExportFilterSpecialOfferings() {
     const modal = document.getElementById('export-filter-modal');
     if (modal) {
         const select = modal.querySelector('select[name="export-special-offering"]');
-        // Use this.exportFilterState.specialOffering for the current selection
         this.populateSpecialOfferingsDropdown(select, this.exportFilterState.specialOffering);
     }
   }
@@ -799,10 +824,10 @@ export class AdminPaymentsView extends BaseComponent {
         }
 
         this.specialOfferings.forEach(offering => {
-          const name = this.escapeHtml(offering.description || offering.name || `Special ID: ${offering.id || offering.paymentType}`);
-          // Ensure value is consistent, typically offering.offeringType or a unique ID
-          const value = offering.offeringType || offering.paymentType || `SPECIAL_${offering.id}`;  
-          selectElement.add(new Option(name, value));
+          // Use offering.name for display, and offering.offeringCode or offering.id as value
+          const displayName = this.escapeHtml(offering.name || offering.description || `ID: ${offering.id}`);
+          const value = offering.offeringCode || offering.id.toString(); // Prefer code if available
+          selectElement.add(new Option(displayName, value));
         });
         selectElement.value = originalValue;  
       }
@@ -817,13 +842,7 @@ export class AdminPaymentsView extends BaseComponent {
     
     try {
         let payment = this.allPaymentsMasterList.find(p => p.id === parseInt(paymentId));
-        // If not in master list (e.g., if master list is very large and paginated server-side in future)
-        // you might need an API call here:
-        // if (!payment) {
-        //   payment = await this.queueApiRequest(() => this.apiService.get(`/payment/details/${paymentId}`));
-        //   if (!payment) throw new Error('Payment details not found.');
-        // }
-        if (!payment) throw new Error('Payment details not found in local data.'); // Current behavior
+        if (!payment) throw new Error('Payment details not found in local data.');
         this.selectedPayment = payment;
         
         const modalTitle = document.getElementById('modal-title');
@@ -836,11 +855,11 @@ export class AdminPaymentsView extends BaseComponent {
 
         const sendSmsBtn = document.getElementById('modal-sms-btn');
         if (sendSmsBtn) {
-            if (payment.User && payment.User.phone) {
+            if (payment.User && payment.User.phone) { // Changed from payment.user to payment.User
                 sendSmsBtn.style.display = 'inline-flex';  
                 const smsStateData = this.smsState.get(payment.id) || { sent: false, sending: false };
                 this.styleSmsButton(sendSmsBtn, smsStateData.sending ? 'sending' : (smsStateData.sent ? 'sent' : 'default'), true);
-                sendSmsBtn.onclick = () => this.sendSms(payment.User.phone, payment.User.fullName, payment);
+                sendSmsBtn.onclick = () => this.sendSms(payment.User.phone, payment.User.fullName, payment); // Changed from payment.user to payment.User
             } else {
                 sendSmsBtn.style.display = 'none';
             }
@@ -854,22 +873,23 @@ export class AdminPaymentsView extends BaseComponent {
   renderPaymentDetailsContent(payment) {  
     const paymentTypeName = this.getPaymentTypeDisplayName(payment);
     let html = `<div class="payment-details-grid">`;
-    if (payment.User) {
+    if (payment.User) { // Changed from payment.user to payment.User
         html += `<div class="neo-card detail-section"><h4>👤 User Information</h4><div><span>Name:</span><span>${this.escapeHtml(payment.User.fullName) || 'N/A'}</span></div><div><span>Phone:</span><span>${this.escapeHtml(payment.User.phone) || 'N/A'}</span></div>${payment.User.email ? `<div><span>Email:</span><span>${this.escapeHtml(payment.User.email)}</span></div>` : ''}</div>`;
     }
     html += `<div class="neo-card detail-section"><h4>💳 Payment Information</h4><div><span>ID:</span><span>${payment.id}</span></div><div><span>Date:</span><span>${this.formatDate(new Date(payment.paymentDate))}</span></div><div><span>Type:</span><span>${this.escapeHtml(paymentTypeName)}</span></div><div><span>Method:</span><span>${this.escapeHtml(payment.paymentMethod) || 'N/A'}</span></div><div><span>Status:</span><span>${this.escapeHtml(payment.status) || 'N/A'}</span></div><div><span>Receipt:</span><span>${this.escapeHtml(payment.receiptNumber) || 'N/A'}</span></div></div>`;
     const amount = payment.amount !== null && payment.amount !== undefined ? parseFloat(payment.amount) : 0;
     html += `<div class="neo-card detail-section"><h4>💰 Amount Information</h4><div><span>Amount:</span><span style="color:${payment.isExpense ? '#ef4444':'#10b981'}; font-weight:bold;">${payment.isExpense ? '-' : ''}KES ${amount.toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>`;
     if (payment.platformFee && parseFloat(payment.platformFee) > 0) {
-        html += `<div><span>Platform Fee:</span><span>KES ${parseFloat(payment.platformFee).toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>`;
+        html += `<div><span>Platform Fee:</span><span>KES ${parseFloat(payment.platformFee).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>`;
     }
     if (payment.description) {
         html += `<div class="description-detail"><span>Description:</span><p>${this.escapeHtml(payment.description)}</p></div>`;
     }
-    html += `</div>`;
-    if (payment.paymentType && payment.paymentType.startsWith('SPECIAL_')) {
-        const so = this.specialOfferings.find(o => o.paymentType === payment.paymentType || o.offeringType === payment.paymentType);
-        if(so) html += `<div class="neo-card detail-section so-detail"><h4>✨ Special Offering</h4><div><span>Name:</span><span>${this.escapeHtml(so.description || so.name)}</span></div>${so.targetGoal ? `<div><span>Target:</span><span>KES ${parseFloat(so.targetGoal).toLocaleString()}</span></div>` : ''}${so.endDate ? `<div><span>Ends:</span><span>${this.formatDate(new Date(so.endDate))}</span></div>` : ''}</div>`;
+    html += `</div>`;  
+    // Check for special offering details using payment.specialOffering (populated by include in Prisma query)
+    if (payment.specialOffering && (payment.paymentType === 'SPECIAL_OFFERING_CONTRIBUTION' || payment.paymentType.startsWith('SPECIAL_'))) {
+        const so = payment.specialOffering; // Already have details if included
+        html += `<div class="neo-card detail-section so-detail"><h4>✨ Special Offering</h4><div><span>Name:</span><span>${this.escapeHtml(so.name || so.description)}</span></div>${so.targetAmount ? `<div><span>Target:</span><span>KES ${parseFloat(so.targetAmount).toLocaleString()}</span></div>` : ''}${so.endDate ? `<div><span>Ends:</span><span>${this.formatDate(new Date(so.endDate))}</span></div>` : ''}</div>`;
     } else if (payment.isExpense && payment.department) {
         html += `<div class="neo-card detail-section dept-detail"><h4>🏢 Department</h4><div style="display:flex; align-items:center; gap:5px;"><div style="width:10px; height:10px; border-radius:50%; background-color:${this.getDepartmentColor(payment.department)};"></div><span>${this.formatDepartment(payment.department)}</span></div></div>`;
     }
@@ -898,7 +918,7 @@ export class AdminPaymentsView extends BaseComponent {
       await this.generatePdfInBrowser(payment);  
     } catch (error) {
       console.error('Error preparing PDF receipt:', error);
-      if (error.message !== 'Pop-up blocked.') { // Avoid double message for pop-up blocked
+      if (error.message !== 'Pop-up blocked.') { 
          this.showMessage(`Failed to generate receipt: ${error.message}.`, 'error');
       }
     } finally {
@@ -912,7 +932,7 @@ export class AdminPaymentsView extends BaseComponent {
       this.showMessage('Pop-up blocked! Please allow pop-ups for this site to generate the receipt.', 'error', 10000);  
       throw new Error('Pop-up blocked.');
     }
-    const user = payment.User || { fullName: 'N/A', phone: 'N/A', email: 'N/A' };
+    const user = payment.User || { fullName: 'N/A', phone: 'N/A', email: 'N/A' }; // Changed from payment.user to payment.User
     const paymentTypeName = this.getPaymentTypeDisplayName(payment);
     const amount = payment.amount !== null && payment.amount !== undefined ? parseFloat(payment.amount) : 0;
 
@@ -930,7 +950,6 @@ export class AdminPaymentsView extends BaseComponent {
         .total{font-size:17px !important;font-weight:bold !important;color:${payment.isExpense ? '#D9534F' : '#28A745'} !important;}
         .footer{text-align:center;font-size:12px;color:#777;margin-top:35px;padding-top:15px;border-top:1px solid #eaeaea;}
         .print-controls{text-align:center;margin-top:25px;}
-        /* Buttons styled via JS for CSP */
         @media print{
             .print-controls{display:none !important;}  
             body{border:none;margin:0.5in; box-shadow:none; font-size:10pt;}  
@@ -1059,15 +1078,14 @@ export class AdminPaymentsView extends BaseComponent {
         if (!recipientsContainer || !countEl) return;
 
         recipientsContainer.innerHTML = '';  
-        // Batch SMS recipients are based on the current main view filters (which is just search now)
-        const eligiblePayments = this.applyClientSideFilters(this.filters).filter(p => p.User && p.User.phone);  
+        const eligiblePayments = this.applyClientSideFilters(this.filters).filter(p => p.User && p.User.phone);  // Changed from p.user to p.User
         
         countEl.textContent = `Recipients (${eligiblePayments.length} from current view):`;
         if (eligiblePayments.length > 0) {
             eligiblePayments.forEach(p => {
                 const div = this.createElement('div', {className: 'batch-recipient-item'});
                 const checkbox = this.createElement('input', { type: 'checkbox', id: `batch-${p.id}`, 'data-payment-id': p.id, checked: true });
-                const label = this.createElement('label', { htmlFor: `batch-${p.id}`}, `${this.escapeHtml(p.User.fullName)} (${p.User.phone})`);
+                const label = this.createElement('label', { htmlFor: `batch-${p.id}`}, `${this.escapeHtml(p.User.fullName)} (${p.User.phone})`); // Changed from p.user to p.User
                 div.append(checkbox, label);
                 recipientsContainer.appendChild(div);
             });
@@ -1101,26 +1119,26 @@ export class AdminPaymentsView extends BaseComponent {
     for (let i = 0; i < this.batchSmsState.queue.length; i++) {
         const payment = this.batchSmsState.queue[i];
         this.batchSmsState.progress = i + 1;
-        if (!payment || !payment.User || !payment.User.phone) { errorCount++; continue; }
+        if (!payment || !payment.User || !payment.User.phone) { errorCount++; continue; } // Changed from payment.user to payment.User
         try {
             const paymentType = this.getPaymentTypeDisplayName(payment);
             const amountVal = payment.amount !== null && payment.amount !== undefined ? parseFloat(payment.amount) : 0;
             const amount = amountVal.toLocaleString('en-US', { minimumFractionDigits: 2 });
             const date = new Date(payment.paymentDate).toLocaleDateString('en-GB', {day:'numeric', month:'short', year:'numeric'});
             const personalizedMessage = messageTemplate
-                .replace(/{name}/g, payment.User.fullName)
+                .replace(/{name}/g, payment.User.fullName) // Changed from payment.user to payment.User
                 .replace(/{amount}/g, amount)
                 .replace(/{type}/g, paymentType)
                 .replace(/{receiptNumber}/g, payment.receiptNumber || payment.id.toString())
                 .replace(/{date}/g, date);
 
-            const response = await this.queueApiRequest(() => this.apiService.post('/notifications/send-sms', { phone: payment.User.phone, message: personalizedMessage }));
+            const response = await this.queueApiRequest(() => this.apiService.post('/notifications/send-sms', { phone: payment.User.phone, message: personalizedMessage })); // Changed from payment.user to payment.User
             if (response && response.success) {
                 successCount++;
                 this.smsState.set(payment.id, { sent: true, sending: false });
                 this.updateSmsButtonState(payment.id, 'sent');  
-            } else { errorCount++; console.warn(`SMS API error for ${payment.User.phone}: ${response?.message}`);}
-        } catch (err) { errorCount++; console.error(`Exception during SMS to ${payment.User.phone}:`, err); }
+            } else { errorCount++; console.warn(`SMS API error for ${payment.User.phone}: ${response?.message}`);} // Changed from payment.user to payment.User
+        } catch (err) { errorCount++; console.error(`Exception during SMS to ${payment.User.phone}:`, err); } // Changed from payment.user to payment.User
         
         if ((i + 1) % 5 === 0 || i + 1 === this.batchSmsState.total) {  
              this.showMessage(`Batch SMS: ${successCount} sent, ${errorCount} failed (${this.batchSmsState.progress}/${this.batchSmsState.total})...`, 'info', 60000);
@@ -1151,7 +1169,7 @@ export class AdminPaymentsView extends BaseComponent {
 
     if (type === 'success') this.success = message;
     else if (type === 'error') this.error = message;
-    else this.success = message;  // Default to success styling for 'info'
+    else this.success = message;  
 
     if(this.isRendered && !this.isRendering) this.updateView(); 
     setTimeout(() => {
@@ -1214,7 +1232,7 @@ export class AdminPaymentsView extends BaseComponent {
   }
   
   resetFilters() {  
-    this.filters.search = ''; // Only reset search
+    this.filters.search = ''; 
     this.currentPage = 1;
     const form = document.getElementById('payment-filters-form');
     if (form) {
@@ -1222,15 +1240,15 @@ export class AdminPaymentsView extends BaseComponent {
       if (searchInput) searchInput.value = '';
     }
     this.applyFiltersAndPagination(this.filters);  
-    this.updateView();
+    if(!this.isRendering) this.updateView();
   }
   
-  applyFiltersWithDebounce() {  // isSearch parameter is no longer needed as only search uses debounce
+  applyFiltersWithDebounce() {  
     if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
     this.searchDebounceTimer = setTimeout(() => {
       this.currentPage = 1;
       this.applyFiltersAndPagination(this.filters);  
-      this.updateView();  
+      if(!this.isRendering) this.updateView();  
     }, this.SEARCH_DEBOUNCE_DELAY);
   }
   
@@ -1241,7 +1259,7 @@ export class AdminPaymentsView extends BaseComponent {
       if (searchInput) {
           searchInput.addEventListener('input', () => {
               this.updateFiltersFromForm(); 
-              this.applyFiltersWithDebounce(); // No need for isSearch argument
+              this.applyFiltersWithDebounce(); 
           });
       }
     }
@@ -1254,7 +1272,7 @@ export class AdminPaymentsView extends BaseComponent {
             const page = parseInt(pageButton.dataset.page);
             if (page && page !== this.currentPage && page > 0 && page <= this.totalPages) {
                 this.currentPage = page;
-                this.updateView();  
+                if(!this.isRendering) this.updateView();  
             }
             return;
         }
@@ -1265,17 +1283,17 @@ export class AdminPaymentsView extends BaseComponent {
         if (smsBtnTable && !target.closest('#payment-detail-modal')) {  
             const paymentId = parseInt(smsBtnTable.dataset.id);
             const payment = this.allPaymentsMasterList.find(p => p.id === paymentId);
-            if (payment && payment.User?.phone) {
+            if (payment && payment.User?.phone) { // Changed from payment.user to payment.User
                 const state = this.smsState.get(paymentId) || {};
-                if (!state.sending && !state.sent) this.sendSms(payment.User.phone, payment.User.fullName, payment);
+                if (!state.sending && !state.sent) this.sendSms(payment.User.phone, payment.User.fullName, payment); // Changed from payment.user to payment.User
             }
             return;
         }
         if (target.matches('.close-modal') || target.closest('.close-modal')) {
             const modal = target.closest('.modal-backdrop');
-            if (modal && modal.id !== 'batch-sms-modal' && modal.id !== 'export-filter-modal') { // Ensure not to close batch/export modals this way
+            if (modal && modal.id !== 'batch-sms-modal' && modal.id !== 'export-filter-modal') { 
                  modal.style.display = 'none';
-            } else if (modal && (modal.id === 'export-filter-modal')) { // Specific close for export modal
+            } else if (modal && (modal.id === 'export-filter-modal')) { 
                  modal.style.display = 'none';
             }
             return;
@@ -1311,7 +1329,7 @@ export class AdminPaymentsView extends BaseComponent {
             exportPaymentTypeSelect.addEventListener('change', (e) => {
                 const group = exportFilterModalEl.querySelector('#export-special-offering-group');
                 if(group) group.style.display = e.target.value === 'SPECIAL' ? 'grid' : 'none';
-                if (e.target.value !== 'SPECIAL') { // Clear special offering if type is not SPECIAL
+                if (e.target.value !== 'SPECIAL') { 
                     const soSelect = exportFilterModalEl.querySelector('#export-special-offering');
                     if (soSelect) soSelect.value = '';
                 }
@@ -1327,34 +1345,34 @@ export class AdminPaymentsView extends BaseComponent {
     if (searchInput) {
         this.filters.search = searchInput.value || '';
     }
-    // No other filters to update from the main form
   }
   
   updateView() {  
-    if (this.isRendering && document.readyState !== 'complete') return;  
+    // console.log('AdminPaymentsView: updateView() called. isRendering:', this.isRendering, 'isLoading:', this.isLoading, '_fetchInProgress:', this._fetchInProgress);
+    if (this.isRendering && document.readyState !== 'complete') {
+        // console.log('AdminPaymentsView: Bailing from updateView due to isRendering and document.readyState');
+        return;
+    }
     this.isRendering = true;  
     const appContainer = document.getElementById('app');
     if (appContainer) {
       const scrollTop = appContainer.scrollTop;  
       
-      // Clear only if already rendered, to prevent flicker on first load
-      // if (this.isRendered) appContainer.innerHTML = '';  
-      
       this.render().then(content => {  
         if (content) {
-          // Always clear before appending new content if updateView is called
           appContainer.innerHTML = '';  
           appContainer.appendChild(content);
         }
         appContainer.scrollTop = scrollTop;  
-        // isRendered is set within render now.
         this.isRendering = false;  
+        // console.log('AdminPaymentsView: updateView() -> render() completed.');
       }).catch(error => {
-        console.error('Critical error in updateView -> render:', error);
+        console.error('Critical error in updateView -> render (AdminPaymentsView):', error);
         appContainer.innerHTML = `<div class="critical-error-display">A major error occurred. Please refresh. Details: ${this.escapeHtml(error.message)}</div>`;
         this.isRendering = false;  
       });
     } else {
+        console.warn("AdminPaymentsView: updateView() called but #app container not found.");
         this.isRendering = false;  
     }
   }
@@ -1403,7 +1421,6 @@ export class AdminPaymentsView extends BaseComponent {
 
     const sendSmsButton = this.createFuturisticButton('', '#8b5cf6', null);  
     sendSmsButton.id = 'modal-sms-btn';
-    // Icon and text for SMS button are handled by styleSmsButton
 
     modalFooter.append(closeModalButtonFooter, sendSmsButton, downloadButton);
     modalContent.append(modalHeader, modalBody, modalFooter);
@@ -1446,7 +1463,6 @@ export class AdminPaymentsView extends BaseComponent {
     const modalBackdrop = this.createElement('div', { id: 'export-filter-modal', className: 'modal-backdrop' });
     const modalContent = this.createElement('div', { className: 'modal-content neo-card export-filter-modal-content' });
 
-    // The search term info paragraph is added here
     modalContent.innerHTML = `
         <div class="modal-header">
             <h3 id="export-filter-modal-title">Export Options</h3>
@@ -1468,17 +1484,15 @@ export class AdminPaymentsView extends BaseComponent {
             <button id="proceed-with-export-btn" class="futuristic-button" style="--btn-color-r:79; --btn-color-g:70; --btn-color-b:229;">Proceed with Export</button>
         </div>
     `;
-    // Populate payment type dropdown
     const paymentTypeSelect = modalContent.querySelector('#export-payment-type');
     if(paymentTypeSelect) {
         const paymentTypes = [  
             { value: '', label: 'All Types' }, { value: 'TITHE', label: 'Tithe' },  
             { value: 'OFFERING', label: 'Offering' }, { value: 'DONATION', label: 'Donation' },
-            { value: 'EXPENSE', label: 'Expense' }, { value: 'SPECIAL', label: 'Special Offerings' }
+            { value: 'EXPENSE', label: 'Expense' }, { value: 'SPECIAL', label: 'Special Offerings' } // 'SPECIAL' acts as a category
         ];
         paymentTypes.forEach(type => paymentTypeSelect.add(new Option(type.label, type.value)));
     }
-    // Special offerings dropdown will be populated by populateExportFilterSpecialOfferings() when modal is shown
     modalBackdrop.appendChild(modalContent);
     return modalBackdrop;
   }
@@ -1496,7 +1510,12 @@ export class AdminPaymentsView extends BaseComponent {
         const retryBtn = document.getElementById('retry-load-btn');
         if(retryBtn && !retryBtn.dataset.listenerAttached) { 
             retryBtn.dataset.listenerAttached = 'true';
-            retryBtn.onclick = () => { this.error = null; this.fetchAllPaymentsData(); };
+            retryBtn.onclick = () => { 
+                this.error = null; 
+                // console.log("AdminPaymentsView: Retry Load button clicked.");
+                this.fetchAllPaymentsData(); // Re-fetch all data
+                this.fetchSpecialOfferings();
+            };
         }
     },0);
     return errorContainer;
@@ -1517,28 +1536,23 @@ export class AdminPaymentsView extends BaseComponent {
     const styleElement = document.createElement('style');
     styleElement.id = 'dashboard-global-styles';
     styleElement.textContent = `
-      /* Base styles */
       body { margin: 0; background-color: #0f172a; color: #eef2ff; font-family: 'Inter', sans-serif; overflow-x:hidden; }
       * { box-sizing: border-box; }
       .dashboard-container { max-width: 1400px; margin: 0 auto; padding: 20px; position: relative; z-index: 1; }
-      /* Scrollbar */
       ::-webkit-scrollbar { width: 8px; height: 8px; }
       ::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.5); }
       ::-webkit-scrollbar-thumb { background: rgba(79, 107, 255, 0.6); border-radius: 4px; }
       ::-webkit-scrollbar-thumb:hover { background: rgba(79, 107, 255, 0.8); }
-      /* Cards */
       .neo-card { position: relative; backdrop-filter: blur(12px) saturate(150%); background: rgba(30, 41, 59, 0.7); border-radius: 12px; border: 1px solid rgba(148, 163, 184, 0.2); box-shadow: 0 6px 20px -10px rgba(0,0,0,0.4), 0 0 1px rgba(255,255,255,0.08) inset; overflow: hidden; transition: box-shadow 0.3s ease; }
       .neo-card:hover { box-shadow: 0 10px 30px -12px rgba(0,0,0,0.5), 0 0 1px rgba(255,255,255,0.12) inset; }
       .card-glow { position: absolute; top: -50%; left: -50%; width: 200%; height: 200%; background: radial-gradient(circle, rgba(var(--glow-r, 99), var(--glow-g, 102), var(--glow-b, 241), 0.15) 0%, transparent 70%); animation: rotateGlow 10s linear infinite; z-index: 0; pointer-events:none; opacity:0; transition: opacity 0.5s; }
       .neo-card:hover .card-glow { opacity:1; }
       @keyframes rotateGlow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      /* Page Header */
       .page-header-card { margin-bottom: 30px; padding: 25px; --glow-r:99; --glow-g:102; --glow-b:241; }
       .header-particle { position: absolute; border-radius: 50%; background: rgba(129, 140, 248, 0.3); animation: float 3s ease-in-out infinite; z-index:1;}
       .page-header-content { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px; position: relative; z-index: 2; }
       .page-header-title { font-size: 28px; font-weight: 700; margin: 0; background: linear-gradient(to right, #ffffff, #e0e7ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
       .export-buttons-group { display: flex; gap: 12px; flex-wrap: wrap; }
-      /* Futuristic Button */
       .futuristic-button { position: relative; color: #e0e7ff; border: 1px solid rgba(var(--btn-color-r,79), var(--btn-color-g,70), var(--btn-color-b,229), 0.3); background: linear-gradient(135deg, rgba(var(--btn-color-r,79), var(--btn-color-g,70), var(--btn-color-b,229), 0.2), rgba(var(--btn-color-r,79), var(--btn-color-g,70), var(--btn-color-b,229), 0.1)); border-radius: 6px; padding: 8px 14px; font-weight: 500; font-size: 13px; cursor: pointer; transition: all 0.25s ease; backdrop-filter: blur(8px); box-shadow: 0 2px 6px rgba(0,0,0,0.15); overflow: hidden; display: inline-flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none; }
       .futuristic-button .svg-icon-wrapper { margin-right: 4px; display: inline-flex; align-items: center;}
       .futuristic-button::before { content: ""; position: absolute; top: 0; left: -120%; width: 100%; height: 100%; background: linear-gradient(to right, transparent 0%, rgba(255,255,255,0.15) 50%, transparent 100%); transform: skewX(-25deg); transition: left 0.7s cubic-bezier(0.23, 1, 0.32, 1); }
@@ -1547,24 +1561,21 @@ export class AdminPaymentsView extends BaseComponent {
       .futuristic-button:active { transform: translateY(0); }
       .futuristic-button:disabled { opacity: 0.6; cursor: not-allowed; transform: translateY(0); box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
       .futuristic-button:disabled::before { display:none; }
-      /* Alerts */
       .alert-card { padding: 14px 18px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; animation: fadeIn 0.3s ease-out; }
       .alert-icon { font-weight: bold; font-size: 1.2em; } .alert-message { font-size: 14px; color: #f1f5f9; }
       .alert-success { background-color: rgba(16,185,129,0.1); border-left: 4px solid #10b981; }
       .alert-error { background-color: rgba(239,68,68,0.1); border-left: 4px solid #ef4444; }
-      /* Filters Card */
       .filters-card { margin-bottom: 20px; animation-delay: '0.1s'; --glow-r:99; --glow-g:102; --glow-b:241;}
       .filters-header { padding: 14px 20px; border-bottom: 1px solid rgba(148,163,184,0.1); }
       .filters-title { font-size: 16px; font-weight: 600; margin: 0; color: #f1f5f9; display: flex; align-items: center; gap: 6px; }
       .filters-content { padding: 20px; }
-      .filters-form { display: grid; grid-template-columns: 1fr auto; /* Search takes full width, actions to the side */ gap: 18px; align-items: end; }
+      .filters-form { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: end; }
       .form-group { display: grid; gap: 6px; }  
       .form-label { font-size: 13px; font-weight: 500; color: #94a3b8; }
       .form-control { width: 100%; padding: 9px 12px; background: rgba(15,23,42,0.75); border: 1px solid rgba(148,163,184,0.3); border-radius: 6px; color: #f1f5f9; font-size: 14px; transition: all 0.2s ease; }
       .form-control:focus { border-color: #4f46e5; outline: none; box-shadow: 0 0 0 3px rgba(79,70,229,0.3); background: rgba(15,23,42,0.9); }
       select.form-control { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 35px; }
-      .filters-form-actions { display: flex; gap: 12px; justify-content: flex-end; } /* Removed grid-column for simpler layout */
-      /* Payments Table */
+      .filters-form-actions { display: flex; gap: 12px; justify-content: flex-end; } 
       .payments-table-card { animation-delay: '0.2s'; --glow-r:59; --glow-g:130; --glow-b:246;}
       .payments-table-header { padding: 14px 20px; border-bottom: 1px solid rgba(148,163,184,0.1); display: flex; justify-content: space-between; align-items: center; }
       .payments-table-title { font-size: 16px; font-weight: 600; margin: 0; color: #f1f5f9; display: flex; align-items: center; gap: 6px; }
@@ -1585,20 +1596,16 @@ export class AdminPaymentsView extends BaseComponent {
       .action-button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.2); }
       .action-button .svg-icon-wrapper { margin-right:3px; display: inline-flex; align-items: center;}
       .view-payment-btn { background: rgba(59,130,246,0.2); color: #3b82f6; }
-      .send-sms-btn { /* Default styles set by futuristic-button and its CSS vars or specific JS override */ }  
-      /* Empty State */
       .empty-state-container { padding: 50px 20px; text-align: center; }
       .empty-state-icon { margin: 0 auto 16px; width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; font-size: 40px; color: #64748b; }
       .empty-state-title { font-size: 20px; font-weight: 600; margin: 0 0 8px 0; color: #f1f5f9; }
       .empty-state-text { font-size: 14px; color: #94a3b8; margin: 0 0 20px 0; }
       .add-payment-empty { margin-top:10px; }
-      /* Pagination */
       .pagination-container { display: flex; justify-content: center; padding: 16px; border-top: 1px solid rgba(148,163,184,0.1); gap: 5px; flex-wrap: wrap; }
       .pagination-item { cursor: pointer; padding: 7px 12px; margin: 0 2px; border-radius: 6px; transition: all 0.2s; font-size: 13px; color: #94a3b8; background: rgba(30,41,59,0.5); border: 1px solid transparent; font-family: inherit; }
       .pagination-item:hover:not(.disabled) { background: rgba(79,70,229,0.25); color: #f1f5f9; border-color: rgba(79,70,229,0.4); }
       .pagination-item.active { background: #4f46e5; color: white; font-weight: 600; border-color: #4f46e5; }
       .pagination-ellipsis { padding: 7px 5px; color: #94a3b8; }
-      /* Modals */
       .modal-backdrop { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(15,23,42,0.8); z-index: 1000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px); animation: fadeInModal 0.3s ease-out; }
       @keyframes fadeInModal { from { opacity:0; } to { opacity:1; } }
       .modal-content { position: relative; width: 90%; max-width: 700px; max-height: 85vh; overflow: hidden; display:flex; flex-direction:column; background: rgba(30,41,59,0.9); border-radius:10px; border:1px solid rgba(148,163,184,0.25); box-shadow: 0 10px 30px rgba(0,0,0,0.3); animation: slideInModal 0.3s ease-out; }
@@ -1620,7 +1627,6 @@ export class AdminPaymentsView extends BaseComponent {
       .description-detail span:first-child { margin-bottom:4px;}
       .description-detail p { margin: 2px 0 0 0; white-space:pre-wrap; color:#f1f5f9; text-align:left; width:100%;}
       .modal-footer { padding: 16px 20px; border-top: 1px solid rgba(148,163,184,0.15); display: flex; justify-content: flex-end; gap: 12px; background:rgba(30,41,59,0.8); }
-      /* SMS Status Toast */
       .sms-status-toast { display:none; position:fixed; top:20px; right:20px; z-index:2000; padding:14px; border-radius:8px; box-shadow:0 5px 15px rgba(0,0,0,0.25); max-width:350px; width:calc(100% - 40px); animation: slideInToast 0.3s ease-out; }
       @keyframes slideInToast { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
       .sms-status-content { display:flex; align-items:flex-start; gap:10px; }
@@ -1628,7 +1634,6 @@ export class AdminPaymentsView extends BaseComponent {
       .sms-status-message { flex:1; font-size:14px; color:#f1f5f9; line-height:1.4; }
       .sms-status-close { background:none; border:none; color:inherit; opacity:0.7; cursor:pointer; font-size:20px; padding:0; line-height:1; }
       .sms-status-close:hover { opacity:1; }
-      /* Batch SMS & Export Filter Modals */
       #batch-sms-modal .modal-content, .export-filter-modal-content { max-width: 550px; }  
       .batch-sms-modal-content .modal-body, .export-filter-modal-content .modal-body { display:flex; flex-direction:column; gap:16px; }
       #batch-sms-recipients { max-height: 200px; overflow-y: auto; border: 1px solid rgba(148,163,184,0.2); border-radius: 6px; padding: 10px; background:rgba(15,23,42,0.6); }
@@ -1638,8 +1643,6 @@ export class AdminPaymentsView extends BaseComponent {
       .no-recipients-text { color:#94a3b8; font-size:13px; text-align:center; padding:10px; }
       .export-filters-form-grid { display:grid; grid-template-columns:1fr; gap:15px; }
       @media (min-width: 500px) { .export-filters-form-grid { grid-template-columns:1fr 1fr; } } 
-
-      /* Loading & Error States */
       .loading-container { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:60px 20px; text-align:center; }
       .loading-spinner { display: inline-block; width: 40px; height: 40px; border: 3px solid rgba(79,70,229,0.3); border-top-color: #6366f1; border-radius: 50%; animation: spin 0.8s cubic-bezier(0.68,-0.55,0.27,1.55) infinite; }
       .loading-container p { color:#94a3b8; font-size:16px; font-weight:500; margin-top:15px; }
@@ -1649,22 +1652,18 @@ export class AdminPaymentsView extends BaseComponent {
       .unauthorized-container h2 {font-size:24px; font-weight:700; color:#f1f5f9; margin:0 0 12px;}
       .unauthorized-container p {font-size:14px; color:#94a3b8; margin:0 0 30px;}
       .critical-error-display { color:red; text-align:center; padding:30px; font-size:16px; background:rgba(255,0,0,0.1); border:1px solid red; border-radius:8px; }
-      /* Animations */
       @keyframes float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-10px); } }
       @keyframes fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
       .animated-item { animation: fadeIn 0.5s ease-out forwards; }
-      /* Admin Nav Specific Styles */
       .admin-top-nav { padding: 12px; border-bottom: 1px solid rgba(148,163,184,0.1); background: rgba(30,41,59,0.5); margin-bottom: 20px; border-radius: 8px; }
       .admin-nav-content { max-width:1200px; margin:0 auto; display:flex; gap:12px; flex-wrap:wrap; }
       .nav-link { display:flex; align-items:center; gap:6px; padding:8px 12px; color:#94a3b8; text-decoration:none; border-radius:6px; background:transparent; transition:all 0.2s; font-size:14px; font-weight:500; }
       .nav-link.active { color:#fff; background:rgba(79,70,229,0.2); }
       .nav-link:hover { background:rgba(40,51,79,0.7); color:#fff; }  
-
-      /* Responsive */
       @media (max-width: 768px) {
         .dashboard-container { padding:15px; } .page-header-title { font-size:24px; }
-        .filters-form { grid-template-columns:1fr; gap:15px; } /* Single column for filters on mobile */
-        .filters-form-actions { justify-content: center; } /* Center reset button on mobile */
+        .filters-form { grid-template-columns:1fr; gap:15px; } 
+        .filters-form-actions { justify-content: center; } 
         .futuristic-button { padding:7px 12px; font-size:12px; }
         .modal-content { max-width:95%; max-height:90vh; }
         .admin-nav-content { gap:8px; } .nav-link { padding:7px 10px; font-size:13px; }
@@ -1686,7 +1685,7 @@ export class AdminPaymentsView extends BaseComponent {
 
   destroy() {
     if (this.handleResize) window.removeEventListener('resize', this.handleResize);
-    if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer); // Only search timer now
+    if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer); 
     
     this.allPaymentsMasterList = [];
     this.payments = [];
@@ -1698,5 +1697,6 @@ export class AdminPaymentsView extends BaseComponent {
     this.pdfState = { generating: false };
     this.isRendered = false;  
     this.isRendering = false;
+    // console.log('AdminPaymentsView: destroy() called.');
   }
 }

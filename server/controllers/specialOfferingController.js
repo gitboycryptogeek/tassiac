@@ -25,11 +25,7 @@ function debugLog(message, data = null) {
     }
   }
   console.log(logMessage);
-  try {
-    fs.appendFileSync(LOG_FILE, logMessage + '\n');
-  } catch (err) {
-    // console.error('Failed to write to debug log file:', err);
-  }
+  
   return logMessage;
 }
 
