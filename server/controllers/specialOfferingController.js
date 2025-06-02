@@ -56,12 +56,9 @@ async function logAdminActivity(actionType, targetId, initiatedBy, actionData = 
       data: {
         actionType,
         targetId: String(targetId),
-        initiatedBy,
+        initiatedById: initiatedBy, // Changed from initiatedBy to initiatedById
         actionData,
         status: 'COMPLETED',
-        initiator: { 
-          connect: { id: initiatedBy }
-        }
       },
     });
     debugLog(`Admin activity logged: ${actionType} for target ${targetId} by user ${initiatedBy}`);

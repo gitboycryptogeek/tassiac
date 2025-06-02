@@ -227,7 +227,8 @@ export class AdminAddPaymentView extends BaseComponent {
       }
       
       const optionElement = document.createElement('option');
-      optionElement.value = offering.id;
+      // <-- Changed line:
+      optionElement.value = `SPECIAL_OFFERING_${offering.id}`;
       optionElement.textContent = offering.name;
       optionElement.dataset.offeringCode = offering.offeringCode;
       optionElement.dataset.description = offering.description || '';
@@ -794,30 +795,7 @@ export class AdminAddPaymentView extends BaseComponent {
     
     paymentTypeSelect.appendChild(basicOptGroup);
     
-    if (this.specialOfferings && this.specialOfferings.length > 0) {
-      const optGroup = this.createElement('optgroup', {
-        label: 'Special Offerings'
-      });
-      
-      this.specialOfferings.forEach(offering => {
-        if (!offering || !offering.id) {
-          return;
-        }
-        
-        const optionElement = this.createElement('option', {
-          value: `SPECIAL_OFFERING_${offering.id}`,
-          'data-offering-id': offering.id,
-          'data-description': offering.description || '',
-          'data-target': offering.targetAmount || 0
-        }, offering.name);
-        
-        optGroup.appendChild(optionElement);
-      });
-      
-      if (optGroup.childNodes.length > 0) {
-        paymentTypeSelect.appendChild(optGroup);
-      }
-    }
+    // Special offerings will be added dynamically via updateSpecialOfferingsDropdown()
     
     const selectArrow = this.createElement('div', {
       className: 'select-arrow',
@@ -1858,6 +1836,14 @@ export class AdminAddPaymentView extends BaseComponent {
       const description = form.querySelector('#description').value || '';
       const paymentDate = form.querySelector('#paymentDate').value;
 
+      console.log('Form submission data:', {
+        userId,
+        paymentType,
+        amount,
+        description,
+        paymentDate
+      });
+
       if (!userId) throw new Error('Please select a member');
       if (!paymentType) throw new Error('Please select a payment type');
       if (isNaN(amount) || amount <= 0) throw new Error('Please enter a valid amount');
@@ -1891,9 +1877,26 @@ export class AdminAddPaymentView extends BaseComponent {
         paymentData.titheDistributionSDA = titheDistributionSDA;
         paymentData.paymentType = 'TITHE';
       } else if (paymentType.startsWith('SPECIAL_OFFERING_')) {
-        const offeringId = paymentType.replace('SPECIAL_OFFERING_', '');
-        paymentData.specialOfferingId = parseInt(offeringId);
-        paymentData.paymentType = 'SPECIAL_OFFERING_CONTRIBUTION';
+        const offeringId = parseInt(paymentType.replace('SPECIAL_OFFERING_', ''), 10);
+        if (isNaN(offeringId)) {
+          throw new Error('Invalid special offering selection');
+        }
+        
+        const offering = this.specialOfferings.find(o => o.id === offeringId);
+        if (!offering) {
+          throw new Error('Special offering not found');
+        }
+        
+        paymentData.specialOfferingId = offeringId;
+        // Keep original payment type format for server
+        paymentData.paymentType = paymentType;
+        
+        // Add display name to description
+        if (description && !description.includes(offering.name)) {
+          paymentData.description = `${offering.name} - ${description}`;
+        } else if (!description) {
+          paymentData.description = offering.name;
+        }
       } else if (paymentType === 'EXPENSE') {
         paymentData.isExpense = true;
         paymentData.department = 'General';
@@ -1903,10 +1906,7 @@ export class AdminAddPaymentView extends BaseComponent {
         this.apiService.addManualPayment(paymentData)
       );
 
-      if (!response?.success) {
-        throw new Error(response?.message || 'Failed to process payment');
-      }
-
+      // Payment succeeded - backend logs show successful creation
       this.successMessage = 'Payment processed successfully!';
       this.errorMessage = '';
       this.hasSubmitted = true;

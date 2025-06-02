@@ -366,17 +366,34 @@ exports.initiatePayment = async (req, res) => {
         }
         paymentData.titheDistributionSDA = validatedTitheDistribution;
 
-      } else if (processedPaymentType === 'SPECIAL_OFFERING_CONTRIBUTION' && processedSpecialOfferingId) {
+      } else if (processedPaymentType === 'SPECIAL_OFFERING_CONTRIBUTION') {
+        if (!processedSpecialOfferingId) {
+          throw new Error('Special offering ID is required for special offering contributions.');
+        }
+        
+        debugLog('Processing special offering contribution for offering ID:', processedSpecialOfferingId);
+        
         const offering = await prisma.specialOffering.findUnique({ 
           where: { id: processedSpecialOfferingId } 
         });
-        if (!offering || !offering.isActive) {
-          throw new Error('Selected special offering is not available or not active.');
+        
+        if (!offering) {
+          throw new Error(`Special offering with ID ${processedSpecialOfferingId} not found.`);
         }
+        
+        if (!offering.isActive) {
+          throw new Error(`Special offering "${offering.name}" is not currently active.`);
+        }
+        
         paymentData.specialOfferingId = offering.id;
         paymentData.description = description || `Contribution to ${offering.name}`;
+        
+        debugLog('Special offering validated and added to payment data:', {
+          offeringId: offering.id,
+          offeringName: offering.name,
+          isActive: offering.isActive
+        });
       }
-
       const payment = await tx.payment.create({ data: paymentData });
       debugLog('Pending payment record created:', payment.id);
 
@@ -419,12 +436,17 @@ exports.initiatePayment = async (req, res) => {
 
 // Add manual payment (admin only)
 exports.addManualPayment = async (req, res) => {
+  // Pre-convert numeric paymentType to expected format
+  if (req.body.paymentType && /^\d+$/.test(req.body.paymentType)) {
+    req.body.paymentType = `SPECIAL_OFFERING_${req.body.paymentType}`;
+  }
+  
   debugLog('Admin: Add Manual Payment attempt started');
   if (isViewOnlyAdmin(req.user)) {
-    debugLog(`View-only admin ${req.user.username} (ID: ${req.user.id}) attempted to add manual payment.`);
+    debugLog(`View-only admin ${req.user.username} (ID: ${req.user.id}) attempted to add payments.`);
     return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot add payments.", { code: 'FORBIDDEN_VIEW_ONLY' });
   }
-
+  
   const validationErrors = validationResult(req);
   if (!validationErrors.isEmpty()) {
     debugLog('Validation errors:', validationErrors.array());
@@ -440,13 +462,19 @@ exports.addManualPayment = async (req, res) => {
     paymentMethod = 'MANUAL', expenseReceiptUrl, reference,
   } = req.body;
     // Convert frontend special offering format to backend format
-let processedPaymentType = paymentType;
-let processedSpecialOfferingId = specialOfferingId;
-
-if (paymentType.startsWith('SPECIAL_OFFERING_')) {
-  processedSpecialOfferingId = parseInt(paymentType.replace('SPECIAL_OFFERING_', ''));
-  processedPaymentType = 'SPECIAL_OFFERING_CONTRIBUTION';
-}
+    debugLog('Received payment data:', { userId, amount, paymentType, description, paymentDate, specialOfferingId });
+    let processedPaymentType = paymentType;
+    let processedSpecialOfferingId = specialOfferingId;
+    // New conversion: if paymentType is not one of the standard types, assume it's a special offering ID
+    if (!['TITHE', 'OFFERING', 'DONATION', 'EXPENSE'].includes(paymentType)) {
+      processedSpecialOfferingId = parseInt(paymentType);
+      processedPaymentType = 'SPECIAL_OFFERING_CONTRIBUTION';
+      debugLog('Converted special offering payment:', { 
+        originalType: paymentType, 
+        processedType: processedPaymentType, 
+        offeringId: processedSpecialOfferingId 
+      });
+    }
   const processedByAdminId = req.user.id;
 
   const paymentAmount = parseFloat(amount);
@@ -464,17 +492,19 @@ if (paymentType.startsWith('SPECIAL_OFFERING_')) {
     let paymentData = {
       userId: parseInt(userId),
       amount: paymentAmount,
-      paymentType: processedPaymentType, // Use processed type
+      paymentType: processedPaymentType, // Use processed type instead of original
       paymentMethod,
       description: description || `${processedPaymentType} (${paymentMethod})`,
       status: 'COMPLETED',
       paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
-      processedById: processedByAdminId, // Admin is processing on behalf of user
+      processedById: processedByAdminId,
       isExpense: !!isExpense,
       platformFee: 0,
       isTemplate: false,
       reference: reference || null
     };
+    
+    debugLog('Created payment data object:', paymentData);
 
     // Handle special offering payment types
     if (paymentType.startsWith('SPECIAL_OFFERING_')) {
@@ -541,7 +571,7 @@ if (paymentType.startsWith('SPECIAL_OFFERING_')) {
       userId: createdPayment.userId 
     });
 
-    return sendResponse(res, 201, true, { payment: createdPayment }, 'Manual payment added successfully.');
+    return sendResponse(res, 201, true, { payment: createdPayment }, 'Manual payment added successfully.')
 
   } catch (error) {
     debugLog('Error adding manual payment:', error.message);

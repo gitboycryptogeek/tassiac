@@ -94,7 +94,7 @@ router.post(
       return true;
     }
     
-    throw new Error(`Invalid payment type received: ${value}`);
+    throw new Error(`Invalid payment type received: ${value}. Expected format: SPECIAL_OFFERING_[ID] or standard types.`);
   }),
     body('description').optional().isString().trim(),
     body('paymentDate').optional().isISO8601().toDate().withMessage('Valid payment date is required if provided.'),
