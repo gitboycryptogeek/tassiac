@@ -2,8 +2,8 @@
 const { PrismaClient, Prisma } = require('@prisma/client');
 const fs = require('fs');
 const path = require('path');
-const PDFDocument = require('pdfkit'); // For PDF generation
-const { validationResult } = require('express-validator'); // If you add validation in routes
+const PDFDocument = require('pdfkit');
+const { validationResult } = require('express-validator');
 
 const prisma = new PrismaClient();
 
@@ -26,11 +26,10 @@ function debugLog(message, data = null) {
     }
   }
   console.log(logMessage);
-  
+  fs.appendFileSync(LOG_FILE, logMessage + '\n');
   return logMessage;
 }
 
-// Helper for sending standardized responses
 const sendResponse = (res, statusCode, success, data, message, errorDetails = null) => {
   const responsePayload = { success, message };
   if (data !== null && data !== undefined) {
@@ -42,32 +41,6 @@ const sendResponse = (res, statusCode, success, data, message, errorDetails = nu
   return res.status(statusCode).json(responsePayload);
 };
 
-// Helper to check for view-only admin (ADAPT THIS LOGIC)
-const isViewOnlyAdmin = (user) => {
-  if (!user || !user.isAdmin) return false;
-  const viewOnlyUsernames = ['admin3', 'admin4', 'admin5']; // Example
-  return viewOnlyUsernames.includes(user.username);
-};
-
-// Log Admin Activity
-async function logAdminActivity(actionType, targetId, initiatedBy, actionData = {}) {
-  try {
-    await prisma.adminAction.create({
-      data: {
-        actionType,
-        targetId: String(targetId),
-        initiatedBy,
-        actionData,
-        status: 'COMPLETED',
-      },
-    });
-    debugLog(`Admin activity logged: ${actionType} for target ${targetId} by user ${initiatedBy}`);
-  } catch (error) {
-    debugLog(`Error logging admin activity for ${actionType} on ${targetId}:`, error.message);
-  }
-}
-
-// Helper to format date (consider moving to a shared util if used elsewhere)
 const formatDateForPdf = (dateString) => {
   if (!dateString) return 'N/A';
   try {
@@ -76,7 +49,7 @@ const formatDateForPdf = (dateString) => {
       hour: '2-digit', minute: '2-digit'
     });
   } catch (e) {
-    return dateString.toString();
+    return String(dateString); // Fallback to string if not a valid date
   }
 };
 
@@ -111,7 +84,7 @@ exports.getAllReceipts = async (req, res) => {
       include: {
         user: { select: { id: true, username: true, fullName: true, phone: true } },
         payment: { select: { id: true, amount: true, paymentType: true, paymentMethod: true, description: true, status: true, isExpense: true } },
-        generator: { select: { id: true, username: true, fullName: true } }, // Admin who generated it
+        generator: { select: { id: true, username: true, fullName: true } },
       },
       orderBy: { receiptDate: 'desc' },
       skip,
@@ -135,7 +108,6 @@ exports.getAllReceipts = async (req, res) => {
   }
 };
 
-// Get receipts for a specific user (or the logged-in user)
 exports.getUserReceipts = async (req, res) => {
   debugLog('Get User Receipts attempt started');
   try {
@@ -167,7 +139,6 @@ exports.getUserReceipts = async (req, res) => {
         }
     }
 
-
     const receipts = await prisma.receipt.findMany({
       where: whereConditions,
       include: {
@@ -195,7 +166,6 @@ exports.getUserReceipts = async (req, res) => {
   }
 };
 
-// Get receipt by ID
 exports.getReceiptById = async (req, res) => {
   debugLog('Get Receipt By ID attempt started');
   try {
@@ -214,8 +184,8 @@ exports.getReceiptById = async (req, res) => {
           select: {
             id: true, amount: true, paymentType: true, paymentMethod: true,
             description: true, status: true, paymentDate: true, isExpense: true,
-            titheDistributionSDA: true, // Include SDA tithe distribution
-            specialOffering: { select: { name: true, offeringCode: true } } // If it's for a special offering
+            titheDistributionSDA: true, // Included for PDF generation
+            specialOffering: { select: { name: true, offeringCode: true } }
           }
         },
         generator: { select: { id: true, username: true, fullName: true } },
@@ -260,7 +230,7 @@ exports.generatePdfReceipt = async (req, res) => {
           select: {
             amount: true, paymentType: true, paymentMethod: true,
             description: true, paymentDate: true, isExpense: true,
-            titheDistributionSDA: true,
+            titheDistributionSDA: true, // This will now be { category: boolean }
             specialOffering: { select: { name: true, offeringCode: true } }
           }
         },
@@ -282,7 +252,7 @@ exports.generatePdfReceipt = async (req, res) => {
       fs.mkdirSync(receiptDir, { recursive: true });
     }
 
-    const filename = `receipt_${receipt.receiptNumber.replace(/\//g, '-')}_${Date.now()}.pdf`;
+    const filename = `receipt_${(receipt.receiptNumber || `ID${receipt.id}`).replace(/\//g, '-')}_${Date.now()}.pdf`;
     const filepath = path.join(receiptDir, filename);
 
     const doc = new PDFDocument({ margin: 40, size: 'A4' });
@@ -291,14 +261,13 @@ exports.generatePdfReceipt = async (req, res) => {
 
     // --- PDF Content ---
     doc.fontSize(20).font('Helvetica-Bold').text('TASSIA CENTRAL SDA CHURCH', { align: 'center' });
-    doc.fontSize(10).text('P.O. Box 12345 - 00100, Nairobi, Kenya', { align: 'center' });
+    doc.fontSize(10).font('Helvetica').text('P.O. Box 12345 - 00100, Nairobi, Kenya', { align: 'center' });
     doc.text('Phone: +254 7XX XXX XXX | Email: info@tassiacsda.org', { align: 'center' });
     doc.moveDown(1.5);
 
     doc.fontSize(16).font('Helvetica-Bold').text('OFFICIAL RECEIPT', { align: 'center' });
     doc.moveDown(1);
 
-    // Receipt Info Table
     const receiptInfoTop = doc.y;
     doc.fontSize(10).font('Helvetica-Bold');
     doc.text('Receipt No:', 40, receiptInfoTop);
@@ -315,7 +284,6 @@ exports.generatePdfReceipt = async (req, res) => {
     doc.text(String(receipt.paymentId), 380, receiptInfoTop + 15);
     doc.moveDown(2);
 
-    // Member Details
     doc.font('Helvetica-Bold').fontSize(11).text('RECEIVED FROM:');
     doc.font('Helvetica').fontSize(10);
     doc.text(receipt.user.fullName || 'N/A');
@@ -323,7 +291,6 @@ exports.generatePdfReceipt = async (req, res) => {
     if (receipt.user.email) doc.text(`Email: ${receipt.user.email}`);
     doc.moveDown(1.5);
 
-    // Payment Particulars
     doc.font('Helvetica-Bold').fontSize(11).text('PARTICULARS:');
     doc.font('Helvetica').fontSize(10);
     const paymentAmount = receipt.payment.amount ? parseFloat(receipt.payment.amount.toString()) : 0;
@@ -333,8 +300,7 @@ exports.generatePdfReceipt = async (req, res) => {
         paymentTypeDisplay = `Special Offering: ${receipt.payment.specialOffering.name} (${receipt.payment.specialOffering.offeringCode})`;
     } else if (paymentTypeDisplay === 'TITHE') {
         paymentTypeDisplay = 'Tithe';
-    }
-
+    } // Add other types as needed
 
     const particulars = [
       { label: 'Payment Type', value: paymentTypeDisplay },
@@ -343,14 +309,13 @@ exports.generatePdfReceipt = async (req, res) => {
       { label: 'Amount', value: `KES ${paymentAmount.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
     ];
 
-    const tableTop = doc.y;
     const itemX = 40;
-    const amountX = 450; // For right-aligning amount
+    const amountX = 450;
 
     particulars.forEach(item => {
         doc.font('Helvetica').text(item.label, itemX, doc.y, { width: 380, continued: item.label !== 'Amount' });
         if (item.label === 'Amount') {
-             doc.font('Helvetica-Bold').text(item.value, amountX, doc.y - 10, {width: 100, align: 'right'}); // y -10 because it was already moved down
+             doc.font('Helvetica-Bold').text(item.value, amountX, doc.y -10 , {width: 100, align: 'right'});
         } else {
             doc.font('Helvetica').text(item.value);
         }
@@ -358,11 +323,13 @@ exports.generatePdfReceipt = async (req, res) => {
     });
     doc.moveDown(0.5);
 
-    // Tithe Distribution (if applicable)
+    // MODIFIED Tithe Distribution Display (for checkboxes)
     if (receipt.payment.paymentType === 'TITHE' && receipt.payment.titheDistributionSDA) {
-      doc.font('Helvetica-Bold').fontSize(11).text('TITHE DISTRIBUTION DETAILS:');
+      doc.font('Helvetica-Bold').fontSize(11).text('TITHE DESIGNATIONS:');
       doc.moveDown(0.5);
-      const sdaTithe = receipt.payment.titheDistributionSDA;
+      const sdaTitheDesignations = receipt.payment.titheDistributionSDA; // This is now { category: boolean }
+      
+      // Define SDA categories (must match frontend and what's stored)
       const sdaCategories = [
         { key: 'campMeetingExpenses', label: 'Camp Meeting Expenses' },
         { key: 'welfare', label: 'Welfare' },
@@ -370,18 +337,22 @@ exports.generatePdfReceipt = async (req, res) => {
         { key: 'stationFund', label: 'Station Fund' },
         { key: 'mediaMinistry', label: 'Media Ministry' },
       ];
+      let listedDesignations = 0;
       sdaCategories.forEach(cat => {
-        const amount = sdaTithe[cat.key] ? parseFloat(sdaTithe[cat.key].toString()) : 0;
-        if (amount > 0) {
-          doc.font('Helvetica').fontSize(10).text(cat.label, itemX + 10, doc.y, {width: 370, continued: true});
-          doc.font('Helvetica').fontSize(10).text(`KES ${amount.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, amountX, doc.y, {width:100, align: 'right'});
+        // Check if the key exists and is true in the sdaTitheDesignations object
+        if (sdaTitheDesignations && typeof sdaTitheDesignations === 'object' && sdaTitheDesignations[cat.key] === true) {
+          doc.font('Helvetica').fontSize(10).text(`- ${cat.label}`, itemX + 10, doc.y);
           doc.moveDown(0.3);
+          listedDesignations++;
         }
       });
+      if(listedDesignations === 0) {
+        doc.font('Helvetica-Oblique').fontSize(10).text('No specific designations made for this tithe.', itemX + 10, doc.y);
+        doc.moveDown(0.3);
+      }
       doc.moveDown(0.5);
     }
     
-    // Line for total
     const totalY = doc.y + 5;
     doc.strokeColor('#aaaaaa').lineWidth(0.5).moveTo(40, totalY).lineTo(555, totalY).stroke();
     doc.moveDown(0.5);
@@ -391,40 +362,37 @@ exports.generatePdfReceipt = async (req, res) => {
     doc.text(`KES ${paymentAmount.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, amountX, doc.y, {width: 100, align: 'right'});
     doc.moveDown(2);
 
-
     doc.fontSize(9).fillColor('#555555')
        .text('This is a computer-generated receipt and does not require a physical signature if sent electronically.', 40, doc.y, {align: 'center'});
     doc.text('Thank you for your faithful stewardship!', { align: 'center' });
     doc.moveDown(2);
 
-    // Footer with church details again or a stamp area
     const pageHeight = doc.page.height;
     doc.fontSize(8).fillColor('#333333')
        .text(`Tassia Central SDA Church | Generated: ${formatDateForPdf(new Date())}`, 40, pageHeight - 50, { align: 'left', lineBreak: false });
-    doc.text(`Receipt System v1.0`, pageHeight - 40, pageHeight - 50, { align: 'right' });
+    doc.text(`Receipt System v1.1`, pageHeight - 40, pageHeight - 50, { align: 'right' }); // Updated version
 
-
-    // --- End PDF Content ---
     doc.end();
 
     writeStream.on('finish', async () => {
       debugLog(`PDF generated successfully: ${filename}`);
-      await prisma.receipt.update({
-        where: { id: numericReceiptId },
-        data: { pdfPath: `/receipts/${filename}` }, // Relative path for serving
-      });
+      // Store the relative path to the PDF in the Receipt record
+      try {
+        await prisma.receipt.update({
+          where: { id: numericReceiptId },
+          data: { pdfPath: `/receipts/${filename}` }, // Relative path for serving
+        });
+      } catch (dbError) {
+         debugLog(`Error updating receipt with PDF path for ${numericReceiptId}:`, dbError.message);
+      }
+
       if (!res.headersSent) {
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
         const readStream = fs.createReadStream(filepath);
         readStream.pipe(res);
-
-        // Optional: Delete file after sending if not needed on server long-term
-        // readStream.on('end', () => fs.unlinkSync(filepath));
-        // readStream.on('error', (err) => {
-        //   debugLog('Error streaming PDF to response:', err.message);
-        //   if (!res.headersSent) res.status(500).send('Error sending PDF');
-        // });
+        // Optional: Clean up the file after sending
+        // readStream.on('end', () => fs.unlink(filepath, (err) => { if (err) debugLog(`Error deleting PDF ${filepath}: ${err.message}`); }));
       }
     });
     writeStream.on('error', (err) => {
@@ -443,22 +411,20 @@ exports.generatePdfReceipt = async (req, res) => {
   }
 };
 
-// Upload receipt attachment (Admin action for manual payments/expenses)
-// This assumes multer is configured on the route for 'attachment' field
 exports.uploadReceiptAttachment = async (req, res) => {
   debugLog('Upload Receipt Attachment attempt started');
+  // This is a placeholder. Actual implementation depends on your storage strategy (local, S3, etc.)
+  // and how you want to associate attachments with receipts (e.g., updating Receipt model).
+  // For now, assuming multer middleware (from receiptRoutes.js) handles the upload to a temp location or configured path.
   try {
-    if (isViewOnlyAdmin(req.user)) {
-      debugLog(`View-only admin ${req.user.username} attempted to upload attachment.`);
-      if (req.file && req.file.path) fs.unlinkSync(req.file.path); // Clean up uploaded file
-      return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot upload attachments.", { code: 'FORBIDDEN_VIEW_ONLY' });
-    }
+    // isViewOnlyAdmin check might be needed here if only certain admins can do this.
+    // For now, assuming any authenticated admin (checked by route middleware) can.
 
     const { receiptId } = req.params;
     const numericReceiptId = parseInt(receiptId);
 
     if (isNaN(numericReceiptId)) {
-      if (req.file && req.file.path) fs.unlinkSync(req.file.path);
+      if (req.file && req.file.path) fs.unlinkSync(req.file.path); // Clean up uploaded file if ID is bad
       return sendResponse(res, 400, false, null, 'Invalid Receipt ID format.', { code: 'INVALID_RECEIPT_ID' });
     }
 
@@ -469,28 +435,32 @@ exports.uploadReceiptAttachment = async (req, res) => {
     const receipt = await prisma.receipt.findUnique({ where: { id: numericReceiptId } });
     if (!receipt) {
       if (req.file && req.file.path) fs.unlinkSync(req.file.path);
-      return sendResponse(res, 404, false, null, 'Receipt not found.', { code: 'RECEIPT_NOT_FOUND' });
+      return sendResponse(res, 404, false, null, 'Receipt not found to attach file to.', { code: 'RECEIPT_NOT_FOUND' });
     }
-
-    // Construct relative path for storing in DB
-    const attachmentPath = `/uploads/receipts/${req.file.filename}`;
+    
+    // The file is uploaded by multer to `receiptAttachmentUploadDir` in receiptRoutes.js
+    // req.file.filename contains the generated filename.
+    // Store the relative path to be served.
+    const attachmentPath = `/uploads/receipt_attachments/${req.file.filename}`; // Matches multer destination
 
     await prisma.receipt.update({
       where: { id: numericReceiptId },
-      data: {
+      data: { 
         attachmentPath: attachmentPath,
-        // attachmentType: req.file.mimetype, // You might want to add this field to your Prisma schema
+        // You might also want to store file.mimetype, file.size etc. if your schema supports it.
       },
     });
     
-    await logAdminActivity('UPLOAD_RECEIPT_ATTACHMENT', numericReceiptId, req.user.id, { filename: req.file.filename });
+    // Log admin activity if you have an AdminAction model and logging function
+    // await logAdminActivity('UPLOAD_RECEIPT_ATTACHMENT', numericReceiptId, req.user.id, { filename: req.file.filename });
+
     debugLog(`Attachment uploaded for receipt ${numericReceiptId}: ${attachmentPath}`);
-    return sendResponse(res, 200, true, { attachmentPath }, 'Attachment uploaded successfully.');
+    return sendResponse(res, 200, true, { attachmentPath }, 'Attachment uploaded and linked to receipt successfully.');
 
   } catch (error) {
     debugLog('Error uploading receipt attachment:', error.message);
-    if (req.file && req.file.path) { // Clean up temp file on error
-        try { fs.unlinkSync(req.file.path); } catch (e) { debugLog("Error cleaning up temp file", e.message);}
+    if (req.file && req.file.path) { // Clean up uploaded file on any other error
+        try { fs.unlinkSync(req.file.path); } catch (e) { debugLog("Error cleaning up temp file after error", e.message);}
     }
     console.error(error);
     return sendResponse(res, 500, false, null, 'Server error uploading attachment.', { code: 'SERVER_ERROR', details: error.message });

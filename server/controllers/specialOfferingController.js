@@ -3,6 +3,10 @@ const { PrismaClient, Prisma } = require('@prisma/client');
 const { validationResult } = require('express-validator');
 const fs = require('fs');
 const path = require('path');
+// Assuming paymentUtils.js and receiptUtils.js are in the same directory or accessible via path
+const { initiateMpesaPayment } = require('../utils/paymentUtils.js'); 
+const { generateReceiptNumber } = require('../utils/receiptUtils.js');
+
 
 const prisma = new PrismaClient();
 
@@ -25,11 +29,10 @@ function debugLog(message, data = null) {
     }
   }
   console.log(logMessage);
-  
+  fs.appendFileSync(LOG_FILE, logMessage + '\n');
   return logMessage;
 }
 
-// Helper for sending standardized responses
 const sendResponse = (res, statusCode, success, data, message, errorDetails = null) => {
   const responsePayload = { success, message };
   if (data !== null && data !== undefined) {
@@ -41,16 +44,12 @@ const sendResponse = (res, statusCode, success, data, message, errorDetails = nu
   return res.status(statusCode).json(responsePayload);
 };
 
-// Helper to check for view-only admin (placeholder logic)
 const isViewOnlyAdmin = (user) => {
   if (!user || !user.isAdmin) return false;
   const viewOnlyUsernames = ['admin3', 'admin4', 'admin5'];
-  // const viewOnlyIds = [3, 4, 5]; // Or use IDs
-  // return viewOnlyUsernames.includes(user.username) || viewOnlyIds.includes(user.id);
   return viewOnlyUsernames.includes(user.username);
 };
 
-// Log Admin Activity
 async function logAdminActivity(actionType, targetId, initiatedBy, actionData = {}) {
   try {
     await prisma.adminAction.create({
@@ -60,6 +59,9 @@ async function logAdminActivity(actionType, targetId, initiatedBy, actionData = 
         initiatedBy,
         actionData,
         status: 'COMPLETED',
+        initiator: { 
+          connect: { id: initiatedBy }
+        }
       },
     });
     debugLog(`Admin activity logged: ${actionType} for target ${targetId} by user ${initiatedBy}`);
@@ -68,7 +70,6 @@ async function logAdminActivity(actionType, targetId, initiatedBy, actionData = 
   }
 }
 
-// Helper to format special offering for consistent output
 const formatOfferingOutput = (offering) => {
   if (!offering) return null;
   return {
@@ -77,17 +78,17 @@ const formatOfferingOutput = (offering) => {
     name: offering.name,
     description: offering.description,
     targetAmount: offering.targetAmount ? parseFloat(offering.targetAmount.toString()) : null,
-    currentAmount: offering.currentAmount ? parseFloat(offering.currentAmount.toString()) : 0, // Will be calculated
+    currentAmount: offering.currentAmount ? parseFloat(offering.currentAmount.toString()) : 0,
     startDate: offering.startDate,
     endDate: offering.endDate,
     isActive: offering.isActive,
-    createdBy: offering.createdBy,
-    creator: offering.creator ? { // Include basic creator info
+    createdBy: offering.createdById, // Corrected to use createdById
+    creator: offering.creator ? {
         id: offering.creator.id,
         fullName: offering.creator.fullName,
         username: offering.creator.username,
     } : null,
-    customFields: offering.customFields, // Already JSON from Prisma
+    customFields: offering.customFields,
     createdAt: offering.createdAt,
     updatedAt: offering.updatedAt,
   };
@@ -102,51 +103,75 @@ exports.createSpecialOffering = async (req, res) => {
       return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot create special offerings.", { code: 'FORBIDDEN_VIEW_ONLY' });
     }
 
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      debugLog('Validation errors on create:', errors.array());
-      return sendResponse(res, 400, false, null, 'Validation failed', {
-        code: 'VALIDATION_ERROR',
-        details: errors.array().map(err => ({ field: err.path, message: err.msg })),
-      });
-    }
-
+    // Validation is now handled by express-validator in the route, but double-check critical fields
     const {
       name,
       description,
       targetAmount,
       startDate,
       endDate,
-      isActive = true,
+      isActive = true, // Default to true if not provided
       customFields,
-      offeringCode
+      // offeringCode is now auto-generated
     } = req.body;
-
-    if (!name || !offeringCode) {
-      return sendResponse(res, 400, false, null, 'Offering name and code are required.', { code: 'MISSING_REQUIRED_FIELDS' });
+    
+    const errors = validationResult(req); // Check for any validation errors from the route
+    if (!errors.isEmpty()) {
+        // Remove offeringCode from error check as it's auto-generated now
+        const filteredErrors = errors.array().filter(err => err.path !== 'offeringCode');
+        if (filteredErrors.length > 0) {
+            debugLog('Validation errors on create (excluding offeringCode):', filteredErrors);
+            return sendResponse(res, 400, false, null, 'Validation failed', {
+                code: 'VALIDATION_ERROR',
+                details: filteredErrors.map(err => ({ field: err.path, message: err.msg })),
+            });
+        }
     }
 
-    const existingOfferingByCode = await prisma.specialOffering.findUnique({
-      where: { offeringCode }
-    });
-    if (existingOfferingByCode) {
-      return sendResponse(res, 400, false, null, `Offering code '${offeringCode}' already exists.`, { code: 'DUPLICATE_OFFERING_CODE' });
+
+    if (!name) { // Basic check for name even if route validation missed it
+      return sendResponse(res, 400, false, null, 'Offering name is required.', { code: 'MISSING_NAME' });
     }
+
+    // Auto-generate a unique offeringCode
+    let offeringCode;
+    let isCodeUnique = false;
+    let attempts = 0;
+    const maxAttempts = 5;
+
+    while (!isCodeUnique && attempts < maxAttempts) {
+        offeringCode = `SO-${Date.now().toString(36).slice(-4).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+        const existingByCode = await prisma.specialOffering.findUnique({ where: { offeringCode } });
+        if (!existingByCode) {
+            isCodeUnique = true;
+        }
+        attempts++;
+    }
+
+    if (!isCodeUnique) {
+        debugLog('Failed to generate a unique offering code after multiple attempts.');
+        return sendResponse(res, 500, false, null, 'Could not generate a unique offering code. Please try again.', { code: 'UNIQUE_CODE_GENERATION_FAILED' });
+    }
+    debugLog(`Generated unique offeringCode: ${offeringCode}`);
+
 
     const offeringData = {
       name,
-      offeringCode,
+      offeringCode, // Use the auto-generated one
       description: description || null,
       targetAmount: targetAmount ? parseFloat(targetAmount) : null,
       startDate: startDate ? new Date(startDate) : new Date(),
       endDate: endDate ? new Date(endDate) : null,
       isActive,
-      customFields: customFields || Prisma.JsonNull,
-      createdBy: req.user.id,
+      customFields: customFields || Prisma.JsonNull, // Use Prisma.JsonNull for explicitly setting JSON null
+      createdById: req.user.id,
     };
 
     debugLog('Creating SpecialOffering with data:', offeringData);
-    const specialOffering = await prisma.specialOffering.create({ data: offeringData });
+    const specialOffering = await prisma.specialOffering.create({ 
+        data: offeringData,
+        include: { creator: { select: { id: true, fullName: true, username: true } } }
+    });
 
     await logAdminActivity('CREATE_SPECIAL_OFFERING', specialOffering.id, req.user.id, { name: specialOffering.name, code: specialOffering.offeringCode });
     debugLog('Special offering created successfully:', specialOffering.id);
@@ -155,14 +180,16 @@ exports.createSpecialOffering = async (req, res) => {
   } catch (error) {
     debugLog('Error creating special offering:', error.message);
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-      return sendResponse(res, 400, false, null, `A special offering with the provided code or other unique identifier already exists. Fields: ${error.meta?.target?.join(', ')}`, { code: 'DUPLICATE_ENTRY' });
+      return sendResponse(res, 400, false, null, `A special offering with the provided unique identifier (e.g. code) already exists. Fields: ${error.meta?.target?.join(', ')}`, { code: 'DUPLICATE_ENTRY' });
     }
     console.error(error);
     return sendResponse(res, 500, false, null, 'Server error creating special offering.', { code: 'SERVER_ERROR', details: error.message });
   }
 };
 
-// Get all special offerings
+// ... (getAllSpecialOfferings, getSpecialOffering, updateSpecialOffering, deleteSpecialOffering, getSpecialOfferingProgress remain largely the same)
+// Ensure `formatOfferingOutput` is used in responses for consistency.
+
 exports.getAllSpecialOfferings = async (req, res) => {
   debugLog('Attempting to get all special offerings');
   try {
@@ -174,18 +201,23 @@ exports.getAllSpecialOfferings = async (req, res) => {
     if (activeOnly === 'true') {
       whereClause.isActive = true;
       const now = new Date();
-      whereClause.OR = [
+      whereClause.OR = [ // This OR condition ensures that offerings with no end date are also considered active
         { endDate: null },
         { endDate: { gte: now } },
       ];
     }
-    if (search) {
-      whereClause.OR = [
-        ...(whereClause.OR || []), // Keep existing OR conditions if any
-        { name: { contains: search, mode: 'insensitive' } },
-        { offeringCode: { contains: search, mode: 'insensitive' } },
-        { description: { contains: search, mode: 'insensitive' } },
-      ];
+     if (search) {
+        const searchPattern = `%${search}%`; // For SQLite LIKE
+        whereClause.AND = [
+            ...(whereClause.AND || []),
+            {
+                OR: [
+                    { name: { contains: search, mode: 'insensitive' } },
+                    { offeringCode: { contains: search, mode: 'insensitive' } },
+                    { description: { contains: search, mode: 'insensitive' } },
+                ],
+            },
+        ];
     }
 
 
@@ -203,12 +235,15 @@ exports.getAllSpecialOfferings = async (req, res) => {
       offerings.map(async (offering) => {
         const contributions = await prisma.payment.aggregate({
           _sum: { amount: true },
-          where: { specialOfferingId: offering.id, status: 'COMPLETED', paymentType: 'SPECIAL_OFFERING_CONTRIBUTION' },
+          where: { 
+            specialOfferingId: offering.id, 
+            status: 'COMPLETED', 
+            paymentType: 'SPECIAL_OFFERING_CONTRIBUTION' // Ensure only specific contributions are counted
+          },
         });
         return {
-          ...formatOfferingOutput(offering), // Uses the helper
+          ...formatOfferingOutput(offering),
           currentAmount: contributions._sum.amount ? parseFloat(contributions._sum.amount.toString()) : 0,
-          // creatorName: offering.creator?.fullName // creator is already part of formatOfferingOutput
         };
       })
     );
@@ -228,7 +263,6 @@ exports.getAllSpecialOfferings = async (req, res) => {
   }
 };
 
-// Get a specific special offering by ID or Code
 exports.getSpecialOffering = async (req, res) => {
   const { identifier } = req.params;
   debugLog(`Attempting to get special offering by identifier: ${identifier}`);
@@ -248,13 +282,16 @@ exports.getSpecialOffering = async (req, res) => {
 
     const contributions = await prisma.payment.aggregate({
       _sum: { amount: true },
-      where: { specialOfferingId: offering.id, status: 'COMPLETED', paymentType: 'SPECIAL_OFFERING_CONTRIBUTION' },
+      where: { 
+        specialOfferingId: offering.id, 
+        status: 'COMPLETED', 
+        paymentType: 'SPECIAL_OFFERING_CONTRIBUTION' 
+      },
     });
 
     const offeringWithProgress = {
       ...formatOfferingOutput(offering),
       currentAmount: contributions._sum.amount ? parseFloat(contributions._sum.amount.toString()) : 0,
-      // creatorName: offering.creator?.fullName // Included in formatOfferingOutput
     };
 
     debugLog('Special offering retrieved successfully:', offering.name);
@@ -267,7 +304,6 @@ exports.getSpecialOffering = async (req, res) => {
   }
 };
 
-// Update a special offering (Admin only)
 exports.updateSpecialOffering = async (req, res) => {
   const { identifier } = req.params;
   debugLog(`Attempting to update special offering: ${identifier}`);
@@ -295,9 +331,10 @@ exports.updateSpecialOffering = async (req, res) => {
       return sendResponse(res, 404, false, null, 'Special offering not found to update.', { code: 'NOT_FOUND' });
     }
 
+    // If offeringCode is being updated, check for its uniqueness
     if (offeringCode && offeringCode !== existingOffering.offeringCode) {
       const checkCode = await prisma.specialOffering.findUnique({ where: { offeringCode } });
-      if (checkCode && checkCode.id !== existingOffering.id) {
+      if (checkCode && checkCode.id !== existingOffering.id) { // Check it's not the same offering
         return sendResponse(res, 400, false, null, `Offering code '${offeringCode}' is already in use.`, { code: 'DUPLICATE_OFFERING_CODE' });
       }
     }
@@ -305,12 +342,13 @@ exports.updateSpecialOffering = async (req, res) => {
     const updateData = {};
     if (name !== undefined) updateData.name = name;
     if (offeringCode !== undefined) updateData.offeringCode = offeringCode;
-    if (description !== undefined) updateData.description = description || null;
-    if (targetAmount !== undefined) updateData.targetAmount = targetAmount ? parseFloat(targetAmount) : null;
-    if (startDate !== undefined) updateData.startDate = startDate ? new Date(startDate) : null;
-    if (endDate !== undefined) updateData.endDate = endDate ? new Date(endDate) : null; // Allow setting endDate to null
+    if (description !== undefined) updateData.description = description === null ? Prisma.DbNull : description;
+    if (targetAmount !== undefined) updateData.targetAmount = targetAmount === null ? null : parseFloat(targetAmount);
+    if (startDate !== undefined) updateData.startDate = startDate === null ? null : new Date(startDate);
+    if (endDate !== undefined) updateData.endDate = endDate === null ? null : new Date(endDate);
     if (isActive !== undefined) updateData.isActive = isActive;
-    if (customFields !== undefined) updateData.customFields = customFields || Prisma.JsonNull;
+    if (customFields !== undefined) updateData.customFields = customFields === null ? Prisma.JsonNull : customFields;
+
 
     const updatedOffering = await prisma.specialOffering.update({
       where: whereUnique,
@@ -324,7 +362,7 @@ exports.updateSpecialOffering = async (req, res) => {
 
   } catch (error) {
     debugLog('Error updating special offering:', error.message);
-     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') { // Unique constraint failed
       return sendResponse(res, 400, false, null, `A special offering with this identifier (e.g., code) already exists. Fields: ${error.meta?.target?.join(', ')}`, { code: 'DUPLICATE_ENTRY' });
     }
     console.error(error);
@@ -332,7 +370,6 @@ exports.updateSpecialOffering = async (req, res) => {
   }
 };
 
-// Delete a special offering (Admin only)
 exports.deleteSpecialOffering = async (req, res) => {
   const { identifier } = req.params;
   debugLog(`Attempting to delete special offering: ${identifier}`);
@@ -356,19 +393,21 @@ exports.deleteSpecialOffering = async (req, res) => {
     }
 
     if (offering._count.contributions > 0) {
-      debugLog(`Offering ${offering.name} has contributions, marking as inactive.`);
+      debugLog(`Offering ${offering.name} has contributions, marking as inactive instead of deleting.`);
       const deactivatedOffering = await prisma.specialOffering.update({
         where: whereUnique,
-        data: { isActive: false, endDate: new Date() },
+        data: { isActive: false, endDate: offering.endDate || new Date() }, // Set endDate if not already set
+        include: { creator: { select: { id: true, fullName: true, username: true } } }
       });
       await logAdminActivity('DEACTIVATE_SPECIAL_OFFERING', deactivatedOffering.id, req.user.id, { name: deactivatedOffering.name });
-      return sendResponse(res, 200, true, { specialOffering: formatOfferingOutput(deactivatedOffering), status: 'deactivated' }, 'Special offering has contributions and has been marked as inactive.');
+      return sendResponse(res, 200, true, { specialOffering: formatOfferingOutput(deactivatedOffering), statusMessage: 'deactivated' }, 'Special offering has contributions and has been marked as inactive.');
     }
 
+    // If no contributions, proceed with deletion
     await prisma.specialOffering.delete({ where: whereUnique });
-    await logAdminActivity('DELETE_SPECIAL_OFFERING', offering.id, req.user.id, { name: offering.name });
+    await logAdminActivity('DELETE_SPECIAL_OFFERING', offering.id, req.user.id, { name: offering.name }); // Log with original offering ID
     debugLog('Special offering deleted successfully:', offering.name);
-    return sendResponse(res, 200, true, { id: offering.id, offeringCode: offering.offeringCode, status: 'deleted' }, 'Special offering deleted successfully.');
+    return sendResponse(res, 200, true, { id: offering.id, offeringCode: offering.offeringCode, statusMessage: 'deleted' }, 'Special offering deleted successfully.');
 
   } catch (error) {
     debugLog('Error deleting special offering:', error.message);
@@ -380,137 +419,138 @@ exports.deleteSpecialOffering = async (req, res) => {
   }
 };
 
-// Make a payment (contribution) to a special offering (Authenticated User)
 exports.makePaymentToOffering = async (req, res) => {
-  const { identifier } = req.params; // SpecialOffering ID or Code
+  const { identifier } = req.params; 
   debugLog(`Payment attempt for special offering: ${identifier}`);
-  const transaction = await prisma.$transaction(async (tx) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      debugLog('Validation errors on payment:', errors.array());
-      // No direct res here, throw error to be caught by outer try-catch
-      throw { statusCode: 400, success: false, data: null, message: 'Validation failed', errorDetails: {
-        code: 'VALIDATION_ERROR',
-        details: errors.array().map(err => ({ field: err.path, message: err.msg })),
-      }};
-    }
-
-    const { amount, description, paymentMethod = 'MPESA' } = req.body; // Default to MPESA if user paying
-    const userId = req.user.id;
-
-    if (!amount || parseFloat(amount) <= 0) {
-      throw { statusCode: 400, success: false, data:null, message:'Invalid payment amount.', errorDetails: {code: 'INVALID_AMOUNT'}};
-    }
-
-    const isNumericId = /^\d+$/.test(identifier);
-    const whereUniqueOffering = isNumericId ? { id: parseInt(identifier) } : { offeringCode: identifier };
-
-    const specialOffering = await tx.specialOffering.findUnique({ where: whereUniqueOffering });
-
-    if (!specialOffering || !specialOffering.isActive) {
-      debugLog('Special offering not found or inactive.');
-      throw { statusCode: 404, success: false, data:null, message: 'Special offering not found or is not active.', errorDetails: {code: 'OFFERING_NOT_AVAILABLE'}};
-    }
-    
-    if (specialOffering.endDate && new Date(specialOffering.endDate) < new Date()) {
-        debugLog('Special offering has ended.');
-        throw { statusCode: 400, success: false, data:null, message: 'This special offering has ended.', errorDetails: {code: 'OFFERING_ENDED'}};
-    }
-
-    const paymentAmount = parseFloat(amount);
-    let mpesaResponseDetails = null;
-    let paymentStatus = 'PENDING'; // Default for M-Pesa
-
-    if (paymentMethod === 'MPESA') {
-        const userPhone = req.body.phoneNumber || req.user.phone;
-        if (!userPhone) {
-            throw { statusCode: 400, success: false, data:null, message: 'Phone number required for M-Pesa.', errorDetails: {code: 'PHONE_REQUIRED_MPESA'}};
-        }
-        // M-Pesa fee calculation (example)
-        let platformFee = 5;
-        if (paymentAmount > 500) {
-            platformFee = Math.max(5, parseFloat((paymentAmount * 0.01).toFixed(2)));
-        }
-
-        const tempPaymentForMpesa = {
-            id: `TEMP_${Date.now()}`, // Temporary ID for M-Pesa call
-            amount: paymentAmount,
-            paymentType: 'SPECIAL_OFFERING_CONTRIBUTION',
-            description: description || `Contribution to ${specialOffering.name}`,
-            platformFee: platformFee
-        };
-        
-        mpesaResponseDetails = await initiateMpesaPayment( // This function should be in paymentUtils.js
-            tempPaymentForMpesa.id,
-            paymentAmount, // Amount user intends to give
-            userPhone,
-            tempPaymentForMpesa.description
-        );
-        // paymentStatus will remain PENDING; callback will update to COMPLETED/FAILED
-    } else if (paymentMethod === 'MANUAL') {
-        // This case is if an admin is manually recording a contribution to a special offering
-        if (!req.user.isAdmin) {
-            throw { statusCode: 403, success: false, data: null, message: 'Forbidden: Only admins can make manual entries.', errorDetails: { code: 'FORBIDDEN_MANUAL_ENTRY'}};
-        }
-        paymentStatus = 'COMPLETED'; // Manual entries are typically completed
-    }
-
-
-    const paymentData = {
-      userId,
-      amount: paymentAmount,
-      paymentType: 'SPECIAL_OFFERING_CONTRIBUTION',
-      paymentMethod,
-      description: description || `Contribution to ${specialOffering.name}`,
-      status: paymentStatus,
-      paymentDate: new Date(),
-      specialOfferingId: specialOffering.id,
-      processedBy: req.user.isAdmin && paymentMethod === 'MANUAL' ? req.user.id : null,
-      reference: paymentMethod === 'MPESA' ? mpesaResponseDetails?.reference : null,
-      transactionId: paymentMethod === 'MPESA' ? mpesaResponseDetails?.transactionId : null,
-      platformFee: paymentMethod === 'MPESA' ? (mpesaResponseDetails?.platformFee || 0) : 0
-    };
-
-    const payment = await tx.payment.create({ data: paymentData });
-
-    // If manual and completed, generate receipt immediately
-    if (paymentMethod === 'MANUAL' && payment.status === 'COMPLETED') {
-        const user = await tx.user.findUnique({where: {id: userId}});
-        const receiptNumber = generateReceiptNumber(payment.paymentType);
-        await tx.receipt.create({
-            data: {
-                receiptNumber,
-                paymentId: payment.id,
-                userId: payment.userId,
-                generatedBy: req.user.id, // Admin who made the manual entry
-                receiptDate: new Date(),
-                receiptData: { /* Populate as needed */ }
-            }
-        });
-        await tx.payment.update({ where: {id: payment.id}, data: { receiptNumber }});
-        debugLog(`Manual contribution receipt ${receiptNumber} generated for payment ${payment.id}`);
-    }
-    
-    debugLog(`Contribution of ${amount} made to special offering ${specialOffering.name} by user ${userId}. Method: ${paymentMethod}. Status: ${paymentStatus}`);
-    return { payment, mpesaCheckoutID: paymentMethod === 'MPESA' ? mpesaResponseDetails?.reference : null, message: paymentMethod === 'MPESA' ? mpesaResponseDetails?.message : 'Contribution recorded.' };
-  });
-
+  
   try {
-    const { payment, mpesaCheckoutID, message } = transaction;
-    return sendResponse(res, 201, true, { paymentId: payment.id, mpesaCheckoutID }, message);
+    const transactionResult = await prisma.$transaction(async (tx) => {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        debugLog('Validation errors on payment:', errors.array());
+        throw { statusCode: 400, success: false, data: null, message: 'Validation failed', errorDetails: {
+          code: 'VALIDATION_ERROR',
+          details: errors.array().map(err => ({ field: err.path, message: err.msg })),
+        }};
+      }
+
+      const { amount, description, paymentMethod = 'MPESA' } = req.body; 
+      const userId = req.user.id;
+
+      if (!amount || parseFloat(amount) <= 0) {
+        throw { statusCode: 400, success: false, data:null, message:'Invalid payment amount.', errorDetails: {code: 'INVALID_AMOUNT'}};
+      }
+
+      const isNumericId = /^\d+$/.test(identifier);
+      const whereUniqueOffering = isNumericId ? { id: parseInt(identifier) } : { offeringCode: identifier };
+
+      const specialOffering = await tx.specialOffering.findUnique({ where: whereUniqueOffering });
+
+      if (!specialOffering || !specialOffering.isActive) {
+        debugLog('Special offering not found or inactive.');
+        throw { statusCode: 404, success: false, data:null, message: 'Special offering not found or is not active.', errorDetails: {code: 'OFFERING_NOT_AVAILABLE'}};
+      }
+      
+      if (specialOffering.endDate && new Date(specialOffering.endDate) < new Date()) {
+          debugLog('Special offering has ended.');
+          throw { statusCode: 400, success: false, data:null, message: 'This special offering has ended.', errorDetails: {code: 'OFFERING_ENDED'}};
+      }
+
+      const paymentAmount = parseFloat(amount);
+      let mpesaResponseDetails = null;
+      let paymentStatus = 'PENDING';
+
+      if (paymentMethod === 'MPESA') {
+          const userPhone = req.body.phoneNumber || req.user.phone;
+          if (!userPhone) {
+              throw { statusCode: 400, success: false, data:null, message: 'Phone number required for M-Pesa.', errorDetails: {code: 'PHONE_REQUIRED_MPESA'}};
+          }
+          
+          let platformFee = 5;
+          if (paymentAmount > 500) {
+              platformFee = Math.max(5, parseFloat((paymentAmount * 0.01).toFixed(2)));
+          }
+
+          const tempPaymentId = `SO_CONTRIB_${Date.now()}`;
+          
+          mpesaResponseDetails = await initiateMpesaPayment(
+              tempPaymentId,
+              paymentAmount, 
+              userPhone,
+              description || `SO: ${specialOffering.name}`.substring(0,13)
+          );
+      } else if (paymentMethod === 'MANUAL') {
+          if (!req.user.isAdmin) {
+              throw { statusCode: 403, success: false, data: null, message: 'Forbidden: Only admins can make manual entries for special offerings.', errorDetails: { code: 'FORBIDDEN_MANUAL_SO_ENTRY'}};
+          }
+          paymentStatus = 'COMPLETED';
+      }
+
+      const paymentData = {
+        userId,
+        amount: paymentAmount,
+        paymentType: 'SPECIAL_OFFERING_CONTRIBUTION', // Specific type for these contributions
+        paymentMethod,
+        description: description || `Contribution to ${specialOffering.name}`,
+        status: paymentStatus,
+        paymentDate: new Date(),
+        specialOfferingId: specialOffering.id,
+        processedById: req.user.isAdmin && paymentMethod === 'MANUAL' ? req.user.id : null,
+        reference: paymentMethod === 'MPESA' ? mpesaResponseDetails?.reference : null,
+        transactionId: paymentMethod === 'MPESA' ? mpesaResponseDetails?.transactionId : null,
+        platformFee: paymentMethod === 'MPESA' ? (mpesaResponseDetails?.platformFee || 0) : 0,
+        isTemplate: false
+      };
+
+      const payment = await tx.payment.create({ data: paymentData });
+
+      if (paymentMethod === 'MANUAL' && payment.status === 'COMPLETED') {
+          const user = await tx.user.findUnique({where: {id: userId}});
+          const receiptNumber = generateReceiptNumber('SPECIAL_OFFERING_CONTRIBUTION');
+          await tx.receipt.create({
+              data: {
+                  receiptNumber,
+                  paymentId: payment.id,
+                  userId: payment.userId,
+                  generatedById: req.user.id, 
+                  receiptDate: new Date(),
+                  receiptData: { 
+                    paymentId: payment.id, amount: payment.amount, paymentType: payment.paymentType,
+                    userName: user?.fullName, paymentDate: payment.paymentDate,
+                    description: payment.description, specialOfferingName: specialOffering.name 
+                  }
+              }
+          });
+          await tx.payment.update({ where: {id: payment.id}, data: { receiptNumber }});
+          debugLog(`Manual SO contribution receipt ${receiptNumber} generated for payment ${payment.id}`);
+      }
+      
+      debugLog(`Contribution of ${amount} made to special offering ${specialOffering.name} by user ${userId}. Method: ${paymentMethod}. Status: ${paymentStatus}`);
+      return { 
+        payment, 
+        mpesaCheckoutID: paymentMethod === 'MPESA' ? mpesaResponseDetails?.reference : null, 
+        message: paymentMethod === 'MPESA' ? (mpesaResponseDetails?.message || 'M-Pesa STK Push Initiated') : 'Contribution recorded.' 
+      };
+    });
+
+    // Success outside transaction
+    return sendResponse(res, 201, true, { 
+        paymentId: transactionResult.payment.id, 
+        mpesaCheckoutID: transactionResult.mpesaCheckoutID 
+    }, transactionResult.message);
+
   } catch (error) {
-    debugLog('Error making payment to special offering:', error.message || error);
+    debugLog('Error making payment to special offering:', error.message || JSON.stringify(error));
     console.error(error);
     const statusCode = error.statusCode || 500;
     return sendResponse(res, statusCode, false, null, error.message || 'Server error processing contribution.', error.errorDetails || {
       code: 'CONTRIBUTION_ERROR',
-      details: error.message,
+      details: String(error), // Ensure details are stringifiable
     });
   }
 };
 
 
-// Get progress for a special offering
 exports.getSpecialOfferingProgress = async (req, res) => {
   const { identifier } = req.params;
   debugLog(`Fetching progress for special offering: ${identifier}`);
@@ -527,12 +567,23 @@ exports.getSpecialOfferingProgress = async (req, res) => {
 
     const contributions = await prisma.payment.aggregate({
       _sum: { amount: true },
-      where: { specialOfferingId: offering.id, status: 'COMPLETED', paymentType: 'SPECIAL_OFFERING_CONTRIBUTION' },
+      where: { 
+        specialOfferingId: offering.id, 
+        status: 'COMPLETED', 
+        paymentType: 'SPECIAL_OFFERING_CONTRIBUTION' 
+      },
     });
 
     const totalContributed = contributions._sum.amount ? parseFloat(contributions._sum.amount.toString()) : 0;
     const targetGoal = offering.targetAmount ? parseFloat(offering.targetAmount.toString()) : 0;
-    const percentage = targetGoal > 0 ? Math.min(100, (totalContributed / targetGoal) * 100) : (targetGoal === 0 && totalContributed > 0 ? 100 : 0) ; // If no target, but contributions exist, show 100% of what's given.
+    
+    let percentage = 0;
+    if (targetGoal > 0) {
+        percentage = Math.min(100, (totalContributed / targetGoal) * 100);
+    } else if (totalContributed > 0) { // No target, but has contributions
+        percentage = 100; // Consider it 100% of what's given, or adjust as needed
+    }
+    
     const remainingAmount = targetGoal > 0 ? Math.max(0, targetGoal - totalContributed) : 0;
 
     const progressData = {

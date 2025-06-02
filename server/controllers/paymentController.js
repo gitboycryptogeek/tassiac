@@ -28,7 +28,7 @@ function debugLog(message, data = null) {
     }
   }
   console.log(logMessage);
-  
+  fs.appendFileSync(LOG_FILE, logMessage + '\n');
   return logMessage;
 }
 
@@ -47,7 +47,7 @@ const sendResponse = (res, statusCode, success, data, message, errorDetails = nu
 // Helper to check for view-only admin
 const isViewOnlyAdmin = (user) => {
   if (!user || !user.isAdmin) return false;
-  const viewOnlyUsernames = ['admin3', 'admin4', 'admin5']; // ADAPT THIS
+  const viewOnlyUsernames = ['admin3', 'admin4', 'admin5'];
   return viewOnlyUsernames.includes(user.username);
 };
 
@@ -61,8 +61,8 @@ async function logAdminActivity(actionType, targetId, initiatedBy, actionData = 
         initiatedBy,
         actionData,
         status: 'COMPLETED',
-        initiator: {
-          connect: { id: initiatedBy } // Connect to the user who initiated the action
+        initiator: { // Assuming 'initiator' is the relation name to the User model
+          connect: { id: initiatedBy }
         }
       },
     });
@@ -91,16 +91,16 @@ exports.getAllPayments = async (req, res) => {
     const take = parseInt(limit);
     const skip = (parseInt(page) - 1) * take;
 
-    const whereConditions = { isTemplate: false }; // Exclude special offering definitions
+    const whereConditions = { isTemplate: false };
 
     if (startDate) whereConditions.paymentDate = { ...whereConditions.paymentDate, gte: new Date(startDate) };
     if (endDate) whereConditions.paymentDate = { ...whereConditions.paymentDate, lte: new Date(new Date(endDate).setHours(23, 59, 59, 999)) };
     if (userId) whereConditions.userId = parseInt(userId);
-    if (department) whereConditions.department = { contains: department, mode: 'insensitive' }; // Case-insensitive search for department
+    if (department) whereConditions.department = { contains: department, mode: 'insensitive' };
     if (status) whereConditions.status = status;
 
     if (paymentType && paymentType !== 'ALL') {
-      whereConditions.paymentType = paymentType; // Includes TITHE, OFFERING, DONATION, EXPENSE, SPECIAL_OFFERING_CONTRIBUTION
+      whereConditions.paymentType = paymentType;
     }
 
     if (search) {
@@ -231,55 +231,67 @@ exports.getPaymentStats = async (req, res) => {
 
     const totalRevenueResult = await prisma.payment.aggregate({ _sum: { amount: true }, where: { ...commonWhere, isExpense: false } });
     const totalExpensesResult = await prisma.payment.aggregate({ _sum: { amount: true }, where: { ...commonWhere, isExpense: true } });
-    const platformFeesResult = await prisma.payment.aggregate({ _sum: { platformFee: true }, where: commonWhere });
+    const platformFeesResult = await prisma.payment.aggregate({ _sum: { platformFee: true }, where: { ...commonWhere } });
 
     const totalRevenue = totalRevenueResult._sum.amount || new Prisma.Decimal(0);
     const totalExpenses = totalExpensesResult._sum.amount || new Prisma.Decimal(0);
     const totalPlatformFees = platformFeesResult._sum.platformFee || new Prisma.Decimal(0);
 
-    let monthlyData = [];
-    // Prisma does not directly support date part extraction in a portable way for group by like strftime or TO_CHAR without raw queries.
-    // For simplicity here, we fetch last 12 months of data and aggregate in JS, or use $queryRaw.
-    // Using $queryRaw for better performance and DB-side aggregation:
-     if (prisma.$queryRawUnsafe) { // Check if available (depends on Prisma version and preview features)
-        monthlyData = await prisma.$queryRawUnsafe(`
+    let monthlyData;
+    const isPostgres = prisma._engineConfig?.activeProvider === 'postgresql';
+
+    if (isPostgres) {
+        monthlyData = await prisma.$queryRaw`
+            SELECT
+              TO_CHAR("paymentDate", 'YYYY-MM') as month,
+              SUM(CASE WHEN "isExpense" = FALSE THEN amount ELSE 0 END) as revenue,
+              SUM(CASE WHEN "isExpense" = TRUE THEN amount ELSE 0 END) as expenses
+            FROM "Payments"
+            WHERE status = 'COMPLETED' AND "isTemplate" = FALSE
+              AND "paymentDate" >= date_trunc('month', NOW() - INTERVAL '11 months')
+            GROUP BY month
+            ORDER BY month ASC;
+        `;
+    } else { // SQLite
+        monthlyData = await prisma.$queryRaw`
             SELECT
               strftime('%Y-%m', "paymentDate") as month,
               SUM(CASE WHEN "isExpense" = 0 THEN amount ELSE 0 END) as revenue,
               SUM(CASE WHEN "isExpense" = 1 THEN amount ELSE 0 END) as expenses
             FROM "Payments"
             WHERE status = 'COMPLETED' AND "isTemplate" = 0
-            AND "paymentDate" >= strftime('%Y-%m-%d', date('now', '-12 months'))
+              AND "paymentDate" >= date('now', '-12 months')
             GROUP BY month
             ORDER BY month ASC;
-        `); // SQLite version
-        // For PostgreSQL:
-        // TO_CHAR("paymentDate", 'YYYY-MM') as month, ... WHERE "paymentDate" >= date_trunc('month', NOW() - INTERVAL '11 months') ...
-    } else {
-        debugLog("prisma.$queryRawUnsafe not available, monthly data aggregation will be less efficient or omitted.");
-        // Fallback or alternative logic if raw query is not an option or desired
+        `;
     }
-
+    
 
     const paymentsByType = await prisma.payment.groupBy({
       by: ['paymentType'],
       _sum: { amount: true },
       where: { ...commonWhere, isExpense: false },
+      orderBy: { _sum: { amount: 'desc' } },
     });
+
     const expensesByDepartment = await prisma.payment.groupBy({
       by: ['department'],
       _sum: { amount: true },
       where: { ...commonWhere, isExpense: true, department: { not: null } },
+      orderBy: { _sum: { amount: 'desc' } },
     });
     
+    const pendingInquiries = await prisma.contactInquiry.count({ where: { status: 'PENDING' }});
+
     const stats = {
       revenue: parseFloat(totalRevenue.toString()),
       expenses: parseFloat(totalExpenses.toString()),
       netBalance: parseFloat(totalRevenue.minus(totalExpenses).toString()),
       platformFees: parseFloat(totalPlatformFees.toString()),
-      monthlyData: monthlyData.map(m => ({...m, revenue: Number(m.revenue), expenses: Number(m.expenses) })),
+      monthlyData: monthlyData.map(m => ({...m, revenue: Number(m.revenue || 0), expenses: Number(m.expenses || 0), net: Number(m.revenue || 0) - Number(m.expenses || 0) })),
       paymentsByType: paymentsByType.map(p => ({ type: p.paymentType, total: parseFloat((p._sum.amount || 0).toString()) })),
-      expensesByDepartment: expensesByDepartment.map(d => ({ department: d.department, total: parseFloat((d._sum.amount || 0).toString()) })),
+      expensesByDepartment: expensesByDepartment.map(d => ({ department: d.department || "Uncategorized", total: parseFloat((d._sum.amount || 0).toString()) })),
+      pendingInquiries,
     };
 
     debugLog('Admin: Payment stats retrieved.');
@@ -317,8 +329,8 @@ exports.initiatePayment = async (req, res) => {
     return sendResponse(res, 400, false, null, 'Invalid payment amount.', { code: 'INVALID_AMOUNT' });
   }
 
-  let platformFee = 5.00; // Example flat fee
-  if (paymentAmount > 500) { // Example tiered fee
+  let platformFee = 5.00; 
+  if (paymentAmount > 500) { 
     platformFee = Math.max(5.00, parseFloat((paymentAmount * 0.01).toFixed(2)));
   }
 
@@ -326,20 +338,37 @@ exports.initiatePayment = async (req, res) => {
     const result = await prisma.$transaction(async (tx) => {
       let paymentData = {
         userId,
-        amount: paymentAmount, // Store the actual amount for the church
+        amount: paymentAmount, 
         paymentType,
         paymentMethod: 'MPESA',
         description: description || `${paymentType} Contribution`,
         status: 'PENDING',
-        platformFee, // Store the calculated platform fee
+        platformFee, 
         paymentDate: new Date(),
         isExpense: false,
         isTemplate: false,
-        processedById: userId,
+        processedById: userId, // User initiating their own payment
       };
 
       if (paymentType === 'TITHE' && titheDistributionSDA) {
-        paymentData.titheDistributionSDA = titheDistributionSDA;
+        // Ensure titheDistributionSDA contains booleans
+        const sdaCategories = ['campMeetingExpenses', 'welfare', 'thanksgiving', 'stationFund', 'mediaMinistry'];
+        const validatedTitheDistribution = {};
+        let isValidBooleanObject = true;
+        for (const key of sdaCategories) {
+            if (titheDistributionSDA.hasOwnProperty(key) && typeof titheDistributionSDA[key] === 'boolean') {
+                validatedTitheDistribution[key] = titheDistributionSDA[key];
+            } else if (titheDistributionSDA.hasOwnProperty(key)) {
+                // If it's not a boolean, this is an issue based on new requirement
+                // For now, we'll coerce or ignore, but ideally frontend sends correct type
+                debugLog(`Warning: Tithe category ${key} was not a boolean: ${titheDistributionSDA[key]}`);
+                validatedTitheDistribution[key] = !!titheDistributionSDA[key]; // Coerce to boolean
+            } else {
+                validatedTitheDistribution[key] = false; // Default to false if not provided
+            }
+        }
+        paymentData.titheDistributionSDA = validatedTitheDistribution;
+
       } else if (paymentType === 'SPECIAL_OFFERING_CONTRIBUTION' && specialOfferingId) {
         const offering = await tx.specialOffering.findUnique({ where: { id: parseInt(specialOfferingId) } });
         if (!offering || !offering.isActive) {
@@ -352,7 +381,7 @@ exports.initiatePayment = async (req, res) => {
       const payment = await tx.payment.create({ data: paymentData });
       debugLog('Pending payment record created:', payment.id);
 
-      const mpesaAmountForStk = paymentAmount; // The amount to be charged to user via M-Pesa
+      const mpesaAmountForStk = paymentAmount; 
 
       const mpesaResponse = await initiateMpesaPayment(
         payment.id.toString(),
@@ -379,7 +408,6 @@ exports.initiatePayment = async (req, res) => {
   } catch (error) {
     debugLog('Error in initiatePayment controller:', error.message);
     console.error(error);
-    // If it's an error thrown from the transaction block with specific details
     if (error.message === 'Selected special offering is not available or not active.') {
         return sendResponse(res, 400, false, null, error.message, { code: 'OFFERING_NOT_AVAILABLE' });
     }
@@ -410,12 +438,11 @@ exports.addManualPayment = async (req, res) => {
   const {
     userId, amount, paymentType, description, paymentDate,
     department, isExpense = false, titheDistributionSDA, specialOfferingId,
-    paymentMethod = 'MANUAL', expenseReceiptUrl, reference, // Added reference
+    paymentMethod = 'MANUAL', expenseReceiptUrl, reference,
   } = req.body;
   const processedByAdminId = req.user.id;
 
   const paymentAmount = parseFloat(amount);
-  // Basic validations
   if (!userId || isNaN(paymentAmount) || paymentAmount <= 0 || !paymentType) {
     return sendResponse(res, 400, false, null, 'Missing or invalid required fields: userId, amount, paymentType.', { code: 'MISSING_INVALID_FIELDS' });
   }
@@ -434,11 +461,11 @@ exports.addManualPayment = async (req, res) => {
         paymentType,
         paymentMethod,
         description: description || `${paymentType} (${paymentMethod})`,
-        status: 'COMPLETED',
+        status: 'COMPLETED', // Manual payments by admin are typically completed
         paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
         processedById: processedByAdminId,
         isExpense: !!isExpense,
-        platformFee: 0,
+        platformFee: 0, // No platform fee for manual entries
         isTemplate: false,
         reference: reference || null
       };
@@ -446,22 +473,34 @@ exports.addManualPayment = async (req, res) => {
       if (isExpense) {
         if (!department) throw new Error('Department is required for expenses.');
         paymentData.department = department;
-        if (req.file) { // Assuming multer middleware adds 'file' to 'req'
-          paymentData.expenseReceiptUrl = `/uploads/expense_receipts/${req.file.filename}`; // Adjust path as needed
-        } else if (expenseReceiptUrl) { // Allow passing URL directly if already uploaded elsewhere
+        if (req.file) { 
+          paymentData.expenseReceiptUrl = `/uploads/expense_receipts/${req.file.filename}`;
+        } else if (expenseReceiptUrl) { 
           paymentData.expenseReceiptUrl = expenseReceiptUrl;
         }
       } else if (paymentType === 'TITHE') {
+        // Tithe distribution now expects an object of booleans
         if (!titheDistributionSDA || typeof titheDistributionSDA !== 'object') {
-          throw new Error('Valid tithe distribution data is required for tithe payments.');
+          throw new Error('Valid tithe distribution data (object of booleans) is required for tithe payments.');
         }
-        const distributedSum = Object.values(titheDistributionSDA).reduce((sum, val) => sum + parseFloat(val), 0);
-        if (Math.abs(distributedSum - paymentAmount) > 0.01) {
-           debugLog(`Warning: Tithe distribution sum (${distributedSum}) != payment amount (${paymentAmount}).`);
-           // Decide if this is a hard error or just a warning to log
-           // For now, allowing it but logging. Consider stricter validation.
+        const sdaCategories = ['campMeetingExpenses', 'welfare', 'thanksgiving', 'stationFund', 'mediaMinistry'];
+        const validatedTitheDistribution = {};
+        let hasAtLeastOneCategory = false;
+        for (const key of sdaCategories) {
+            if (titheDistributionSDA.hasOwnProperty(key) && typeof titheDistributionSDA[key] === 'boolean') {
+                validatedTitheDistribution[key] = titheDistributionSDA[key];
+                if(titheDistributionSDA[key] === true) hasAtLeastOneCategory = true;
+            } else {
+                 // Default to false if not provided or not a boolean
+                validatedTitheDistribution[key] = false;
+            }
         }
-        paymentData.titheDistributionSDA = titheDistributionSDA;
+        // Optionally, require at least one category to be checked if it's a tithe
+        // if (!hasAtLeastOneCategory) {
+        //     throw new Error('At least one tithe category must be designated for tithe payments.');
+        // }
+        paymentData.titheDistributionSDA = validatedTitheDistribution;
+
       } else if (paymentType === 'SPECIAL_OFFERING_CONTRIBUTION') {
         if (!specialOfferingId) throw new Error('Special Offering ID is required.');
         const offering = await tx.specialOffering.findUnique({ where: { id: parseInt(specialOfferingId) } });
@@ -472,7 +511,7 @@ exports.addManualPayment = async (req, res) => {
 
       const createdPayment = await tx.payment.create({ 
         data: paymentData,
-        include: { user: true }  // Include user relation in the created payment
+        include: { user: true } 
       });
       debugLog('Manual payment record created:', createdPayment.id);
 
@@ -485,20 +524,19 @@ exports.addManualPayment = async (req, res) => {
             userId: createdPayment.userId,
             generatedById: createdPayment.processedById,
             receiptDate: new Date(),
-            receiptData: {
-              paymentId: createdPayment.id,
-              amount: createdPayment.amount,
-              paymentType: createdPayment.paymentType,
-              userName: user.fullName, // Use the user object we queried earlier
-              paymentDate: createdPayment.paymentDate,
-              description: createdPayment.description
+            receiptData: { // Store data relevant for receipt generation
+              paymentId: createdPayment.id, amount: createdPayment.amount, paymentType: createdPayment.paymentType,
+              userName: user.fullName, paymentDate: createdPayment.paymentDate,
+              description: createdPayment.description,
+              // If titheDistributionSDA is boolean flags, store that for the receipt
+              titheDesignations: paymentType === 'TITHE' ? createdPayment.titheDistributionSDA : null 
             },
           }
         });
         const finalPayment = await tx.payment.update({ 
           where: { id: createdPayment.id }, 
           data: { receiptNumber },
-          include: { user: true }  // Include user relation in the final payment
+          include: { user: true }
         });
         debugLog(`Receipt ${receiptNumber} generated for payment ${createdPayment.id}`);
         await logAdminActivity('ADMIN_ADD_MANUAL_PAYMENT', finalPayment.id, req.user.id, { amount: finalPayment.amount, type: finalPayment.paymentType, userId: finalPayment.userId });
@@ -512,7 +550,7 @@ exports.addManualPayment = async (req, res) => {
   } catch (error) {
     debugLog('Error adding manual payment:', error.message);
     console.error(error);
-    return sendResponse(res, error.message === 'User not found.' ? 404 : (error.message.includes('required for') ? 400 : 500), false, null, error.message || 'Failed to add manual payment.', {
+    return sendResponse(res, error.message.includes('not found') || error.message.includes('not available') ? 404 : (error.message.includes('required for') ? 400 : 500), false, null, error.message || 'Failed to add manual payment.', {
       code: 'MANUAL_PAYMENT_ERROR',
       details: error.message,
     });
@@ -526,7 +564,7 @@ exports.mpesaCallback = async (req, res) => {
 
   if (!callbackData) {
     debugLog('Invalid M-Pesa callback structure.');
-    return res.status(400).json({ ResultCode: 1, ResultDesc: 'Invalid callback data' }); // Bad request for invalid structure
+    return res.status(400).json({ ResultCode: 1, ResultDesc: 'Invalid callback data' });
   }
 
   const { MerchantRequestID, CheckoutRequestID, ResultCode, ResultDesc, CallbackMetadata } = callbackData;
@@ -536,32 +574,32 @@ exports.mpesaCallback = async (req, res) => {
       const payment = await tx.payment.findFirst({
         where: {
           OR: [
-            { reference: CheckoutRequestID }, // Safaricom uses CheckoutRequestID
-            { transactionId: MerchantRequestID } // And MerchantRequestID for internal tracking
+            { reference: CheckoutRequestID },
+            { transactionId: MerchantRequestID }
           ],
-          status: 'PENDING', // Important: Only process PENDING payments
+          status: 'PENDING',
         },
         include: { user: true }
       });
 
       if (!payment) {
-        debugLog(`No matching PENDING payment found for CheckoutRequestID: ${CheckoutRequestID} or MerchantRequestID: ${MerchantRequestID}. It might have already been processed, does not exist, or is not PENDING.`);
-        return { alreadyProcessedOrNotFound: true }; // Indicate special handling needed
+        debugLog(`No matching PENDING payment found for CheckoutRequestID: ${CheckoutRequestID} or MerchantRequestID: ${MerchantRequestID}.`);
+        return { alreadyProcessedOrNotFound: true };
       }
 
       debugLog(`Processing callback for payment ID: ${payment.id}`);
       let updatedPaymentData = {};
 
-      if (String(ResultCode) === "0") { // Successful M-Pesa transaction
+      if (String(ResultCode) === "0") { // Successful
         const metadataItems = CallbackMetadata?.Item;
         let mpesaReceiptNumber = null;
-        let transactionDate = payment.paymentDate; // Default to original paymentDate
+        let transactionDate = payment.paymentDate; 
 
         if (metadataItems && Array.isArray(metadataItems)) {
           mpesaReceiptNumber = metadataItems.find(item => item.Name === 'MpesaReceiptNumber')?.Value;
           const mpesaTransactionDateStr = metadataItems.find(item => item.Name === 'TransactionDate')?.Value;
           if (mpesaTransactionDateStr) {
-            try { // Format is YYYYMMDDHHMMSS
+            try { 
               const year = mpesaTransactionDateStr.substring(0, 4);
               const month = mpesaTransactionDateStr.substring(4, 6);
               const day = mpesaTransactionDateStr.substring(6, 8);
@@ -576,14 +614,14 @@ exports.mpesaCallback = async (req, res) => {
         const internalReceiptNumber = generateReceiptNumber(payment.paymentType);
         updatedPaymentData = {
           status: 'COMPLETED',
-          transactionId: mpesaReceiptNumber || payment.transactionId,
+          transactionId: mpesaReceiptNumber || payment.transactionId, // Use MpesaReceiptNumber as primary transactionId
           receiptNumber: internalReceiptNumber,
-          paymentDate: transactionDate, // Update with M-Pesa's transaction date
+          paymentDate: transactionDate, 
         };
 
         await tx.payment.update({ where: { id: payment.id }, data: updatedPaymentData });
 
-        if (payment.user) { // Ensure user exists
+        if (payment.user) {
             await tx.receipt.create({
                 data: {
                 receiptNumber: internalReceiptNumber,
@@ -594,7 +632,9 @@ exports.mpesaCallback = async (req, res) => {
                 receiptData: {
                     paymentId: payment.id, amount: payment.amount, paymentType: payment.paymentType,
                     userName: payment.user.fullName, paymentDate: transactionDate,
-                    description: payment.description, mpesaReceipt: mpesaReceiptNumber
+                    description: payment.description, mpesaReceipt: mpesaReceiptNumber,
+                    // Store tithe designations if it was a tithe payment
+                    titheDesignations: payment.paymentType === 'TITHE' ? payment.titheDistributionSDA : null 
                 },
                 },
             });
@@ -615,25 +655,21 @@ exports.mpesaCallback = async (req, res) => {
             debugLog(`User not found for payment ID ${payment.id}, cannot create receipt or send SMS.`);
         }
          return { success: true, paymentId: payment.id };
-      } else { // M-Pesa transaction failed
+      } else { // Failed
         updatedPaymentData = {
           status: 'FAILED',
-          description: `${payment.description || ''} (M-Pesa Callback Failed: ${ResultDesc})`,
+          description: `${payment.description || ''} (M-Pesa Callback Failed: ${ResultDesc})`.substring(0, 191), // Ensure description fits if it's a String
         };
         await tx.payment.update({ where: { id: payment.id }, data: updatedPaymentData });
         debugLog(`Payment ${payment.id} FAILED. Reason: ${ResultDesc}`);
         return { success: false, reason: ResultDesc, paymentId: payment.id };
       }
     });
-    // If result.alreadyProcessedOrNotFound, it means we acknowledged to M-Pesa but didn't find a PENDING payment.
-    // This is fine, no further action here.
   } catch (error) {
     debugLog('Critical error in M-Pesa callback processing:', error.message);
     console.error(error);
-    // The transaction will be rolled back by Prisma if an error is thrown from within it.
   }
   
-  // Always acknowledge the callback to M-Pesa to prevent retries from their end
   return res.status(200).json({ ResultCode: 0, ResultDesc: 'Callback received and processed.' });
 };
 
@@ -699,13 +735,11 @@ exports.deletePayment = async (req, res) => {
     await prisma.$transaction(async (tx) => {
       const payment = await tx.payment.findUnique({ where: { id: numericPaymentId } });
       if (!payment) {
-        // Throw an error that will be caught by the outer try-catch and result in a 404
         const err = new Error('Payment not found.');
-        err.statusCode = 404; // Custom property
+        err.statusCode = 404; 
         throw err;
       }
 
-      // Delete associated receipts first
       await tx.receipt.deleteMany({ where: { paymentId: numericPaymentId } });
       debugLog(`Associated receipts for payment ${numericPaymentId} deleted.`);
 
