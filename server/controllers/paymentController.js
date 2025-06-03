@@ -82,6 +82,8 @@ exports.getAllPayments = async (req, res) => {
       department,
       status,
       search,
+      specialOfferingId,
+      titheCategory
     } = req.query;
 
     const take = parseInt(limit);
@@ -89,16 +91,37 @@ exports.getAllPayments = async (req, res) => {
 
     const whereConditions = { isTemplate: false };
 
-    if (startDate) whereConditions.paymentDate = { ...whereConditions.paymentDate, gte: new Date(startDate) };
-    if (endDate) whereConditions.paymentDate = { ...whereConditions.paymentDate, lte: new Date(new Date(endDate).setHours(23, 59, 59, 999)) };
+    // Basic date filters
+    if (startDate || endDate) {
+      whereConditions.paymentDate = {};
+      if (startDate) whereConditions.paymentDate.gte = new Date(startDate);
+      if (endDate) whereConditions.paymentDate.lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
+    }
+    
+    // Enhanced payment type filtering
+    if (paymentType === 'TITHE') {
+      whereConditions.paymentType = 'TITHE';
+      if (titheCategory) {
+        whereConditions.titheDistributionSDA = {
+          path: `$.${titheCategory}`,
+          equals: true
+        };
+      }
+    } else if (paymentType === 'SPECIAL_OFFERING_CONTRIBUTION') {
+      whereConditions.paymentType = 'SPECIAL_OFFERING_CONTRIBUTION';
+      if (specialOfferingId) {
+        whereConditions.specialOfferingId = parseInt(specialOfferingId);
+      }
+    } else if (paymentType) {
+      whereConditions.paymentType = paymentType;
+    }
+
+    // Other filters
     if (userId) whereConditions.userId = parseInt(userId);
     if (department) whereConditions.department = { contains: department, mode: 'insensitive' };
     if (status) whereConditions.status = status;
 
-    if (paymentType && paymentType !== 'ALL') {
-      whereConditions.paymentType = paymentType;
-    }
-
+    // Enhanced search functionality
     if (search) {
       const searchClauses = [
         { description: { contains: search, mode: 'insensitive' } },
@@ -107,25 +130,44 @@ exports.getAllPayments = async (req, res) => {
         { receiptNumber: { contains: search, mode: 'insensitive' } },
         { user: { fullName: { contains: search, mode: 'insensitive' } } },
         { user: { username: { contains: search, mode: 'insensitive' } } },
+        { specialOffering: { name: { contains: search, mode: 'insensitive' } } }
       ];
+      
       const searchAmount = parseFloat(search);
       if (!isNaN(searchAmount)) {
         searchClauses.push({ amount: searchAmount });
       }
-      if (whereConditions.OR) {
-        whereConditions.AND = [ {OR: whereConditions.OR }, {OR: searchClauses}];
-        delete whereConditions.OR;
-      } else {
-        whereConditions.OR = searchClauses;
-      }
+      
+      whereConditions.OR = searchClauses;
     }
 
     const payments = await prisma.payment.findMany({
       where: whereConditions,
       include: {
-        user: { select: { id: true, username: true, fullName: true, phone: true } },
-        processor: { select: { id: true, username: true, fullName: true } },
-        specialOffering: { select: { id: true, name: true, offeringCode: true } }
+        user: { 
+          select: { 
+            id: true, 
+            username: true, 
+            fullName: true, 
+            phone: true, 
+            email: true 
+          } 
+        },
+        specialOffering: {
+          select: {
+            id: true,
+            name: true,
+            offeringCode: true,
+            description: true
+          }
+        },
+        processor: {
+          select: {
+            id: true,
+            username: true,
+            fullName: true
+          }
+        }
       },
       orderBy: { paymentDate: 'desc' },
       skip,
@@ -136,7 +178,11 @@ exports.getAllPayments = async (req, res) => {
 
     debugLog(`Admin: Retrieved ${payments.length} of ${totalPayments} payments.`);
     return sendResponse(res, 200, true, {
-      payments,
+      payments: payments.map(p => ({
+        ...p,
+        amount: parseFloat(p.amount.toString()),
+        platformFee: p.platformFee ? parseFloat(p.platformFee.toString()) : 0
+      })),
       totalPages: Math.ceil(totalPayments / take),
       currentPage: parseInt(page),
       totalPayments,
@@ -145,7 +191,8 @@ exports.getAllPayments = async (req, res) => {
   } catch (error) {
     debugLog('Admin: Error getting all payments:', error.message);
     console.error(error);
-    return sendResponse(res, 500, false, null, 'Server error fetching payments.', { code: 'SERVER_ERROR', details: error.message });
+    return sendResponse(res, 500, false, null, 'Server error fetching payments.', 
+      { code: 'SERVER_ERROR', details: error.message });
   }
 };
 

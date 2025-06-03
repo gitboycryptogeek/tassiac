@@ -12,7 +12,7 @@ export class AdminPaymentsView extends BaseComponent {
     }
 
     this.apiService = window.apiService;  
-    if (!this.apiService) { // Added check for apiService
+    if (!this.apiService) {
       console.error('ApiService not initialized at AdminPaymentsView construction');
       throw new Error('ApiService not initialized');
     }
@@ -32,7 +32,11 @@ export class AdminPaymentsView extends BaseComponent {
     this.success = null;
 
     this.filters = {
-      search: ''  
+      search: '',
+      paymentType: '',
+      startDate: '',
+      endDate: '',
+      status: ''
     };
 
     this.exportFilterState = {
@@ -40,6 +44,7 @@ export class AdminPaymentsView extends BaseComponent {
         endDate: '',
         paymentType: '',
         specialOffering: '',
+        titheCategory: '',
         format: '' 
     };
 
@@ -74,10 +79,7 @@ export class AdminPaymentsView extends BaseComponent {
     this.handleResize = this.handleResize.bind(this);
     window.addEventListener('resize', this.handleResize);
 
-    // Initial data fetch
-    // Consider wrapping these in an async init() method for clearer control
-    // For now, keeping as is, assuming the main issue is backend.
-    console.log('AdminPaymentsView: Kicking off initial data fetches.');
+    console.log('AdminPaymentsView: Initializing with data fetches.');
     this.fetchAllPaymentsData();
     this.fetchSpecialOfferings(); 
   }
@@ -98,9 +100,7 @@ export class AdminPaymentsView extends BaseComponent {
   }
 
   async render() {
-    // console.log('AdminPaymentsView: render() called. isLoading:', this.isLoading, '_fetchInProgress:', this._fetchInProgress, 'isRendering:', this.isRendering);
     if (this.isRendering && document.readyState !== 'complete') {
-        // console.log('AdminPaymentsView: Bailing from render due to isRendering and document.readyState');
         return null;
     }
     this.isRendering = true;
@@ -124,10 +124,8 @@ export class AdminPaymentsView extends BaseComponent {
       container.appendChild(this.renderFiltersCard());  
       
       if (this.isLoading && this._fetchInProgress) {  
-        // console.log('AdminPaymentsView: Rendering loading state.');
         container.appendChild(this.renderLoading());  
       } else { 
-        // console.log('AdminPaymentsView: Rendering payments table.');
         container.appendChild(this.renderPaymentsTable());  
       }
       
@@ -144,7 +142,6 @@ export class AdminPaymentsView extends BaseComponent {
       
       this.isRendered = true;  
       this.isRendering = false;
-      // console.log('AdminPaymentsView: render() completed.');
       return container;
     } catch (error) {
       console.error('Render error in AdminPaymentsView:', error);
@@ -243,23 +240,60 @@ export class AdminPaymentsView extends BaseComponent {
     filtersCard.appendChild(this.createElement('div', { className: 'card-glow' }));
     
     const filtersHeader = this.createElement('div', { className: 'filters-header' });
-    filtersHeader.appendChild(this.createElement('h2', { className: 'filters-title' }, '🔍 Search Payments'));
+    filtersHeader.appendChild(this.createElement('h2', { className: 'filters-title' }, '🔍 Search & Filter Payments'));
     filtersCard.appendChild(filtersHeader);
     
     const filtersContent = this.createElement('div', { className: 'filters-content' });
     const filtersForm = this.createElement('form', { id: 'payment-filters-form', className: 'filters-form' });
     
-    const searchGroup = this.createFormGroup('Search (All Fields)', 'search', 'text', 'Type any keyword...');
+    const searchGroup = this.createFormGroup('Search', 'search', 'text', 'Search by name, phone, description...');
     searchGroup.querySelector('input').value = this.filters.search;
     
-    const formActions = this.createElement('div', { className: 'filters-form-actions' });
-    const resetButton = this.createFuturisticButton('Reset Search', '#64748b', () => this.resetFilters());
-    formActions.append(resetButton);
+    const typeGroup = this.createFormGroup('Payment Type', 'paymentType', 'select');
+    const typeSelect = typeGroup.querySelector('select');
+    typeSelect.innerHTML = `
+      <option value="">All Types</option>
+      <option value="TITHE">Tithe</option>
+      <option value="OFFERING">Offering</option>
+      <option value="DONATION">Donation</option>
+      <option value="EXPENSE">Expense</option>
+      <option value="SPECIAL_OFFERING_CONTRIBUTION">Special Offerings</option>
+    `;
+    typeSelect.value = this.filters.paymentType;
+    
+    const statusGroup = this.createFormGroup('Status', 'status', 'select');
+    const statusSelect = statusGroup.querySelector('select');
+    statusSelect.innerHTML = `
+      <option value="">All Status</option>
+      <option value="COMPLETED">Completed</option>
+      <option value="PENDING">Pending</option>
+      <option value="FAILED">Failed</option>
+      <option value="CANCELLED">Cancelled</option>
+    `;
+    statusSelect.value = this.filters.status;
+    
+    const startDateGroup = this.createFormGroup('Start Date', 'startDate', 'date');
+    startDateGroup.querySelector('input').value = this.filters.startDate;
+    
+    const endDateGroup = this.createFormGroup('End Date', 'endDate', 'date');
+    endDateGroup.querySelector('input').value = this.filters.endDate;
 
-    filtersForm.append(searchGroup, formActions); 
+    const formActions = this.createElement('div', { className: 'filters-form-actions' });
+    const searchButton = this.createFuturisticButton('Search Now', '#4f46e5', () => this.executeSearch());
+    const resetButton = this.createFuturisticButton('Reset Filters', '#64748b', () => this.resetFilters());
+    formActions.append(searchButton, resetButton);
+
+    filtersForm.append(searchGroup, typeGroup, statusGroup, startDateGroup, endDateGroup, formActions); 
     filtersContent.appendChild(filtersForm);
     filtersCard.appendChild(filtersContent);
     return filtersCard;
+  }
+
+  executeSearch() {
+    this.updateFiltersFromForm();
+    this.currentPage = 1;
+    this.applyFiltersAndPagination(this.filters);
+    this.updateView();
   }
   
   createFormGroup(label, id, type, placeholder = '') {
@@ -329,7 +363,7 @@ export class AdminPaymentsView extends BaseComponent {
       const cellData = [
           payment.id,
           this.formatDate(new Date(payment.paymentDate)),
-          this.renderUserCell(payment.User), // Changed from payment.user to payment.User
+          this.renderUserCell(payment.user),
           this.createPaymentTypeBadge(payment),
           payment.paymentMethod,
           this.renderAmountCell(payment),
@@ -391,8 +425,8 @@ export class AdminPaymentsView extends BaseComponent {
     viewButton.appendChild(document.createTextNode('View'));
     actionsContainer.appendChild(viewButton);
 
-    if (payment.User && payment.User.phone) { // Changed from payment.user to payment.User
-      const smsButton = this.createElement('button', { className: 'action-button send-sms-btn', 'data-id': payment.id, 'data-phone': payment.User.phone, 'data-name': payment.User.fullName });
+    if (payment.user && payment.user.phone) {
+      const smsButton = this.createElement('button', { className: 'action-button send-sms-btn', 'data-id': payment.id, 'data-phone': payment.user.phone, 'data-name': payment.user.fullName });
       const smsStateData = this.smsState.get(payment.id) || { sent: false, sending: false };
       this.styleSmsButton(smsButton, smsStateData.sending ? 'sending' : (smsStateData.sent ? 'sent' : 'default'));
       actionsContainer.appendChild(smsButton);
@@ -430,17 +464,23 @@ export class AdminPaymentsView extends BaseComponent {
     if (payment.paymentType === 'OFFERING') return 'Offering';
     if (payment.paymentType === 'DONATION') return 'Donation';
     
+    if (payment.paymentType === 'SPECIAL_OFFERING_CONTRIBUTION' && payment.specialOffering) {
+      return this.escapeHtml(payment.specialOffering.name || payment.specialOffering.description || 'Special Offering');
+    }
+    
     if (payment.paymentType && payment.paymentType.startsWith('SPECIAL_')) {
-      const specialOffering = this.specialOfferings.find(o =>  
-        o.paymentType === payment.paymentType || o.offeringType === payment.paymentType || o.offeringCode === payment.paymentType // Added offeringCode check
+      const specialOffering = this.specialOfferings.find(o => 
+        o.id === payment.specialOfferingId || 
+        o.offeringCode === payment.paymentType.replace('SPECIAL_', '') ||
+        o.paymentType === payment.paymentType
       );
       if (specialOffering) {
-        return this.escapeHtml(specialOffering.description || specialOffering.name || `Special: ${payment.paymentType.replace('SPECIAL_', '')}`);
+        return this.escapeHtml(specialOffering.name || specialOffering.description || `Special: ${payment.paymentType.replace('SPECIAL_', '')}`);
       }
       return `Special: ${this.escapeHtml(payment.paymentType.replace('SPECIAL_', '').replace(/_/g, ' '))}`;
     }
     
-    const knownTypes = { 'OTHER': 'Other', 'SPECIAL_OFFERING_CONTRIBUTION': 'Special Contribution' }; // Added for clarity
+    const knownTypes = { 'OTHER': 'Other', 'SPECIAL_OFFERING_CONTRIBUTION': 'Special Contribution' };
     return knownTypes[payment.paymentType] || (payment.paymentType ? this.escapeHtml(payment.paymentType.charAt(0).toUpperCase() + payment.paymentType.slice(1).toLowerCase().replace(/_/g, ' ')) : 'Unknown');
   }
 
@@ -464,15 +504,14 @@ export class AdminPaymentsView extends BaseComponent {
       if (!this.isProcessingQueue) this.processApiRequestQueue();
     });
   }
+  
   async processApiRequestQueue() {  
     if (this.apiRequestQueue.length === 0) { this.isProcessingQueue = false; return; }
     this.isProcessingQueue = true;
     const { request, resolve, reject } = this.apiRequestQueue.shift();
     try { 
-        // console.log('AdminPaymentsView: Processing API request from queue.');
         resolve(await request()); 
     } catch (error) { 
-        // console.error('AdminPaymentsView: Error in queued API request:', error);
         reject(error); 
     } finally { 
         setTimeout(() => this.processApiRequestQueue(), this.requestThrottleTime); 
@@ -480,30 +519,23 @@ export class AdminPaymentsView extends BaseComponent {
   }
     
   async fetchAllPaymentsData() {
-    // console.log('AdminPaymentsView: fetchAllPaymentsData() started.');
     if (this._fetchInProgress) {
-        // console.log('AdminPaymentsView: fetchAllPaymentsData() already in progress, returning.');
         return;
     }
     this._fetchInProgress = true;
     this.isLoading = true;
     this.error = null;  
-    if(this.isRendered && !this.isRendering) this.updateView(); // Avoid calling updateView if another render is in progress
+    if(this.isRendered && !this.isRendering) this.updateView();
 
     try {
-      // console.log('AdminPaymentsView: Calling API for /payment/all');
-      const response = await this.queueApiRequest(() => this.apiService.get('/payment/all'));  
-      // console.log('AdminPaymentsView: API response for /payment/all:', response);
+      const response = await this.queueApiRequest(() => this.apiService.getAllAdminPayments());
 
-      // apiService.get returns the 'data' object from the backend.
-      // paymentController.getAllPayments returns: { payments, totalPages, currentPage, totalPayments }
-      // So, response here is { payments, totalPages, ... }
       if (response && Array.isArray(response.payments)) {
-        this.allPaymentsMasterList = response.payments.sort((a, b) => new Date(b.paymentDate).getTime() - new Date(a.paymentDate).getTime()); // Ensure correct date sorting
-        // console.log('AdminPaymentsView: Payments data processed, count:', this.allPaymentsMasterList.length);
+        // Sort by ID descending (latest first)
+        this.allPaymentsMasterList = response.payments.sort((a, b) => b.id - a.id);
       } else {
         this.allPaymentsMasterList = [];
-        console.warn("AdminPaymentsView: No payments data received or in unexpected format from /payment/all:", response);
+        console.warn("AdminPaymentsView: No payments data received or in unexpected format:", response);
       }
       this.applyFiltersAndPagination(this.filters);  
     } catch (error) {
@@ -512,10 +544,9 @@ export class AdminPaymentsView extends BaseComponent {
       this.allPaymentsMasterList = [];
       this.applyFiltersAndPagination(this.filters);  
     } finally {
-      // console.log('AdminPaymentsView: fetchAllPaymentsData() finally block. Setting isLoading=false, _fetchInProgress=false.');
       this.isLoading = false;
       this._fetchInProgress = false;
-      if(!this.isRendering) this.updateView(); // Avoid calling updateView if another render is in progress
+      if(!this.isRendering) this.updateView();
     }
   }
 
@@ -524,15 +555,48 @@ export class AdminPaymentsView extends BaseComponent {
 
     if (sourceFilters.search) {
       const searchTerm = sourceFilters.search.toLowerCase();
-      filtered = filtered.filter(p =>  
-        (p.User?.fullName?.toLowerCase().includes(searchTerm)) || // Changed from p.user to p.User
-        (p.User?.phone?.includes(searchTerm)) || // Changed from p.user to p.User
-        (p.description?.toLowerCase().includes(searchTerm)) ||
-        (p.paymentMethod?.toLowerCase().includes(searchTerm)) ||
-        (p.id?.toString().includes(searchTerm)) ||  
-        (this.getPaymentTypeDisplayName(p).toLowerCase().includes(searchTerm)) ||
-        (p.receiptNumber?.toLowerCase().includes(searchTerm)) // Added receipt number to search
-      );
+      filtered = filtered.filter(p => {
+        // Basic fields search
+        const basicMatch = (p.user?.fullName?.toLowerCase().includes(searchTerm)) ||
+          (p.user?.phone?.includes(searchTerm)) ||
+          (p.description?.toLowerCase().includes(searchTerm)) ||
+          (p.paymentMethod?.toLowerCase().includes(searchTerm)) ||
+          (p.id?.toString().includes(searchTerm)) ||  
+          (this.getPaymentTypeDisplayName(p).toLowerCase().includes(searchTerm)) ||
+          (p.receiptNumber?.toLowerCase().includes(searchTerm)) ||
+          (p.status?.toLowerCase().includes(searchTerm));
+        
+        // Special offering name search
+        const specialOfferingMatch = p.specialOffering?.name?.toLowerCase().includes(searchTerm) ||
+          p.specialOffering?.description?.toLowerCase().includes(searchTerm);
+        
+        // Tithe distribution search
+        const titheMatch = p.paymentType === 'TITHE' && p.titheDistributionSDA && 
+          Object.keys(p.titheDistributionSDA).some(key => 
+            p.titheDistributionSDA[key] === true && 
+            (key.toLowerCase().includes(searchTerm) || 
+             this.getTitheFieldDisplayName(key).toLowerCase().includes(searchTerm))
+          );
+        
+        return basicMatch || specialOfferingMatch || titheMatch;
+      });
+    }
+
+    if (sourceFilters.paymentType) {
+      if (sourceFilters.paymentType === 'SPECIAL_OFFERING_CONTRIBUTION' || sourceFilters.paymentType === 'SPECIAL') {
+        // Filter for all special offerings
+        filtered = filtered.filter(p => 
+          p.paymentType === 'SPECIAL_OFFERING_CONTRIBUTION' || 
+          (p.paymentType && p.paymentType.startsWith('SPECIAL_')) ||
+          p.specialOfferingId !== null
+        );
+      } else {
+        filtered = filtered.filter(p => p.paymentType === sourceFilters.paymentType);
+      }
+    }
+
+    if (sourceFilters.status) {
+      filtered = filtered.filter(p => p.status === sourceFilters.status);
     }
 
     if (sourceFilters.startDate) {
@@ -544,34 +608,61 @@ export class AdminPaymentsView extends BaseComponent {
             }
         } catch (e) { console.warn("Invalid start date for filter:", sourceFilters.startDate); }
     }
-    if (sourceFilters.endDate) {
-        try {
-            const endDate = new Date(sourceFilters.endDate);
-            endDate.setHours(23,59,59,999);  
-            if (!isNaN(endDate)) { 
-                filtered = filtered.filter(p => new Date(p.paymentDate) <= endDate);
-            }
-        } catch (e) { console.warn("Invalid end date for filter:", sourceFilters.endDate); }
-    }
     
-    if (sourceFilters.paymentType) {
-        if (sourceFilters.paymentType === 'SPECIAL') { // For export filter: general "Special" category
-            if (sourceFilters.specialOffering) {  // A specific special offering is chosen from dropdown
-                // Filter by the specific offering code/ID (value from select)
-                filtered = filtered.filter(p => p.paymentType === sourceFilters.specialOffering || p.specialOffering?.offeringCode === sourceFilters.specialOffering || p.specialOffering?.id?.toString() === sourceFilters.specialOffering);
-            } else {  // All types of special offerings
-                filtered = filtered.filter(p => p.paymentType === 'SPECIAL_OFFERING_CONTRIBUTION' || (p.paymentType && p.paymentType.startsWith('SPECIAL_')));
-            }
-        } else {  // Specific non-special type
-            filtered = filtered.filter(p => p.paymentType === sourceFilters.paymentType);
-        }
+    
+    if (sourceFilters.endDate) {
+      try {
+          const endDate = new Date(sourceFilters.endDate);
+          endDate.setHours(23,59,59,999);  
+          if (!isNaN(endDate)) { 
+              filtered = filtered.filter(p => new Date(p.paymentDate) <= endDate);
+          }
+      } catch (e) { console.warn("Invalid end date for filter:", sourceFilters.endDate); }
+  }
+    
+  if (sourceFilters.specialOffering && sourceFilters.specialOffering !== '') {
+    filtered = filtered.filter(p => {
+      // First check if this is a special offering payment
+      if (p.paymentType !== 'SPECIAL_OFFERING_CONTRIBUTION' && 
+          !(p.paymentType && p.paymentType.startsWith('SPECIAL_')) &&
+          !p.specialOfferingId) {
+        return false;
+      }
+      
+      // Match by special offering ID
+      const filterOfferingId = sourceFilters.specialOffering;
+      return p.specialOfferingId?.toString() === filterOfferingId ||
+             p.specialOffering?.id?.toString() === filterOfferingId;
+    });
+  }
+    
+    // Enhanced tithe category filter
+    if (sourceFilters.titheCategory && sourceFilters.titheCategory !== '') {
+      filtered = filtered.filter(p => {
+        if (p.paymentType !== 'TITHE') return false;
+        if (!p.titheDistributionSDA || typeof p.titheDistributionSDA !== 'object') return false;
+        
+        // Check if the specific category is true
+        return p.titheDistributionSDA[sourceFilters.titheCategory] === true;
+      });
     }
     
     if (sourceFilters.userId) {  
-        filtered = filtered.filter(p => p.User && p.User.id?.toString() === sourceFilters.userId);  // Changed from p.user to p.User
+        filtered = filtered.filter(p => p.user && p.user.id?.toString() === sourceFilters.userId);
     }
     
     return filtered;
+  }
+
+  getTitheFieldDisplayName(fieldKey) {
+    const titheFields = {
+      'campMeetingExpenses': 'Camp Meeting Expenses',
+      'welfare': 'Welfare', 
+      'thanksgiving': 'Thanksgiving',
+      'stationFund': 'Station Fund',
+      'mediaMinistry': 'Media Ministry'
+    };
+    return titheFields[fieldKey] || fieldKey;
   }
 
   applyFiltersAndPagination(filterSetToUse) {
@@ -579,7 +670,7 @@ export class AdminPaymentsView extends BaseComponent {
     this.totalFilteredPayments = filteredPayments.length;
     this.totalPages = Math.ceil(this.totalFilteredPayments / this.pageSize) || 1;
     this.currentPage = Math.max(1, Math.min(this.currentPage, this.totalPages));  
-    this.payments = filteredPayments;  // This now holds the filtered (but not paginated) list
+    this.payments = filteredPayments;
   }
   
   showExportFilterModal(format) {
@@ -595,6 +686,9 @@ export class AdminPaymentsView extends BaseComponent {
         const specialOfferingGroup = modal.querySelector('#export-special-offering-group');
         const specialOfferingSelect = modal.querySelector('#export-special-offering');
         
+        const titheCategoryGroup = modal.querySelector('#export-tithe-category-group');
+        const titheCategorySelect = modal.querySelector('#export-tithe-category');
+        
         this.populateExportFilterSpecialOfferings(); 
 
         if (paymentTypeSelect.value === 'SPECIAL') {
@@ -602,12 +696,20 @@ export class AdminPaymentsView extends BaseComponent {
             specialOfferingSelect.value = this.exportFilterState.specialOffering || '';
         } else {
             specialOfferingGroup.style.display = 'none';
-            specialOfferingSelect.value = ''; 
+            specialOfferingSelect.value = '';
+        }
+
+        if (paymentTypeSelect.value === 'TITHE') {
+            titheCategoryGroup.style.display = 'grid';
+            titheCategorySelect.value = this.exportFilterState.titheCategory || '';
+        } else {
+            titheCategoryGroup.style.display = 'none';
+            titheCategorySelect.value = '';
         }
         
         const searchInfoP = modal.querySelector('#export-search-info');
         if (searchInfoP) {
-            searchInfoP.innerHTML = `The current main search term ("<strong style="color:#e0e7ff;">${this.escapeHtml(this.filters.search) || 'None'}</strong>") will also be applied.`;
+            searchInfoP.innerHTML = `Current filters will be applied: Search="${this.escapeHtml(this.filters.search) || 'None'}", Type="${this.filters.paymentType || 'All'}", Status="${this.filters.status || 'All'}"`;
         }
 
         modal.style.display = 'flex';
@@ -622,23 +724,29 @@ export class AdminPaymentsView extends BaseComponent {
         startDate: modal.querySelector('#export-start-date').value,
         endDate: modal.querySelector('#export-end-date').value,
         paymentType: modal.querySelector('#export-payment-type').value,
-        specialOffering: '', 
-        search: this.filters.search 
+        specialOffering: '',
+        titheCategory: '',
+        search: this.filters.search,
+        status: this.filters.status
     };
 
     if (exportFilters.paymentType === 'SPECIAL') {
         exportFilters.specialOffering = modal.querySelector('#export-special-offering').value;
     }
 
+    if (exportFilters.paymentType === 'TITHE') {
+        exportFilters.titheCategory = modal.querySelector('#export-tithe-category').value;
+    }
+
     this.exportFilterState.startDate = exportFilters.startDate;
     this.exportFilterState.endDate = exportFilters.endDate;
     this.exportFilterState.paymentType = exportFilters.paymentType;
     this.exportFilterState.specialOffering = exportFilters.specialOffering;
+    this.exportFilterState.titheCategory = exportFilters.titheCategory;
     
     modal.style.display = 'none'; 
     this.exportPayments(this.exportFilterState.format, exportFilters);
   }
-
 
   async exportPayments(format, exportSpecificFilters) {
     this.showMessage(`Preparing ${format.toUpperCase()} export...`, 'info');
@@ -656,21 +764,41 @@ export class AdminPaymentsView extends BaseComponent {
         const csvRows = [];
         csvRows.push(headers.join(','));  
 
+        let totalAmount = 0;
+        let totalExpenses = 0;
+        let totalRevenue = 0;
+
         paymentsToExport.forEach(p => {
+          const amount = parseFloat(p.amount) || 0;
+          totalAmount += amount;
+          if (p.isExpense) {
+            totalExpenses += amount;
+          } else {
+            totalRevenue += amount;
+          }
+
           const row = [
             p.id,
             this.formatDate(new Date(p.paymentDate)),
-            `"${p.User?.fullName?.replace(/"/g, '""') || ''}"`,  // Changed from p.user to p.User
-            p.User?.phone || '', // Changed from p.user to p.User
+            `"${p.user?.fullName?.replace(/"/g, '""') || ''}"`,
+            p.user?.phone || '',
             this.getPaymentTypeDisplayName(p),
             `"${p.description?.replace(/"/g, '""') || ''}"`,  
             p.paymentMethod || '',
-            p.amount,
+            amount.toFixed(2),
             p.status || '',
             p.receiptNumber || ''
           ];
           csvRows.push(row.join(','));
         });
+
+        // Add totals
+        csvRows.push('');
+        csvRows.push('SUMMARY');
+        csvRows.push(`Total Records,${paymentsToExport.length}`);
+        csvRows.push(`Total Revenue,${totalRevenue.toFixed(2)}`);
+        csvRows.push(`Total Expenses,${totalExpenses.toFixed(2)}`);
+        csvRows.push(`Net Amount,${(totalRevenue - totalExpenses).toFixed(2)}`);
 
         const csvString = csvRows.join('\r\n');
         const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
@@ -713,6 +841,18 @@ export class AdminPaymentsView extends BaseComponent {
       this.showMessage('Pop-up blocked! Please allow pop-ups for this site to generate PDF.', 'error', 10000);
       throw new Error('Pop-up blocked.');
     }
+
+    let totalRevenue = 0;
+    let totalExpenses = 0;
+    paymentsToPrint.forEach(p => {
+      const amount = parseFloat(p.amount) || 0;
+      if (p.isExpense) {
+        totalExpenses += amount;
+      } else {
+        totalRevenue += amount;
+      }
+    });
+
     printWindow.document.write('<html><head><title>Payments Export</title>');
     printWindow.document.write(`
         <style>
@@ -721,12 +861,13 @@ export class AdminPaymentsView extends BaseComponent {
             th, td { border: 1px solid #ccc; padding: 6px; text-align: left; font-size: 10px; word-break: break-word; }
             th { background-color: #e9e9e9; font-weight: bold; }
             h1 { text-align: center; margin-bottom: 20px; font-size: 18px; }
+            .summary { background-color: #f5f5f5; font-weight: bold; margin-top: 20px; padding: 10px; }
             .print-controls { text-align: center; margin-top: 20px; padding-top: 10px; border-top: 1px solid #ccc; }
             @media print { .print-controls { display: none !important; } body { margin: 0.5in; font-size: 10pt;} table{font-size: 9pt;} }
         </style>
     `);
     printWindow.document.write('</head><body>');
-    printWindow.document.write('<h1>Payment Records</h1>');
+    printWindow.document.write('<h1>TASSIAC Payment Records</h1>');
     printWindow.document.write('<table><thead><tr>');
     const headers = ['ID', 'Date', 'User', 'Type', 'Method', 'Amount (KES)', 'Status', 'Description'];
     headers.forEach(h => printWindow.document.write(`<th>${this.escapeHtml(h)}</th>`));
@@ -737,7 +878,7 @@ export class AdminPaymentsView extends BaseComponent {
         printWindow.document.write('<tr>');
         printWindow.document.write(`<td>${p.id}</td>`);
         printWindow.document.write(`<td>${this.formatDate(new Date(p.paymentDate))}</td>`);
-        printWindow.document.write(`<td>${this.escapeHtml(p.User?.fullName) || 'N/A'} (${this.escapeHtml(p.User?.phone) || 'N/A'})</td>`); // Changed from p.user to p.User
+        printWindow.document.write(`<td>${this.escapeHtml(p.user?.fullName) || 'N/A'} (${this.escapeHtml(p.user?.phone) || 'N/A'})</td>`);
         printWindow.document.write(`<td>${this.getPaymentTypeDisplayName(p)}</td>`);
         printWindow.document.write(`<td>${this.escapeHtml(p.paymentMethod) || ''}</td>`);
         printWindow.document.write(`<td style="text-align:right;">${p.isExpense ? '-' : ''}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>`);
@@ -747,6 +888,18 @@ export class AdminPaymentsView extends BaseComponent {
     });
 
     printWindow.document.write('</tbody></table>');
+    
+    // Add summary
+    printWindow.document.write(`
+      <div class="summary">
+        <h3>SUMMARY</h3>
+        <p>Total Records: ${paymentsToPrint.length}</p>
+        <p>Total Revenue: KES ${totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+        <p>Total Expenses: KES ${totalExpenses.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+        <p>Net Amount: KES ${(totalRevenue - totalExpenses).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+        <p>Generated: ${new Date().toLocaleString()}</p>
+      </div>
+    `);
     
     const controlsDiv = printWindow.document.createElement('div');
     controlsDiv.className = 'print-controls';
@@ -774,38 +927,40 @@ export class AdminPaymentsView extends BaseComponent {
   }
   
   async fetchSpecialOfferings() {  
-    // console.log('AdminPaymentsView: fetchSpecialOfferings() started.');
     try {
       if (this.specialOfferingsCache && (Date.now() - this.specialOfferingsCache.timestamp < this.CACHE_LIFETIME)) {
         this.specialOfferings = this.specialOfferingsCache.data;
-        // console.log('AdminPaymentsView: Using cached special offerings.');
       } else {
-        // console.log('AdminPaymentsView: Calling API for special offerings.');
         const response = await this.queueApiRequest(() => this.apiService.getSpecialOfferings());
-        // console.log('AdminPaymentsView: API response for special offerings:', response);
-        // apiService.getSpecialOfferings() returns the 'data' object from the backend.
-        // specialOfferingController.getAllSpecialOfferings returns: { specialOfferings, totalPages, ... }
-        // So, response here is { specialOfferings, ... }
         this.specialOfferings = (response && Array.isArray(response.specialOfferings)) ? response.specialOfferings : [];
         this.specialOfferingsCache = { data: this.specialOfferings, timestamp: Date.now() };
-        // console.log('AdminPaymentsView: Special offerings fetched, count:', this.specialOfferings.length);
       }
     } catch (error) {
       console.error('AdminPaymentsView: Error fetching special offerings:', error);
       this.specialOfferings = []; 
-      // Optionally set an error message if this fetch is critical and separate from payments fetch error
-      // if (!this.error) this.error = `Failed to load special offerings: ${error.message}`;
     }
     this.populateExportFilterSpecialOfferings();  
-    // console.log('AdminPaymentsView: fetchSpecialOfferings() completed.');
   }
   
   populateExportFilterSpecialOfferings() {
     const modal = document.getElementById('export-filter-modal');
-    if (modal) {
-        const select = modal.querySelector('select[name="export-special-offering"]');
-        this.populateSpecialOfferingsDropdown(select, this.exportFilterState.specialOffering);
+    if (!modal) return;
+    
+    const select = modal.querySelector('#export-special-offering');
+    if (!select) return;
+    
+    // Clear existing options except the first one
+    while (select.options.length > 1) {
+      select.removeChild(select.lastChild);
     }
+    
+    // Add special offerings
+    this.specialOfferings.forEach(offering => {
+      const displayName = offering.name || offering.description || `ID: ${offering.id}`;
+      const value = offering.offeringCode || offering.id.toString();
+      const option = new Option(displayName, value);
+      select.appendChild(option);
+    });
   }
 
   populateSpecialOfferingsDropdown(selectElement, currentSelectionValue) {  
@@ -824,9 +979,8 @@ export class AdminPaymentsView extends BaseComponent {
         }
 
         this.specialOfferings.forEach(offering => {
-          // Use offering.name for display, and offering.offeringCode or offering.id as value
           const displayName = this.escapeHtml(offering.name || offering.description || `ID: ${offering.id}`);
-          const value = offering.offeringCode || offering.id.toString(); // Prefer code if available
+          const value = offering.offeringCode || offering.id.toString();
           selectElement.add(new Option(displayName, value));
         });
         selectElement.value = originalValue;  
@@ -855,11 +1009,11 @@ export class AdminPaymentsView extends BaseComponent {
 
         const sendSmsBtn = document.getElementById('modal-sms-btn');
         if (sendSmsBtn) {
-            if (payment.User && payment.User.phone) { // Changed from payment.user to payment.User
+            if (payment.user && payment.user.phone) {
                 sendSmsBtn.style.display = 'inline-flex';  
                 const smsStateData = this.smsState.get(payment.id) || { sent: false, sending: false };
                 this.styleSmsButton(sendSmsBtn, smsStateData.sending ? 'sending' : (smsStateData.sent ? 'sent' : 'default'), true);
-                sendSmsBtn.onclick = () => this.sendSms(payment.User.phone, payment.User.fullName, payment); // Changed from payment.user to payment.User
+                sendSmsBtn.onclick = () => this.sendSms(payment.user.phone, payment.user.fullName, payment);
             } else {
                 sendSmsBtn.style.display = 'none';
             }
@@ -873,10 +1027,19 @@ export class AdminPaymentsView extends BaseComponent {
   renderPaymentDetailsContent(payment) {  
     const paymentTypeName = this.getPaymentTypeDisplayName(payment);
     let html = `<div class="payment-details-grid">`;
-    if (payment.User) { // Changed from payment.user to payment.User
-        html += `<div class="neo-card detail-section"><h4>👤 User Information</h4><div><span>Name:</span><span>${this.escapeHtml(payment.User.fullName) || 'N/A'}</span></div><div><span>Phone:</span><span>${this.escapeHtml(payment.User.phone) || 'N/A'}</span></div>${payment.User.email ? `<div><span>Email:</span><span>${this.escapeHtml(payment.User.email)}</span></div>` : ''}</div>`;
+    
+    if (payment.user) {
+        html += `<div class="neo-card detail-section"><h4>👤 User Information</h4><div><span>Name:</span><span>${this.escapeHtml(payment.user.fullName) || 'N/A'}</span></div><div><span>Phone:</span><span>${this.escapeHtml(payment.user.phone) || 'N/A'}</span></div>${payment.user.email ? `<div><span>Email:</span><span>${this.escapeHtml(payment.user.email)}</span></div>` : ''}</div>`;
     }
-    html += `<div class="neo-card detail-section"><h4>💳 Payment Information</h4><div><span>ID:</span><span>${payment.id}</span></div><div><span>Date:</span><span>${this.formatDate(new Date(payment.paymentDate))}</span></div><div><span>Type:</span><span>${this.escapeHtml(paymentTypeName)}</span></div><div><span>Method:</span><span>${this.escapeHtml(payment.paymentMethod) || 'N/A'}</span></div><div><span>Status:</span><span>${this.escapeHtml(payment.status) || 'N/A'}</span></div><div><span>Receipt:</span><span>${this.escapeHtml(payment.receiptNumber) || 'N/A'}</span></div></div>`;
+    
+    html += `<div class="neo-card detail-section"><h4>💳 Payment Information</h4><div><span>ID:</span><span>${payment.id}</span></div><div><span>Date:</span><span>${this.formatDate(new Date(payment.paymentDate))}</span></div><div><span>Type:</span><span>${this.escapeHtml(paymentTypeName)}</span></div><div><span>Method:</span><span>${this.escapeHtml(payment.paymentMethod) || 'N/A'}</span></div><div><span>Status:</span><span>${this.escapeHtml(payment.status) || 'N/A'}</span></div><div><span>Receipt:</span><span>${this.escapeHtml(payment.receiptNumber) || 'N/A'}</span></div>`;
+    
+    if (payment.processor) {
+        html += `<div><span>Added by:</span><span>${this.escapeHtml(payment.processor.fullName || payment.processor.username) || 'System'}</span></div>`;
+    }
+    
+    html += `</div>`;
+    
     const amount = payment.amount !== null && payment.amount !== undefined ? parseFloat(payment.amount) : 0;
     html += `<div class="neo-card detail-section"><h4>💰 Amount Information</h4><div><span>Amount:</span><span style="color:${payment.isExpense ? '#ef4444':'#10b981'}; font-weight:bold;">${payment.isExpense ? '-' : ''}KES ${amount.toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>`;
     if (payment.platformFee && parseFloat(payment.platformFee) > 0) {
@@ -886,13 +1049,43 @@ export class AdminPaymentsView extends BaseComponent {
         html += `<div class="description-detail"><span>Description:</span><p>${this.escapeHtml(payment.description)}</p></div>`;
     }
     html += `</div>`;  
-    // Check for special offering details using payment.specialOffering (populated by include in Prisma query)
+    
+    // Special offering details
     if (payment.specialOffering && (payment.paymentType === 'SPECIAL_OFFERING_CONTRIBUTION' || payment.paymentType.startsWith('SPECIAL_'))) {
-        const so = payment.specialOffering; // Already have details if included
+        const so = payment.specialOffering;
         html += `<div class="neo-card detail-section so-detail"><h4>✨ Special Offering</h4><div><span>Name:</span><span>${this.escapeHtml(so.name || so.description)}</span></div>${so.targetAmount ? `<div><span>Target:</span><span>KES ${parseFloat(so.targetAmount).toLocaleString()}</span></div>` : ''}${so.endDate ? `<div><span>Ends:</span><span>${this.formatDate(new Date(so.endDate))}</span></div>` : ''}</div>`;
-    } else if (payment.isExpense && payment.department) {
+    }
+    
+    // Tithe distribution details
+    if (payment.paymentType === 'TITHE' && payment.titheDistributionSDA) {
+        html += `<div class="neo-card detail-section tithe-detail"><h4>⛪ Tithe Distribution</h4>`;
+        const titheCategories = [
+            { key: 'campMeetingExpenses', label: 'Camp Meeting Expenses' },
+            { key: 'welfare', label: 'Welfare' },
+            { key: 'thanksgiving', label: 'Thanksgiving' },
+            { key: 'stationFund', label: 'Station Fund' },
+            { key: 'mediaMinistry', label: 'Media Ministry' }
+        ];
+        
+        let hasSelections = false;
+        titheCategories.forEach(cat => {
+            if (payment.titheDistributionSDA[cat.key] === true) {
+                html += `<div><span>${cat.label}:</span><span style="color:#10b981;">✓ Selected</span></div>`;
+                hasSelections = true;
+            }
+        });
+        
+        if (!hasSelections) {
+            html += `<div><span>Designations:</span><span>No specific designations made</span></div>`;
+        }
+        html += `</div>`;
+    }
+    
+    // Department details for expenses
+    if (payment.isExpense && payment.department) {
         html += `<div class="neo-card detail-section dept-detail"><h4>🏢 Department</h4><div style="display:flex; align-items:center; gap:5px;"><div style="width:10px; height:10px; border-radius:50%; background-color:${this.getDepartmentColor(payment.department)};"></div><span>${this.formatDepartment(payment.department)}</span></div></div>`;
     }
+    
     html += `</div>`;  
     return html;
   }
@@ -932,9 +1125,36 @@ export class AdminPaymentsView extends BaseComponent {
       this.showMessage('Pop-up blocked! Please allow pop-ups for this site to generate the receipt.', 'error', 10000);  
       throw new Error('Pop-up blocked.');
     }
-    const user = payment.User || { fullName: 'N/A', phone: 'N/A', email: 'N/A' }; // Changed from payment.user to payment.User
+    const user = payment.user || { fullName: 'N/A', phone: 'N/A', email: 'N/A' };
     const paymentTypeName = this.getPaymentTypeDisplayName(payment);
     const amount = payment.amount !== null && payment.amount !== undefined ? parseFloat(payment.amount) : 0;
+
+    let titheDistributionHtml = '';
+    if (payment.paymentType === 'TITHE' && payment.titheDistributionSDA) {
+        titheDistributionHtml = `
+          <div class="section"><h2>Tithe Designations</h2><div class="details">
+        `;
+        const titheCategories = [
+            { key: 'campMeetingExpenses', label: 'Camp Meeting Expenses' },
+            { key: 'welfare', label: 'Welfare' },
+            { key: 'thanksgiving', label: 'Thanksgiving' },
+            { key: 'stationFund', label: 'Station Fund' },
+            { key: 'mediaMinistry', label: 'Media Ministry' }
+        ];
+        
+        let hasSelections = false;
+        titheCategories.forEach(cat => {
+            if (payment.titheDistributionSDA[cat.key] === true) {
+                titheDistributionHtml += `<div><span>${cat.label}:</span><span>✓ Yes</span></div>`;
+                hasSelections = true;
+            }
+        });
+        
+        if (!hasSelections) {
+            titheDistributionHtml += `<div><span>Designations:</span><span>No specific designations made</span></div>`;
+        }
+        titheDistributionHtml += `</div></div>`;
+    }
 
     const htmlContent = `
       <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Receipt ${payment.id}</title>
@@ -963,7 +1183,7 @@ export class AdminPaymentsView extends BaseComponent {
         <div><span>Date & Time:</span><span>${new Date(payment.paymentDate).toLocaleString('en-GB', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}</span></div>
         <div><span>Status:</span><span>${this.escapeHtml(payment.status)}</span></div>
       </div></div>
-      ${payment.User ? `<div class="section"><h2>Payer Information</h2><div class="details">
+      ${payment.user ? `<div class="section"><h2>Payer Information</h2><div class="details">
         <div><span>Name:</span><span>${this.escapeHtml(user.fullName)}</span></div>
         <div><span>Phone:</span><span>${this.escapeHtml(user.phone)}</span></div>
         ${user.email ? `<div><span>Email:</span><span>${this.escapeHtml(user.email)}</span></div>` : ''}
@@ -975,6 +1195,7 @@ export class AdminPaymentsView extends BaseComponent {
         ${payment.platformFee && parseFloat(payment.platformFee) > 0 ? `<div><span>Platform Fee:</span><span>KES ${parseFloat(payment.platformFee).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>` : ''}
         <div><span>Amount:</span><span class="total">${payment.isExpense ? '-' : ''}KES ${amount.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
       </div></div>
+      ${titheDistributionHtml}
       <div class="footer"><p>Thank you for your transaction. This is an official receipt.</p></div>
       </body></html>`;
       
@@ -1018,7 +1239,9 @@ export class AdminPaymentsView extends BaseComponent {
       const amount = amountVal.toLocaleString('en-US', { minimumFractionDigits: 2 });
       const date = new Date(payment.paymentDate).toLocaleDateString('en-GB', {day:'numeric', month:'short', year:'numeric'});
       const message = `Dear ${name}, your ${paymentType} of KES ${amount} on ${date} (Ref: ${payment.receiptNumber||payment.id}) is confirmed. TASSIAC Church.`;
-      const response = await this.queueApiRequest(() => this.apiService.post('/notifications/send-sms', { phone: phoneNumber, message }));
+      
+      // Use proper API method that exists
+      const response = await this.queueApiRequest(() => this.apiService.post('/contact/send-sms', { phone: phoneNumber, message }));
       if (response && response.success) {
         this.smsState.set(paymentId, { sent: true, sending: false });
         this.showSmsStatus(`SMS sent to ${name}.`, 'success');
@@ -1040,30 +1263,31 @@ export class AdminPaymentsView extends BaseComponent {
         if (modalButton) this.styleSmsButton(modalButton, state, true);
     }
   }
+  
   styleSmsButton(button, state, isModal = false) {  
     button.disabled = false; button.style.opacity = '1'; button.style.cursor = 'pointer'; button.innerHTML = '';
+    button.className = 'action-button send-sms-btn';
     let iconSvg = (state !== 'sending' && state !== 'sent') ? this.createSvgIcon('sms') : null;
     switch (state) {
         case 'sending':  
-            button.disabled = true; button.style.opacity = '0.5';  
+            button.disabled = true; button.style.opacity = '0.5';
+            button.style.background = 'rgba(245, 158, 11, 0.2)'; 
+            button.style.color = '#f59e0b';
+            button.style.border = '1px solid rgba(245, 158, 11, 0.3)';
             if (iconSvg && isModal) button.appendChild(iconSvg);  
             button.appendChild(document.createTextNode(isModal ? ' Sending...' : 'Sending...'));  
             break;
         case 'sent':  
-            button.style.background = 'rgba(16, 185, 129, 0.2)'; button.style.color = '#10b981';  
+            button.style.background = 'rgba(16, 185, 129, 0.2)'; 
+            button.style.color = '#10b981';
+            button.style.border = '1px solid rgba(16, 185, 129, 0.3)';
             button.appendChild(document.createTextNode('✓ Sent'));  
             break;
         case 'default':  
         default:  
-            const defaultRgb = this.hexToRgb(isModal ? '#8b5cf6' : '#8b5cf6');  
-            if (defaultRgb) {
-                button.style.setProperty('--btn-color-r', defaultRgb.r.toString());
-                button.style.setProperty('--btn-color-g', defaultRgb.g.toString());
-                button.style.setProperty('--btn-color-b', defaultRgb.b.toString());
-                button.style.background = `linear-gradient(135deg, rgba(${defaultRgb.r}, ${defaultRgb.g}, ${defaultRgb.b}, 0.2), rgba(${defaultRgb.r}, ${defaultRgb.g}, ${defaultRgb.b}, 0.1))`;
-                button.style.border = `1px solid rgba(${defaultRgb.r}, ${defaultRgb.g}, ${defaultRgb.b}, 0.3)`;
-                button.style.color = '#e0e7ff';  
-            }
+            button.style.background = 'rgba(139, 92, 246, 0.2)';
+            button.style.color = '#8b5cf6';
+            button.style.border = '1px solid rgba(139, 92, 246, 0.3)';
             if (iconSvg) button.appendChild(iconSvg);
             button.appendChild(document.createTextNode(isModal ? 'Send SMS' : 'SMS'));  
             break;
@@ -1078,14 +1302,27 @@ export class AdminPaymentsView extends BaseComponent {
         if (!recipientsContainer || !countEl) return;
 
         recipientsContainer.innerHTML = '';  
-        const eligiblePayments = this.applyClientSideFilters(this.filters).filter(p => p.User && p.User.phone);  // Changed from p.user to p.User
+        const eligiblePayments = this.applyClientSideFilters(this.filters).filter(p => p.user && p.user.phone);
         
         countEl.textContent = `Recipients (${eligiblePayments.length} from current view):`;
         if (eligiblePayments.length > 0) {
             eligiblePayments.forEach(p => {
                 const div = this.createElement('div', {className: 'batch-recipient-item'});
                 const checkbox = this.createElement('input', { type: 'checkbox', id: `batch-${p.id}`, 'data-payment-id': p.id, checked: true });
-                const label = this.createElement('label', { htmlFor: `batch-${p.id}`}, `${this.escapeHtml(p.User.fullName)} (${p.User.phone})`); // Changed from p.user to p.User
+                
+                // Check if SMS already sent for this payment
+                const smsState = this.smsState.get(p.id);
+                if (smsState && smsState.sent) {
+                    checkbox.checked = false;
+                    checkbox.disabled = true;
+                }
+                
+                const label = this.createElement('label', { htmlFor: `batch-${p.id}`}, `${this.escapeHtml(p.user.fullName)} (${p.user.phone})${smsState && smsState.sent ? ' - SMS Sent' : ''}`);
+                if (smsState && smsState.sent) {
+                    label.style.color = '#94a3b8';
+                    label.style.textDecoration = 'line-through';
+                }
+                
                 div.append(checkbox, label);
                 recipientsContainer.appendChild(div);
             });
@@ -1100,7 +1337,7 @@ export class AdminPaymentsView extends BaseComponent {
     if (this.batchSmsState.sending) return;
     const modal = document.getElementById('batch-sms-modal');  
     const messageTemplate = document.getElementById('batch-sms-message').value.trim();
-    const checkboxes = modal ? modal.querySelectorAll('#batch-sms-recipients input[type="checkbox"]:checked') : [];
+    const checkboxes = modal ? modal.querySelectorAll('#batch-sms-recipients input[type="checkbox"]:checked:not(:disabled)') : [];
 
     if (!messageTemplate) { this.showMessage('Enter message template.', 'error'); return; }
     if (checkboxes.length === 0) { this.showMessage('Select recipients.', 'error'); return; }
@@ -1119,26 +1356,26 @@ export class AdminPaymentsView extends BaseComponent {
     for (let i = 0; i < this.batchSmsState.queue.length; i++) {
         const payment = this.batchSmsState.queue[i];
         this.batchSmsState.progress = i + 1;
-        if (!payment || !payment.User || !payment.User.phone) { errorCount++; continue; } // Changed from payment.user to payment.User
+        if (!payment || !payment.user || !payment.user.phone) { errorCount++; continue; }
         try {
             const paymentType = this.getPaymentTypeDisplayName(payment);
             const amountVal = payment.amount !== null && payment.amount !== undefined ? parseFloat(payment.amount) : 0;
             const amount = amountVal.toLocaleString('en-US', { minimumFractionDigits: 2 });
             const date = new Date(payment.paymentDate).toLocaleDateString('en-GB', {day:'numeric', month:'short', year:'numeric'});
             const personalizedMessage = messageTemplate
-                .replace(/{name}/g, payment.User.fullName) // Changed from payment.user to payment.User
+                .replace(/{name}/g, payment.user.fullName)
                 .replace(/{amount}/g, amount)
                 .replace(/{type}/g, paymentType)
                 .replace(/{receiptNumber}/g, payment.receiptNumber || payment.id.toString())
                 .replace(/{date}/g, date);
 
-            const response = await this.queueApiRequest(() => this.apiService.post('/notifications/send-sms', { phone: payment.User.phone, message: personalizedMessage })); // Changed from payment.user to payment.User
+            const response = await this.queueApiRequest(() => this.apiService.post('/contact/send-sms', { phone: payment.user.phone, message: personalizedMessage }));
             if (response && response.success) {
                 successCount++;
                 this.smsState.set(payment.id, { sent: true, sending: false });
                 this.updateSmsButtonState(payment.id, 'sent');  
-            } else { errorCount++; console.warn(`SMS API error for ${payment.User.phone}: ${response?.message}`);} // Changed from payment.user to payment.User
-        } catch (err) { errorCount++; console.error(`Exception during SMS to ${payment.User.phone}:`, err); } // Changed from payment.user to payment.User
+            } else { errorCount++; console.warn(`SMS API error for ${payment.user.phone}: ${response?.message}`);}
+        } catch (err) { errorCount++; console.error(`Exception during SMS to ${payment.user.phone}:`, err); }
         
         if ((i + 1) % 5 === 0 || i + 1 === this.batchSmsState.total) {  
              this.showMessage(`Batch SMS: ${successCount} sent, ${errorCount} failed (${this.batchSmsState.progress}/${this.batchSmsState.total})...`, 'info', 60000);
@@ -1162,6 +1399,7 @@ export class AdminPaymentsView extends BaseComponent {
     modal.innerHTML = `<div class="sms-status-content"><span class="sms-status-icon" style="color:${config.color};">${config.icon}</span><div class="sms-status-message">${this.escapeHtml(message)}</div><button class="sms-status-close" onclick="this.parentElement.parentElement.style.display='none'">×</button></div>`;
     setTimeout(() => { if(modal.style.display === 'block') modal.style.display = 'none'; }, type === 'error' ? 8000 : 5000);
   }
+  
   showMessage(message, type, duration) {  
     this.error = null; this.success = null;
     const defaultDurations = { success: 4000, error: 7000, info: 5000 };
@@ -1178,6 +1416,7 @@ export class AdminPaymentsView extends BaseComponent {
       this.updateViewIfNoPersistentMessage();
     }, effectiveDuration);
   }
+  
   updateViewIfNoPersistentMessage() {  
     if (!this.error && !this.success && this.isRendered && !this.isRendering) this.updateView();
   }
@@ -1185,6 +1424,7 @@ export class AdminPaymentsView extends BaseComponent {
   formatPaymentType(type, isExpense = false) {  
     return this.getPaymentTypeDisplayName({paymentType: type, isExpense});
   }
+  
   getFriendlySpecialOfferingName(paymentType) {  
     if (paymentType && paymentType.startsWith('SPECIAL_')) {
       const uniquePart = paymentType.replace('SPECIAL_', '').replace(/_/g, ' ');
@@ -1192,6 +1432,7 @@ export class AdminPaymentsView extends BaseComponent {
     }
     return 'Special Offering';
   }
+  
   formatDepartment(department) {  
     const departments = {  
         'MUSIC': 'Music Ministry', 'CHILDREN': "Children's Ministry", 'COMMUNICATION': 'Communication',
@@ -1204,6 +1445,7 @@ export class AdminPaymentsView extends BaseComponent {
     };  
     return departments[department] || this.escapeHtml(department.replace(/_/g, ' '));
   }
+  
   getDepartmentColor(department) {  
     const colors = {  
         'MUSIC': '#3b82f6', 'MAINTENANCE': '#ef4444', 'EDUCATION': '#8b5cf6',
@@ -1213,6 +1455,7 @@ export class AdminPaymentsView extends BaseComponent {
     };  
     return colors[department] || '#64748b';
   }
+  
   hexToRgb(hex) {  
     if (!hex) return {r: 100, g: 100, b: 100}; 
     let sanitizedHex = hex.replace('#', '');
@@ -1222,9 +1465,10 @@ export class AdminPaymentsView extends BaseComponent {
     return {  
         r: parseInt(sanitizedHex.substring(0, 2), 16),  
         g: parseInt(sanitizedHex.substring(2, 4), 16),  
-        b: parseInt(sanitizedHex.substring(4, 6), 16)  
+        b: parseInt(sanitizedHex.substring(4, 6), 6)  
     };
   }
+  
   formatDate(date) {  
     const d = date instanceof Date ? date : new Date(date);
     if (isNaN(d.getTime())) return 'Invalid Date';
@@ -1232,12 +1476,17 @@ export class AdminPaymentsView extends BaseComponent {
   }
   
   resetFilters() {  
-    this.filters.search = ''; 
+    this.filters = {
+      search: '',
+      paymentType: '',
+      startDate: '',
+      endDate: '',
+      status: ''
+    };
     this.currentPage = 1;
     const form = document.getElementById('payment-filters-form');
     if (form) {
-      const searchInput = form.querySelector('input[name="search"]');
-      if (searchInput) searchInput.value = '';
+      form.reset();
     }
     this.applyFiltersAndPagination(this.filters);  
     if(!this.isRendering) this.updateView();
@@ -1255,13 +1504,31 @@ export class AdminPaymentsView extends BaseComponent {
   attachEventListeners() {  
     const filtersForm = document.getElementById('payment-filters-form');
     if (filtersForm) {
-      const searchInput = filtersForm.elements.search;
+      // Search input with debounce
+      const searchInput = filtersForm.querySelector('input[name="search"]');
       if (searchInput) {
-          searchInput.addEventListener('input', () => {
-              this.updateFiltersFromForm(); 
-              this.applyFiltersWithDebounce(); 
-          });
+        searchInput.addEventListener('input', () => {
+          this.applyFiltersWithDebounce();
+        });
+        
+        // Enter key triggers immediate search
+        searchInput.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            this.executeSearch();
+          }
+        });
       }
+      
+      // Other filters with immediate update
+      ['paymentType', 'status', 'startDate', 'endDate'].forEach(fieldName => {
+        const field = filtersForm.querySelector(`[name="${fieldName}"]`);
+        if (field) {
+          field.addEventListener('change', () => {
+            this.executeSearch();
+          });
+        }
+      });
     }
     
     const appContainer = document.getElementById('app') || document.body;  
@@ -1272,7 +1539,7 @@ export class AdminPaymentsView extends BaseComponent {
             const page = parseInt(pageButton.dataset.page);
             if (page && page !== this.currentPage && page > 0 && page <= this.totalPages) {
                 this.currentPage = page;
-                if(!this.isRendering) this.updateView();  
+                this.updateView();  
             }
             return;
         }
@@ -1283,9 +1550,9 @@ export class AdminPaymentsView extends BaseComponent {
         if (smsBtnTable && !target.closest('#payment-detail-modal')) {  
             const paymentId = parseInt(smsBtnTable.dataset.id);
             const payment = this.allPaymentsMasterList.find(p => p.id === paymentId);
-            if (payment && payment.User?.phone) { // Changed from payment.user to payment.User
+            if (payment && payment.user?.phone) {
                 const state = this.smsState.get(paymentId) || {};
-                if (!state.sending && !state.sent) this.sendSms(payment.User.phone, payment.User.fullName, payment); // Changed from payment.user to payment.User
+                if (!state.sending && !state.sent) this.sendSms(payment.user.phone, payment.user.fullName, payment);
             }
             return;
         }
@@ -1324,33 +1591,80 @@ export class AdminPaymentsView extends BaseComponent {
     const exportFilterModalEl = document.getElementById('export-filter-modal');
     if (exportFilterModalEl) {
         exportFilterModalEl.addEventListener('click', (e) => { if (e.target === exportFilterModalEl) exportFilterModalEl.style.display = 'none'; });
+        
         const exportPaymentTypeSelect = exportFilterModalEl.querySelector('#export-payment-type');
         if(exportPaymentTypeSelect) {
             exportPaymentTypeSelect.addEventListener('change', (e) => {
-                const group = exportFilterModalEl.querySelector('#export-special-offering-group');
-                if(group) group.style.display = e.target.value === 'SPECIAL' ? 'grid' : 'none';
-                if (e.target.value !== 'SPECIAL') { 
-                    const soSelect = exportFilterModalEl.querySelector('#export-special-offering');
-                    if (soSelect) soSelect.value = '';
-                }
+                this.handleExportTypeChange(e.target.value);
             });
         }
     }
+  }
+
+  handleExportTypeChange(selectedType) {
+    const modal = document.getElementById('export-filter-modal');
+    if (!modal) return;
+    
+    const specialOfferingGroup = modal.querySelector('#export-special-offering-group');
+    const titheCategoryGroup = modal.querySelector('#export-tithe-category-group');
+    const specialOfferingSelect = modal.querySelector('#export-special-offering');
+    const titheCategorySelect = modal.querySelector('#export-tithe-category');
+    
+    // Hide all conditional groups
+    if(specialOfferingGroup) specialOfferingGroup.style.display = 'none';
+    if(titheCategoryGroup) titheCategoryGroup.style.display = 'none';
+    
+    // Clear selections
+    if(specialOfferingSelect) specialOfferingSelect.value = '';
+    if(titheCategorySelect) titheCategorySelect.value = '';
+    
+    // Show and populate relevant group
+    if (selectedType === 'SPECIAL') {
+        if(specialOfferingGroup) {
+            specialOfferingGroup.style.display = 'grid';
+            this.populateSpecialOfferingsForExport();
+        }
+    } else if (selectedType === 'TITHE') {
+        if(titheCategoryGroup) {
+            titheCategoryGroup.style.display = 'grid';
+        }
+    }
+  }
+
+  populateSpecialOfferingsForExport() {
+    const modal = document.getElementById('export-filter-modal');
+    if (!modal) return;
+    
+    const select = modal.querySelector('#export-special-offering');
+    if (!select) return;
+    
+    // Keep only the first "All" option
+    while (select.children.length > 1) {
+        select.removeChild(select.lastChild);
+    }
+    
+    // Add special offerings
+    this.specialOfferings.forEach(offering => {
+        const option = document.createElement('option');
+        option.value = offering.offeringCode || offering.id.toString();
+        option.textContent = offering.name || offering.description || `Offering ${offering.id}`;
+        select.appendChild(option);
+    });
   }
   
   updateFiltersFromForm() {  
     const form = document.getElementById('payment-filters-form');
     if (!form) return;
-    const searchInput = form.querySelector('input[name="search"]');
-    if (searchInput) {
-        this.filters.search = searchInput.value || '';
-    }
+    
+    this.filters.search = form.querySelector('input[name="search"]')?.value || '';
+    this.filters.paymentType = form.querySelector('select[name="paymentType"]')?.value || '';
+    this.filters.status = form.querySelector('select[name="status"]')?.value || '';
+    this.filters.startDate = form.querySelector('input[name="startDate"]')?.value || '';
+    this.filters.endDate = form.querySelector('input[name="endDate"]')?.value || '';
   }
   
   updateView() {  
-    // console.log('AdminPaymentsView: updateView() called. isRendering:', this.isRendering, 'isLoading:', this.isLoading, '_fetchInProgress:', this._fetchInProgress);
     if (this.isRendering && document.readyState !== 'complete') {
-        // console.log('AdminPaymentsView: Bailing from updateView due to isRendering and document.readyState');
         return;
     }
     this.isRendering = true;  
@@ -1365,7 +1679,6 @@ export class AdminPaymentsView extends BaseComponent {
         }
         appContainer.scrollTop = scrollTop;  
         this.isRendering = false;  
-        // console.log('AdminPaymentsView: updateView() -> render() completed.');
       }).catch(error => {
         console.error('Critical error in updateView -> render (AdminPaymentsView):', error);
         appContainer.innerHTML = `<div class="critical-error-display">A major error occurred. Please refresh. Details: ${this.escapeHtml(error.message)}</div>`;
@@ -1397,6 +1710,7 @@ export class AdminPaymentsView extends BaseComponent {
     nav.appendChild(navContent);
     return nav;
   }
+  
   renderPaymentDetailModal() {  
     const modalBackdrop = this.createElement('div', { id: 'payment-detail-modal', className: 'modal-backdrop' });
     const modalContent = this.createElement('div', { className: 'modal-content neo-card' });  
@@ -1427,9 +1741,11 @@ export class AdminPaymentsView extends BaseComponent {
     modalBackdrop.appendChild(modalContent);
     return modalBackdrop;
   }
+  
   renderSmsStatusModal() {  
     return this.createElement('div', { id: 'sms-status-modal', className: 'neo-card sms-status-toast' });
   }
+  
   renderBatchSmsModal() {  
     const modalBackdrop = this.createElement('div', { id: 'batch-sms-modal', className: 'modal-backdrop' });
     const modalContent = this.createElement('div', { className: 'modal-content neo-card batch-sms-modal-content' });
@@ -1469,13 +1785,16 @@ export class AdminPaymentsView extends BaseComponent {
             <button class="close-modal">×</button> 
         </div>
         <div class="modal-body">
-            <p id="export-search-info" style="font-size:14px; color:#cbd5e1; margin-bottom:20px;">Select filters for your export. The current main search term ("<strong style="color:#e0e7ff;">${this.escapeHtml(this.filters.search) || 'None'}</strong>") will also be applied.</p>
+            <p id="export-search-info" style="font-size:14px; color:#cbd5e1; margin-bottom:20px;">Select filters for your export. Current filters will be applied.</p>
             <div class="export-filters-form-grid">
                 ${this.createFormGroup('Start Date (Export)', 'export-start-date', 'date').outerHTML}
                 ${this.createFormGroup('End Date (Export)', 'export-end-date', 'date').outerHTML}
                 ${this.createFormGroup('Payment Type (Export)', 'export-payment-type', 'select').outerHTML}
                 <div id="export-special-offering-group" style="display:none;">
                     ${this.createFormGroup('Special Offering (Export)', 'export-special-offering', 'select').outerHTML}
+                </div>
+                <div id="export-tithe-category-group" style="display:none;">
+                    ${this.createFormGroup('Tithe Category (Export)', 'export-tithe-category', 'select').outerHTML}
                 </div>
             </div>
         </div>
@@ -1484,15 +1803,30 @@ export class AdminPaymentsView extends BaseComponent {
             <button id="proceed-with-export-btn" class="futuristic-button" style="--btn-color-r:79; --btn-color-g:70; --btn-color-b:229;">Proceed with Export</button>
         </div>
     `;
+    
     const paymentTypeSelect = modalContent.querySelector('#export-payment-type');
     if(paymentTypeSelect) {
         const paymentTypes = [  
             { value: '', label: 'All Types' }, { value: 'TITHE', label: 'Tithe' },  
             { value: 'OFFERING', label: 'Offering' }, { value: 'DONATION', label: 'Donation' },
-            { value: 'EXPENSE', label: 'Expense' }, { value: 'SPECIAL', label: 'Special Offerings' } // 'SPECIAL' acts as a category
+            { value: 'EXPENSE', label: 'Expense' }, { value: 'SPECIAL', label: 'Special Offerings' }
         ];
         paymentTypes.forEach(type => paymentTypeSelect.add(new Option(type.label, type.value)));
     }
+    
+    const titheCategorySelect = modalContent.querySelector('#export-tithe-category');
+    if(titheCategorySelect) {
+        const titheCategories = [
+            { value: '', label: 'All Tithe Categories' },
+            { value: 'campMeetingExpenses', label: 'Camp Meeting Expenses' },
+            { value: 'welfare', label: 'Welfare' },
+            { value: 'thanksgiving', label: 'Thanksgiving' },
+            { value: 'stationFund', label: 'Station Fund' },
+            { value: 'mediaMinistry', label: 'Media Ministry' }
+        ];
+        titheCategories.forEach(cat => titheCategorySelect.add(new Option(cat.label, cat.value)));
+    }
+    
     modalBackdrop.appendChild(modalContent);
     return modalBackdrop;
   }
@@ -1502,6 +1836,7 @@ export class AdminPaymentsView extends BaseComponent {
     loadingContainer.innerHTML = `<div class="loading-spinner"></div><p>Loading data...</p>`;
     return loadingContainer;
   }
+  
   renderError(error) {  
     const errorContainer = this.createElement('div', { className: 'error-container neo-card' });
     errorContainer.innerHTML = `⚠️<h2>Error Encountered</h2><p>${this.escapeHtml(error.message)}</p><button id="retry-load-btn" class="futuristic-button" style="--btn-color-r:239; --btn-color-g:68; --btn-color-b:68;">Retry Load</button>`;
@@ -1512,14 +1847,14 @@ export class AdminPaymentsView extends BaseComponent {
             retryBtn.dataset.listenerAttached = 'true';
             retryBtn.onclick = () => { 
                 this.error = null; 
-                // console.log("AdminPaymentsView: Retry Load button clicked.");
-                this.fetchAllPaymentsData(); // Re-fetch all data
+                this.fetchAllPaymentsData();
                 this.fetchSpecialOfferings();
             };
         }
     },0);
     return errorContainer;
   }
+  
   renderUnauthorized() {  
     const unauthContainer = this.createElement('div', { className: 'unauthorized-container neo-card' });
     unauthContainer.innerHTML = `
@@ -1569,13 +1904,13 @@ export class AdminPaymentsView extends BaseComponent {
       .filters-header { padding: 14px 20px; border-bottom: 1px solid rgba(148,163,184,0.1); }
       .filters-title { font-size: 16px; font-weight: 600; margin: 0; color: #f1f5f9; display: flex; align-items: center; gap: 6px; }
       .filters-content { padding: 20px; }
-      .filters-form { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: end; }
+      .filters-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 18px; align-items: end; }
       .form-group { display: grid; gap: 6px; }  
       .form-label { font-size: 13px; font-weight: 500; color: #94a3b8; }
       .form-control { width: 100%; padding: 9px 12px; background: rgba(15,23,42,0.75); border: 1px solid rgba(148,163,184,0.3); border-radius: 6px; color: #f1f5f9; font-size: 14px; transition: all 0.2s ease; }
       .form-control:focus { border-color: #4f46e5; outline: none; box-shadow: 0 0 0 3px rgba(79,70,229,0.3); background: rgba(15,23,42,0.9); }
       select.form-control { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 35px; }
-      .filters-form-actions { display: flex; gap: 12px; justify-content: flex-end; } 
+      .filters-form-actions { display: flex; gap: 12px; justify-content: flex-end; grid-column: 1 / -1; } 
       .payments-table-card { animation-delay: '0.2s'; --glow-r:59; --glow-g:130; --glow-b:246;}
       .payments-table-header { padding: 14px 20px; border-bottom: 1px solid rgba(148,163,184,0.1); display: flex; justify-content: space-between; align-items: center; }
       .payments-table-title { font-size: 16px; font-weight: 600; margin: 0; color: #f1f5f9; display: flex; align-items: center; gap: 6px; }
@@ -1612,8 +1947,8 @@ export class AdminPaymentsView extends BaseComponent {
       @keyframes slideInModal { from { opacity:0; transform: translateY(20px) scale(0.98); } to { opacity:1; transform: translateY(0) scale(1); } }
       .modal-header { padding: 16px 20px; border-bottom: 1px solid rgba(148,163,184,0.15); display: flex; justify-content: space-between; align-items: center; }
       .modal-header h3 { margin:0; font-size:18px; font-weight:600; color:#f1f5f9; }
-      .close-modal { background:none; border:none; color:#94a3b8; cursor:pointer; font-size:24px; transition: color 0.2s ease; padding:0; line-height:1; }
-      .close-modal:hover { color: #fff; }
+      .close-modal, .close-batch-modal { background:none; border:none; color:#94a3b8; cursor:pointer; font-size:24px; transition: color 0.2s ease; padding:0; line-height:1; }
+      .close-modal:hover, .close-batch-modal:hover { color: #fff; }
       .modal-body { padding: 20px; flex-grow:1; overflow-y:auto; }
       .modal-loading { text-align:center; padding:40px 0; color:#94a3b8; display:flex; flex-direction:column; align-items:center; gap:10px; }
       .modal-error { text-align:center; padding:30px; color:#ef4444; font-size:14px; }
@@ -1654,6 +1989,7 @@ export class AdminPaymentsView extends BaseComponent {
       .critical-error-display { color:red; text-align:center; padding:30px; font-size:16px; background:rgba(255,0,0,0.1); border:1px solid red; border-radius:8px; }
       @keyframes float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-10px); } }
       @keyframes fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+      @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       .animated-item { animation: fadeIn 0.5s ease-out forwards; }
       .admin-top-nav { padding: 12px; border-bottom: 1px solid rgba(148,163,184,0.1); background: rgba(30,41,59,0.5); margin-bottom: 20px; border-radius: 8px; }
       .admin-nav-content { max-width:1200px; margin:0 auto; display:flex; gap:12px; flex-wrap:wrap; }
@@ -1697,6 +2033,5 @@ export class AdminPaymentsView extends BaseComponent {
     this.pdfState = { generating: false };
     this.isRendered = false;  
     this.isRendering = false;
-    // console.log('AdminPaymentsView: destroy() called.');
   }
 }
