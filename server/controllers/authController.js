@@ -127,7 +127,7 @@ exports.login = async (req, res) => {
 
     debugLog(`Prisma: Looking up user: ${username}`);
     const user = await prisma.user.findUnique({
-      where: { username: username },
+      where: { username: normalizedUsername },
     });
 
     if (!user || !user.isActive) {
@@ -204,11 +204,12 @@ exports.registerUser = async (req, res) => {
     }
 
     const { username, password, fullName, phone, email, isAdmin = false } = req.body;
+    const normalizedUsername = username.toLowerCase();
 
     const existingUser = await prisma.user.findFirst({
       where: {
         OR: [
-          { username: username },
+          { username: normalizedUsername},
           { email: email ? email : undefined },
           { phone: phone }
         ],
@@ -236,7 +237,7 @@ exports.registerUser = async (req, res) => {
 
     const newUser = await prisma.user.create({
       data: {
-        username,
+        username: normalizedUsername,
         password: hashedPassword,
         fullName,
         phone,
