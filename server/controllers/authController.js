@@ -36,29 +36,10 @@ function debugLog(message, data = null) {
       logMessage += ` | Data: [Failed to stringify or sanitize: ${err.message}]`;
     }
   }
-  console.log(logMessage);
-  
+  console.log(logMessage); // Keep for dev visibility
+  // fs.appendFileSync(LOG_FILE, logMessage + '\n'); // Uncomment if file logging is desired
   return logMessage;
 }
-exports.logout = (req, res) => {
-  debugLog('=== LOGOUT ATTEMPT STARTED ===');
-  // If using server-side sessions primarily:
-  // req.session.destroy(err => {
-  //   if (err) {
-  //     debugLog('Error destroying session:', err);
-  //     return sendResponse(res, 500, false, null, 'Could not log out.');
-  //   }
-  //   res.clearCookie('connect.sid'); // Clear the session cookie (name might vary)
-  //   debugLog('User logged out successfully, session destroyed.');
-  //   return sendResponse(res, 200, true, null, 'Logged out successfully.');
-  // });
-
-  // If primarily JWT-based, logout is mostly a client-side token removal.
-  // The server can optionally have a token blacklist if needed for immediate invalidation.
-  // For now, a simple success response is fine as the client clears the token.
-  debugLog(`User ${req.user?.id || 'Unknown'} logged out (token will be cleared by client).`);
-  return sendResponse(res, 200, true, null, 'Logged out successfully. Please clear your token client-side.');
-};
 
 // Helper for sending standardized responses
 const sendResponse = (res, statusCode, success, data, message, errorDetails = null) => {
@@ -72,15 +53,10 @@ const sendResponse = (res, statusCode, success, data, message, errorDetails = nu
   return res.status(statusCode).json(responsePayload);
 };
 
-// Helper to check for view-only admin (placeholder logic)
-// In a real app, this should check a 'role' field or a list of view-only admin IDs/usernames.
+// Helper to check for view-only admin
 const isViewOnlyAdmin = (user) => {
   if (!user || !user.isAdmin) return false;
-  // Example: Check if username is admin3, admin4, or admin5
-  const viewOnlyUsernames = ['admin3', 'admin4', 'admin5'];
-  // Example: Check if ID is one of the view-only IDs (replace with actual IDs)
-  // const viewOnlyIds = [3, 4, 5]; // Replace with actual IDs from your DB after creation
-  // return viewOnlyUsernames.includes(user.username) || viewOnlyIds.includes(user.id);
+  const viewOnlyUsernames = (process.env.VIEW_ONLY_ADMIN_USERNAMES || 'admin3,admin4,admin5').split(',');
   return viewOnlyUsernames.includes(user.username);
 };
 
@@ -90,19 +66,17 @@ async function logAdminActivity(actionType, targetId, initiatedBy, actionData = 
     await prisma.adminAction.create({
       data: {
         actionType,
-        targetId: String(targetId), // Ensure targetId is a string
-        initiatedBy,
+        targetId: String(targetId),
+        initiatedById: initiatedBy,
         actionData,
-        status: 'COMPLETED', // Assuming actions here are completed immediately
+        status: 'COMPLETED',
       },
     });
     debugLog(`Admin activity logged: ${actionType} for target ${targetId} by user ${initiatedBy}`);
   } catch (error) {
     debugLog(`Error logging admin activity for ${actionType} on ${targetId}:`, error.message);
-    // Do not let logging failure stop the main operation
   }
 }
-
 
 // Login controller
 exports.login = async (req, res) => {
@@ -125,13 +99,15 @@ exports.login = async (req, res) => {
       });
     }
 
-    debugLog(`Prisma: Looking up user: ${username}`);
+    const normalizedUsername = username.toLowerCase(); // Normalize username to lowercase for lookup
+
+    debugLog(`Prisma: Looking up user: ${normalizedUsername}`);
     const user = await prisma.user.findUnique({
-      where: { username: normalizedUsername },
+      where: { username: normalizedUsername }, // Query with normalized username
     });
 
     if (!user || !user.isActive) {
-      debugLog(`Prisma: No active user found or user is inactive: ${username}`);
+      debugLog(`Prisma: No active user found or user is inactive: ${normalizedUsername}`);
       return sendResponse(res, 401, false, null, 'Invalid username or password, or account inactive.', {
         code: 'AUTH_FAILED_INACTIVE',
       });
@@ -154,8 +130,8 @@ exports.login = async (req, res) => {
 
     const userForToken = {
       id: user.id,
-      username: user.username,
-      isAdmin: user.isAdmin, // Prisma schema defines this as Boolean
+      username: user.username, // Use the username from DB (should be normalized)
+      isAdmin: user.isAdmin,
       fullName: user.fullName,
       phone: user.phone,
       email: user.email
@@ -169,7 +145,8 @@ exports.login = async (req, res) => {
     debugLog('Prisma: JWT token generated successfully');
 
     const { password: _, resetToken: __, resetTokenExpiry: ___, ...userResponse } = user;
-    await logAdminActivity('USER_LOGIN', user.id, user.id, { ip: req.ip }); // Log user login as an "admin" action on their own account
+    // Log user login. Since `logAdminActivity` expects an admin ID, we use the user's own ID.
+    await logAdminActivity('USER_LOGIN', user.id, user.id, { ip: req.ip });
 
     return sendResponse(res, 200, true, { user: userResponse, token }, 'Login successful');
 
@@ -204,32 +181,32 @@ exports.registerUser = async (req, res) => {
     }
 
     const { username, password, fullName, phone, email, isAdmin = false } = req.body;
-    const normalizedUsername = username.toLowerCase();
+    const normalizedUsername = username.toLowerCase(); // Normalize username for storage
 
     const existingUser = await prisma.user.findFirst({
       where: {
         OR: [
-          { username: normalizedUsername},
-          { email: email ? email : undefined },
-          { phone: phone }
+          { username: normalizedUsername }, // Check normalized username
+          { email: email ? email.toLowerCase() : undefined }, // Optionally normalize email too
+          { phone: phone } // Phone numbers might also need normalization/validation
         ],
       },
     });
 
     if (existingUser) {
       let message = 'User already exists.';
-      if (existingUser.username === username) message = 'Username already exists.';
-      else if (email && existingUser.email === email) message = 'Email already registered.';
+      if (existingUser.username === normalizedUsername) message = 'Username already exists.';
+      else if (email && existingUser.email === email.toLowerCase()) message = 'Email already registered.';
       else if (existingUser.phone === phone) message = 'Phone number already registered.';
       debugLog(`Registration failed: ${message}`, { username, email, phone });
       return sendResponse(res, 400, false, null, message, { code: 'USER_EXISTS' });
     }
 
     if (isAdmin) {
-        const adminCount = await prisma.user.count({ where: { isAdmin: true } });
-        if (adminCount >= 5) {
+        const adminCount = await prisma.user.count({ where: { isAdmin: true, isActive: true } });
+        if (adminCount >= (parseInt(process.env.MAX_ADMIN_COUNT) || 5)) { // Use env var for max admins
             debugLog('Admin limit reached. Cannot create new admin.');
-            return sendResponse(res, 400, false, null, 'Maximum number of admin users (5) reached.', { code: 'ADMIN_LIMIT_REACHED' });
+            return sendResponse(res, 400, false, null, `Maximum number of admin users (${parseInt(process.env.MAX_ADMIN_COUNT) || 5}) reached.`, { code: 'ADMIN_LIMIT_REACHED' });
         }
     }
 
@@ -237,11 +214,11 @@ exports.registerUser = async (req, res) => {
 
     const newUser = await prisma.user.create({
       data: {
-        username: normalizedUsername,
+        username: normalizedUsername, // Save normalized username
         password: hashedPassword,
         fullName,
         phone,
-        email: email || null,
+        email: email ? email.toLowerCase() : null, // Optionally normalize email
         isAdmin,
         isActive: true,
       },
@@ -254,7 +231,7 @@ exports.registerUser = async (req, res) => {
 
   } catch (error) {
     debugLog('CRITICAL ERROR in registration process:', error.message);
-     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') { // Unique constraint failed
         let field = 'identifier';
         if (error.meta && Array.isArray(error.meta.target)) field = error.meta.target.join(', ');
         return sendResponse(res, 400, false, null, `The ${field} is already taken.`, { code: 'UNIQUE_CONSTRAINT_FAILED', field });
@@ -280,9 +257,9 @@ exports.getProfile = async (req, res) => {
 
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
-      select: {
+      select: { // Explicitly select fields to exclude password and sensitive tokens
         id: true, username: true, fullName: true, email: true, phone: true,
-        isAdmin: true, lastLogin: true, isActive: true, createdAt: true, updatedAt: true,
+        isAdmin: true, role: true, lastLogin: true, isActive: true, createdAt: true, updatedAt: true,
       },
     });
 
@@ -312,9 +289,9 @@ exports.getUsers = async (req, res) => {
   try {
     const users = await prisma.user.findMany({
       orderBy: { createdAt: 'desc' },
-      select: {
+      select: { // Exclude password
         id: true, username: true, fullName: true, email: true, phone: true,
-        isAdmin: true, lastLogin: true, isActive: true, createdAt: true, updatedAt: true,
+        isAdmin: true, role: true, lastLogin: true, isActive: true, createdAt: true, updatedAt: true,
       },
     });
 
@@ -351,7 +328,7 @@ exports.updateUser = async (req, res) => {
       });
     }
     const { userId } = req.params;
-    const { fullName, phone, email, isAdmin, isActive } = req.body;
+    const { fullName, phone, email, isAdmin, isActive, role } = req.body; // Added role
     const numericUserId = parseInt(userId);
 
     if (isNaN(numericUserId)) {
@@ -365,14 +342,16 @@ exports.updateUser = async (req, res) => {
       return sendResponse(res, 404, false, null, 'User not found.', { code: 'USER_NOT_FOUND' });
     }
 
+    // Admin promotion/demotion logic
     if (typeof isAdmin === 'boolean' && userToUpdate.isAdmin !== isAdmin) {
-      const adminCount = await prisma.user.count({ where: { isAdmin: true, isActive: true } }); // Count only active admins
-      if (isAdmin && adminCount >= 5) {
+      const adminCount = await prisma.user.count({ where: { isAdmin: true, isActive: true } });
+      const maxAdminCount = parseInt(process.env.MAX_ADMIN_COUNT) || 5;
+      if (isAdmin && adminCount >= maxAdminCount) {
         debugLog('Admin limit reached. Cannot promote user.');
-        return sendResponse(res, 400, false, null, 'Maximum number of admin users (5) reached.', { code: 'ADMIN_LIMIT_REACHED' });
+        return sendResponse(res, 400, false, null, `Maximum number of admin users (${maxAdminCount}) reached.`, { code: 'ADMIN_LIMIT_REACHED' });
       }
       if (!isAdmin && userToUpdate.isAdmin && adminCount <= 1) {
-         if (userToUpdate.id === req.user.id) {
+         if (userToUpdate.id === req.user.id) { // Current admin trying to demote themselves as the last admin
             debugLog('Attempt to demote self as last admin.');
             return sendResponse(res, 400, false, null, 'You cannot demote yourself as the last admin.', { code: 'CANNOT_SELF_DEMOTE_LAST_ADMIN' });
         }
@@ -381,27 +360,28 @@ exports.updateUser = async (req, res) => {
       }
     }
 
+    // Self-update restrictions
     if (userToUpdate.id === req.user.id) {
-        if (typeof isAdmin === 'boolean' && !isAdmin && userToUpdate.isAdmin) {
+        if (typeof isAdmin === 'boolean' && !isAdmin && userToUpdate.isAdmin) { // Admin trying to demote self
             const adminCount = await prisma.user.count({ where: { isAdmin: true, isActive: true } });
             if (adminCount <= 1) {
                  debugLog('Attempt to self-demote as last admin.');
                  return sendResponse(res, 400, false, null, 'You cannot demote yourself as the last admin.', { code: 'CANNOT_SELF_DEMOTE_LAST_ADMIN' });
             }
         }
-        if (typeof isActive === 'boolean' && !isActive) {
+        if (typeof isActive === 'boolean' && !isActive) { // Admin trying to deactivate self
             debugLog('Attempt to self-deactivate.');
             return sendResponse(res, 400, false, null, 'You cannot deactivate your own account.', { code: 'CANNOT_SELF_DEACTIVATE' });
         }
     }
 
-    const updateData = {
-        fullName: fullName !== undefined ? fullName : userToUpdate.fullName,
-        phone: phone !== undefined ? phone : userToUpdate.phone,
-        email: email !== undefined ? (email || null) : userToUpdate.email,
-        isAdmin: typeof isAdmin === 'boolean' ? isAdmin : userToUpdate.isAdmin,
-        isActive: typeof isActive === 'boolean' ? isActive : userToUpdate.isActive,
-    };
+    const updateData = {};
+    if (fullName !== undefined) updateData.fullName = fullName;
+    if (phone !== undefined) updateData.phone = phone;
+    if (email !== undefined) updateData.email = email ? email.toLowerCase() : null; // Normalize email on update too
+    if (typeof isAdmin === 'boolean') updateData.isAdmin = isAdmin;
+    if (typeof isActive === 'boolean') updateData.isActive = isActive;
+    if (role !== undefined) updateData.role = role; // Add role update
 
     const updatedUser = await prisma.user.update({
       where: { id: numericUserId },
@@ -435,14 +415,16 @@ exports.deleteUser = async (req, res) => {
   debugLog('=== DELETE USER ATTEMPT STARTED (ADMIN) ===');
   try {
     if (isViewOnlyAdmin(req.user)) {
-        debugLog(`View-only admin ${req.user.username} (ID: ${req.user.id}) attempted to delete user.`);
-        return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot delete users.", { code: 'FORBIDDEN_VIEW_ONLY' });
+      debugLog(`View-only admin ${req.user.username} (ID: ${req.user.id}) attempted to delete user.`);
+      // Make sure to RETURN after sending response
+      return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot delete users.", { code: 'FORBIDDEN_VIEW_ONLY' });
     }
 
     const { userId } = req.params;
     const numericUserId = parseInt(userId);
 
     if (isNaN(numericUserId)) {
+      // Make sure to RETURN
       return sendResponse(res, 400, false, null, 'Invalid User ID format.', { code: 'INVALID_USER_ID' });
     }
 
@@ -450,53 +432,56 @@ exports.deleteUser = async (req, res) => {
 
     if (!userToDelete) {
       debugLog(`User not found for deletion: ID ${numericUserId}`);
+      // Make sure to RETURN
       return sendResponse(res, 404, false, null, 'User not found.', { code: 'USER_NOT_FOUND' });
     }
 
     if (userToDelete.id === req.user.id) {
         debugLog('Attempt to delete self.');
+        // Make sure to RETURN
         return sendResponse(res, 400, false, null, 'You cannot delete/deactivate your own account.', { code: 'CANNOT_DELETE_SELF' });
     }
-    
-    if (userToDelete.isAdmin) {
-      const adminCount = await prisma.user.count({ where: { isAdmin: true, isActive: true } });
-      if (adminCount <= 1) {
+
+    if (userToDelete.isAdmin && userToDelete.isActive) { // Check isActive for admin count
+      const activeAdminCount = await prisma.user.count({ where: { isAdmin: true, isActive: true } });
+      if (activeAdminCount <= 1) {
         debugLog('Attempt to delete the last active admin.');
+        // Make sure to RETURN
         return sendResponse(res, 400, false, null, 'Cannot delete or deactivate the last active admin user.', { code: 'CANNOT_DELETE_LAST_ADMIN' });
       }
     }
 
-    // Soft delete
-    const deactivatedUser = await prisma.user.update({
+    const mangledUsername = `<span class="math-inline">\{userToDelete\.username\}\_deleted\_</span>{Date.now()}`;
+    const mangledEmail = userToDelete.email ? `<span class="math-inline">\{userToDelete\.email\}\_deleted\_</span>{Date.now()}` : null;
+    const mangledPhone = `<span class="math-inline">\{userToDelete\.phone\}\_deleted\_</span>{Date.now()}`;
+
+    await prisma.user.delete({
       where: { id: numericUserId },
-      data: { 
-        isActive: false,
-        // To preserve uniqueness if user wants to re-register later with same username/email/phone
-        // we append a timestamp to make them unique.
-        // Alternatively, set them to NULL if your schema allows and you have a different re-registration policy.
-        username: `${userToDelete.username}_deleted_${Date.now()}`,
-        email: userToDelete.email ? `${userToDelete.email}_deleted_${Date.now()}` : null,
-        phone: `${userToDelete.phone}_deleted_${Date.now()}`
-      },
     });
 
-    await logAdminActivity('ADMIN_DEACTIVATE_USER', deactivatedUser.id, req.user.id, { deactivatedUsername: userToDelete.username });
-    debugLog(`User deactivated by admin ${req.user.username}: User ${userToDelete.username}`);
-    return sendResponse(res, 200, true, { userId: numericUserId, status: 'deactivated' }, 'User deactivated successfully.');
-
+    debugLog(`User HARD DELETED by admin ${req.user.username}: User ID ${numericUserId}, Username ${userToDelete.username}`);
+return sendResponse(res, 200, true, { userId: numericUserId, status: 'deleted_permanently' }, 'User permanently deleted.');
   } catch (error) {
     debugLog('CRITICAL ERROR in deleteUser process:', error.message);
-    console.error(error);
-    return sendResponse(res, 500, false, null, 'Server error deactivating user.', {
-      code: 'SERVER_ERROR',
-      details: process.env.NODE_ENV === 'production' ? 'An internal error occurred.' : error.message,
-    });
+    console.error(error); // Log the full error for server-side debugging
+    // Only send a response if one hasn't been sent yet.
+    if (!res.headersSent) {
+      return sendResponse(res, 500, false, null, 'Server error deactivating user.', {
+        code: 'SERVER_ERROR',
+        details: process.env.NODE_ENV === 'production' ? 'An internal error occurred.' : error.message,
+      });
+    } else {
+      // This case indicates an error occurred after the response was already partially sent,
+      // which is a more complex issue, but the primary "headers already sent" is due to double-send.
+      console.error("Error occurred after response headers were sent in deleteUser:", error);
+    }
   } finally {
     debugLog('=== DELETE USER ATTEMPT FINISHED (ADMIN) ===');
   }
 };
 
 // Reset user password by Admin (sets a new password directly)
+// This function assumes the route calling it has validation that *only* requires newPassword from an admin.
 exports.resetUserPassword = async (req, res) => {
   debugLog('=== ADMIN RESET USER PASSWORD ATTEMPT STARTED ===');
   try {
@@ -504,7 +489,7 @@ exports.resetUserPassword = async (req, res) => {
         debugLog(`View-only admin ${req.user.username} (ID: ${req.user.id}) attempted to reset password.`);
         return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot reset passwords.", { code: 'FORBIDDEN_VIEW_ONLY' });
     }
-    const errors = validationResult(req); // Assuming validation rules for newPassword are in authRoutes.js
+    const errors = validationResult(req);
     if (!errors.isEmpty()) {
       debugLog('Validation errors on password reset:', errors.array());
       return sendResponse(res, 400, false, null, 'Validation failed', {
@@ -514,7 +499,7 @@ exports.resetUserPassword = async (req, res) => {
     }
 
     const { userId } = req.params;
-    const { newPassword } = req.body;
+    const { newPassword } = req.body; // Only newPassword is expected from an admin reset
     const numericUserId = parseInt(userId);
 
     if (isNaN(numericUserId)) {
@@ -532,13 +517,10 @@ exports.resetUserPassword = async (req, res) => {
       return sendResponse(res, 404, false, null, 'User not found.', { code: 'USER_NOT_FOUND' });
     }
     
-    // Prevent admin from resetting their own password through this admin-specific route
-    // They should use the regular 'change password' flow.
-    if (numericUserId === req.user.id) {
+    if (numericUserId === req.user.id) { // Admin trying to reset their own password via this special route
         debugLog('Admin attempted to reset their own password via admin reset route.');
-        return sendResponse(res, 400, false, null, "Admins should use the 'Change Password' feature for their own account.", { code: 'ADMIN_SELF_RESET_NOT_ALLOWED'});
+        return sendResponse(res, 400, false, null, "Admins should use the 'Change Password' feature for their own account (via their profile).", { code: 'ADMIN_SELF_RESET_VIA_ADMIN_ROUTE_NOT_ALLOWED'});
     }
-
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     await prisma.user.update({
@@ -602,7 +584,8 @@ exports.changePassword = async (req, res) => {
       data: { password: hashedPassword, updatedAt: new Date() },
     });
     
-    await logAdminActivity('USER_CHANGE_OWN_PASSWORD', userId, userId);
+    // Log this as a user action rather than admin action, initiated by self
+    await logAdminActivity('USER_CHANGE_OWN_PASSWORD', userId, userId); // Or a different logging function if needed
     debugLog(`Password changed successfully for user: ${user.username}`);
     return sendResponse(res, 200, true, null, 'Password changed successfully.');
 
@@ -616,4 +599,15 @@ exports.changePassword = async (req, res) => {
   } finally {
     debugLog('=== CHANGE OWN PASSWORD ATTEMPT FINISHED ===');
   }
+};
+
+// Logout function
+exports.logout = (req, res) => {
+  debugLog('=== LOGOUT ATTEMPT STARTED ===');
+  // For JWT, logout is primarily client-side (token removal).
+  // Server can optionally maintain a token blacklist for immediate invalidation if needed.
+  // Here, we just acknowledge the request.
+  const userId = req.user ? req.user.id : 'UnknownUser'; // req.user might not be set if token was already invalid/cleared client-side
+  debugLog(`User ${userId} logout request received. Client should clear token.`);
+  return sendResponse(res, 200, true, null, 'Logged out successfully. Token should be cleared by client.');
 };

@@ -132,9 +132,7 @@ router.post(
   authenticateJWT,
   isAdmin,
   [
-    body('oldPassword')
-      .notEmpty()
-      .withMessage('Old password is required'),
+  
     
     body('newPassword')
       .isLength({ min: 8 })

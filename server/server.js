@@ -97,14 +97,15 @@ app.use(helmet({
 app.use(bodyParser.json({
   limit: '10mb',
   verify: (req, res, buf, encoding) => {
-    try {
-      JSON.parse(buf.toString());
-    } catch (e) {
-      if (!IS_PRODUCTION) {
+    if (buf && buf.length) { // Only try to parse if buffer is not empty
+      try {
+        JSON.parse(buf.toString());
+      } catch (e) {
         console.error('Invalid JSON in request body:', e.message);
+        // Don't immediately send response here, let the route handler deal with it or use next(e)
+        // For now, we'll just log it and let it pass to see if other errors occur
+        // To be stricter, you'd throw an error that your global error handler catches.
       }
-      res.status(400).json({ success: false, message: 'Malformed JSON in request body.' });
-      // Note: Throwing an error here would stop middleware processing. Sending response is preferred.
     }
   }
 }));
