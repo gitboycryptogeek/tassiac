@@ -1333,18 +1333,18 @@ export class AdminUsersView {
               this.updateView();
             });
             
-            // Delete button
+            // Delete button (only show for non-admin users or if admin count > 1)
             const deleteButton = document.createElement('button');
             deleteButton.innerHTML = '🗑️';
             deleteButton.title = 'Delete User';
             deleteButton.className = 'btn btn-icon btn-danger';
             
-            // Only enable delete for non-admin users
-            if (user.isAdmin) {
+            // Only enable delete if not admin or if there are multiple admins
+            if (user.isAdmin && this.adminCount <= 1) {
               deleteButton.disabled = true;
               deleteButton.style.opacity = '0.5';
               deleteButton.style.cursor = 'not-allowed';
-              deleteButton.title = 'Admin users cannot be deleted';
+              deleteButton.title = 'Cannot delete the last admin user';
             } else {
               deleteButton.addEventListener('click', () => {
                 this.deleteUser(user.id);
@@ -1407,65 +1407,67 @@ export class AdminUsersView {
           const pageButtons = [];
           
           // First page
-          const firstPage = document.createElement('button');
-          firstPage.className = `pagination-button ${this.currentPage === 1 ? 'active' : ''}`;
-          firstPage.textContent = '1';
-          
-          if (this.currentPage !== 1) {
-            firstPage.addEventListener('click', () => {
-              this.currentPage = 1;
-              this.updateView();
-            });
-          }
-          
-          pageButtons.push(firstPage);
-          
-          // Add ellipsis if needed
-          if (this.currentPage > 3) {
-            const ellipsis = document.createElement('div');
-            ellipsis.textContent = '...';
-            ellipsis.style.margin = '0 4px';
-            pageButtons.push(ellipsis);
-          }
-          
-          // Add current page and surrounding pages
-          for (let i = Math.max(2, this.currentPage - 1); i <= Math.min(this.totalPages - 1, this.currentPage + 1); i++) {
-            const pageButton = document.createElement('button');
-            pageButton.className = `pagination-button ${this.currentPage === i ? 'active' : ''}`;
-            pageButton.textContent = i.toString();
+          if (this.totalPages > 0) {
+            const firstPage = document.createElement('button');
+            firstPage.className = `pagination-button ${this.currentPage === 1 ? 'active' : ''}`;
+            firstPage.textContent = '1';
             
-            if (this.currentPage !== i) {
-              pageButton.addEventListener('click', () => {
-                this.currentPage = i;
+            if (this.currentPage !== 1) {
+              firstPage.addEventListener('click', () => {
+                this.currentPage = 1;
                 this.updateView();
               });
             }
             
-            pageButtons.push(pageButton);
-          }
-          
-          // Add ellipsis if needed
-          if (this.currentPage < this.totalPages - 2) {
-            const ellipsis = document.createElement('div');
-            ellipsis.textContent = '...';
-            ellipsis.style.margin = '0 4px';
-            pageButtons.push(ellipsis);
-          }
-          
-          // Last page (if more than 1 page)
-          if (this.totalPages > 1) {
-            const lastPage = document.createElement('button');
-            lastPage.className = `pagination-button ${this.currentPage === this.totalPages ? 'active' : ''}`;
-            lastPage.textContent = this.totalPages.toString();
+            pageButtons.push(firstPage);
             
-            if (this.currentPage !== this.totalPages) {
-              lastPage.addEventListener('click', () => {
-                this.currentPage = this.totalPages;
-                this.updateView();
-              });
+            // Add ellipsis if needed
+            if (this.currentPage > 3) {
+              const ellipsis = document.createElement('div');
+              ellipsis.textContent = '...';
+              ellipsis.style.margin = '0 4px';
+              pageButtons.push(ellipsis);
             }
             
-            pageButtons.push(lastPage);
+            // Add current page and surrounding pages
+            for (let i = Math.max(2, this.currentPage - 1); i <= Math.min(this.totalPages - 1, this.currentPage + 1); i++) {
+              const pageButton = document.createElement('button');
+              pageButton.className = `pagination-button ${this.currentPage === i ? 'active' : ''}`;
+              pageButton.textContent = i.toString();
+              
+              if (this.currentPage !== i) {
+                pageButton.addEventListener('click', () => {
+                  this.currentPage = i;
+                  this.updateView();
+                });
+              }
+              
+              pageButtons.push(pageButton);
+            }
+            
+            // Add ellipsis if needed
+            if (this.currentPage < this.totalPages - 2) {
+              const ellipsis = document.createElement('div');
+              ellipsis.textContent = '...';
+              ellipsis.style.margin = '0 4px';
+              pageButtons.push(ellipsis);
+            }
+            
+            // Last page (if more than 1 page)
+            if (this.totalPages > 1) {
+              const lastPage = document.createElement('button');
+              lastPage.className = `pagination-button ${this.currentPage === this.totalPages ? 'active' : ''}`;
+              lastPage.textContent = this.totalPages.toString();
+              
+              if (this.currentPage !== this.totalPages) {
+                lastPage.addEventListener('click', () => {
+                  this.currentPage = this.totalPages;
+                  this.updateView();
+                });
+              }
+              
+              pageButtons.push(lastPage);
+            }
           }
           
           // Add all elements to pagination container
@@ -3386,7 +3388,7 @@ export class AdminUsersView {
     guideIcon.style.marginBottom = '12px';
     
     const guideTitle = document.createElement('h3');
-    guideTitle.textContent = 'Password Security';
+    guideTitle.textContent = 'Admin Password Reset';
     guideTitle.style.fontSize = '16px';
     guideTitle.style.fontWeight = '600';
     guideTitle.style.margin = '0 0 12px 0';
@@ -3395,7 +3397,7 @@ export class AdminUsersView {
     guideText.style.fontSize = '14px';
     guideText.style.margin = '0 0 12px 0';
     guideText.style.lineHeight = '1.5';
-    guideText.textContent = 'Passwords must have at least 8 characters, 1 uppercase letter, and 1 number.';
+    guideText.textContent = 'As an admin, you can reset this user\'s password directly. The new password must meet security requirements.';
     
     const guideRequirements = document.createElement('ul');
     guideRequirements.style.margin = '0';
@@ -3433,13 +3435,6 @@ export class AdminUsersView {
     userIdInput.name = 'userId';
     userIdInput.value = this.resettingPasswordUserId;
     form.appendChild(userIdInput);
-    
-    // Old Password
-    const oldPasswordGroup = this.createFormGroup('Old Password', 'oldPassword', 'password', '🔑');
-    const oldPasswordInput = oldPasswordGroup.querySelector('input');
-    oldPasswordInput.required = true;
-    oldPasswordInput.placeholder = 'Enter old password';
-    oldPasswordInput.style.gridColumn = this.mobileView ? '1' : '1 / 3';
     
     // New Password
     const newPasswordGroup = this.createFormGroup('New Password', 'newPassword', 'password', '🔒');
@@ -3485,7 +3480,6 @@ export class AdminUsersView {
     
     // Append all elements to form
     form.appendChild(passwordGuide);
-    form.appendChild(oldPasswordGroup);
     form.appendChild(newPasswordGroup);
     form.appendChild(confirmPasswordGroup);
     form.appendChild(buttonGroup);
@@ -3517,10 +3511,11 @@ export class AdminUsersView {
     try {
       // Use throttled API request
       const response = await this.queueApiRequest(() => {
-        return this.apiService.get('/auth/users');
+        return this.apiService.getAllUsers();
       });
       
-      this.users = response.users;
+      // Handle response structure - check if it's { users: [...] } or directly [...]
+      this.users = response.users || response || [];
       this.filteredUsers = [...this.users]; // Initialize filtered users with all users
       
       // Cache the data
@@ -3625,12 +3620,12 @@ export class AdminUsersView {
       this.isLoading = true;
       this.updateView();
       
-      // Use throttled API request
+      // Use throttled API request to register user
       const response = await this.queueApiRequest(() => {
-        return this.apiService.post('/auth/register', userData);
+        return this.apiService.registerUser(userData);
       });
       
-      if (response.user) {
+      if (response && (response.user || response.success)) {
         this.success = 'User created successfully';
         this.showAddUserForm = false;
         
@@ -3651,7 +3646,7 @@ export class AdminUsersView {
       }
     } catch (error) {
       console.error('Error adding user:', error);
-      this.error = error.response?.data?.message || error.message || 'Failed to create user. Please try again.';
+      this.error = error.message || 'Failed to create user. Please try again.';
       this.isLoading = false;
       this.updateView();
     }
@@ -3676,27 +3671,24 @@ export class AdminUsersView {
     }
     
     const userData = {
-      id: formData.get('id'),
       fullName: formData.get('fullName'),
       phone: formData.get('phone'),
       email: formData.get('email') || null,
       isAdmin: isAdmin
     };
     
+    const userId = formData.get('id');
+    
     try {
       this.isLoading = true;
       this.updateView();
       
-      // Use PUT /api/auth/users/:userId endpoint
-      const userId = userData.id;
-      delete userData.id; // Remove id from payload
-      
       // Use throttled API request
       const response = await this.queueApiRequest(() => {
-        return this.apiService.put(`/auth/users/${userId}`, userData);
+        return this.apiService.updateUser(userId, userData);
       });
       
-      if (response && response.success) {
+      if (response && (response.success || response.user)) {
         this.success = 'User updated successfully';
         this.showEditUserForm = false;
         this.editingUser = null;
@@ -3720,7 +3712,7 @@ export class AdminUsersView {
       }
     } catch (error) {
       console.error('Error updating user:', error);
-      this.error = error.response?.data?.message || error.message || 'Failed to update user. Please try again.';
+      this.error = error.message || 'Failed to update user. Please try again.';
       this.isLoading = false;
       this.updateView();
     }
@@ -3733,7 +3725,6 @@ export class AdminUsersView {
     const formData = new FormData(form);
     
     const userId = formData.get('userId');
-    const oldPassword = formData.get('oldPassword');
     const newPassword = formData.get('newPassword');
     const confirmNewPassword = formData.get('confirmNewPassword');
     
@@ -3755,15 +3746,12 @@ export class AdminUsersView {
       this.isLoading = true;
       this.updateView();
       
-      // Use throttled API request
+      // Use the corrected admin reset password method (only needs newPassword)
       const response = await this.queueApiRequest(() => {
-        return this.apiService.post(`/auth/reset-password/${userId}`, {
-          oldPassword,
-          newPassword
-        });
+        return this.apiService.adminResetUserPassword(userId, newPassword);
       });
       
-      if (response && response.success) {
+      if (response && (response.success || response.message)) {
         this.success = 'Password reset successfully';
         this.showPasswordResetForm = false;
         this.resettingPasswordUserId = null;
@@ -3775,7 +3763,7 @@ export class AdminUsersView {
       }
     } catch (error) {
       console.error('Error resetting password:', error);
-      this.error = error.response?.data?.message || error.message || 'Failed to reset password. Please try again.';
+      this.error = error.message || 'Failed to reset password. Please try again.';
       this.isLoading = false;
       this.updateView();
     }
@@ -3863,17 +3851,11 @@ export class AdminUsersView {
       
       // Use throttled API request
       const response = await this.queueApiRequest(() => {
-        return fetch(`/api/auth/users/${userId}`, {
-          method: 'DELETE',
-          headers: {
-            'Authorization': `Bearer ${this.apiService.getToken()}`
-          }
-        });
+        return this.apiService.deleteUser(userId);
       });
       
-      if (response.ok) {
-        const data = await response.json();
-        this.success = data.message || 'User deleted successfully';
+      if (response && (response.success || response.message)) {
+        this.success = response.message || 'User deleted successfully';
         
         // Invalidate cache
         this.cache.users = null;
@@ -3881,8 +3863,7 @@ export class AdminUsersView {
         // Refresh the users list
         await this.fetchUsers();
       } else {
-        const errorData = await response.json().catch(() => ({ message: 'Failed to delete user' }));
-        this.error = errorData.message || 'Failed to delete user. Please try again.';
+        this.error = 'Failed to delete user. Please try again.';
         this.isLoading = false;
         this.updateView();
       }

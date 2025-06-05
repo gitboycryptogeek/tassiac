@@ -124,6 +124,8 @@ router.delete(
   authController.deleteUser
 );
 
+router.get('/logout', authController.logout); // Or POST if you prefer
+
 // Reset user password (with old and new password)
 router.post(
   '/reset-password/:userId',

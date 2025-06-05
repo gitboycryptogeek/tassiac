@@ -40,6 +40,25 @@ function debugLog(message, data = null) {
   
   return logMessage;
 }
+exports.logout = (req, res) => {
+  debugLog('=== LOGOUT ATTEMPT STARTED ===');
+  // If using server-side sessions primarily:
+  // req.session.destroy(err => {
+  //   if (err) {
+  //     debugLog('Error destroying session:', err);
+  //     return sendResponse(res, 500, false, null, 'Could not log out.');
+  //   }
+  //   res.clearCookie('connect.sid'); // Clear the session cookie (name might vary)
+  //   debugLog('User logged out successfully, session destroyed.');
+  //   return sendResponse(res, 200, true, null, 'Logged out successfully.');
+  // });
+
+  // If primarily JWT-based, logout is mostly a client-side token removal.
+  // The server can optionally have a token blacklist if needed for immediate invalidation.
+  // For now, a simple success response is fine as the client clears the token.
+  debugLog(`User ${req.user?.id || 'Unknown'} logged out (token will be cleared by client).`);
+  return sendResponse(res, 200, true, null, 'Logged out successfully. Please clear your token client-side.');
+};
 
 // Helper for sending standardized responses
 const sendResponse = (res, statusCode, success, data, message, errorDetails = null) => {

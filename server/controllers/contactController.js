@@ -177,7 +177,12 @@ exports.getAllInquiries = async (req, res) => {
     const inquiries = await prisma.contactInquiry.findMany({
       where: whereConditions,
       include: {
-        user: { select: { id: true, username: true, fullName: true } } // Include user if linked
+        submittedBy: { // This should match the relation name in your Prisma schema
+          select: { id: true, username: true, fullName: true }
+        },
+        handledBy: { // Optionally include the admin who handled it
+          select: { id: true, username: true, fullName: true }
+        }
       },
       orderBy: { createdAt: 'desc' },
       skip,

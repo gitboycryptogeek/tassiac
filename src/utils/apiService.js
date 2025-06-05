@@ -214,6 +214,11 @@ export class ApiService {
   async initiateMpesaPayment(paymentData) { // Changed from initiatePayment for clarity
     return this.post('/payment/initiate-mpesa', paymentData);
   }
+  async adminResetUserPassword(userId, newPassword) {
+    // Ensure this path matches the route in your authRoutes.js that's handled by
+    // authController.resetUserPassword and has the corrected validation (no oldPassword).
+    return this.post(`/auth/reset-password/${userId}`, { newPassword });
+  }
 
   // Receipts (User)
   async getUserReceipts(userId = null, params = {}) {

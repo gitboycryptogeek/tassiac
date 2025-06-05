@@ -124,13 +124,13 @@ exports.getAllPayments = async (req, res) => {
     // Enhanced search functionality
     if (search) {
       const searchClauses = [
-        { description: { contains: search, mode: 'insensitive' } },
-        { reference: { contains: search, mode: 'insensitive' } },
-        { transactionId: { contains: search, mode: 'insensitive' } },
-        { receiptNumber: { contains: search, mode: 'insensitive' } },
-        { user: { fullName: { contains: search, mode: 'insensitive' } } },
-        { user: { username: { contains: search, mode: 'insensitive' } } },
-        { specialOffering: { name: { contains: search, mode: 'insensitive' } } }
+        { description: { contains: search } },
+        { reference: { contains: search } },
+        { transactionId: { contains: search } },
+        { receiptNumber: { contains: search } },
+        { user: { fullName: { contains: search } } },
+        { user: { username: { contains: search } } },
+        { specialOffering: { name: { contains: search } } }
       ];
       
       const searchAmount = parseFloat(search);
@@ -225,10 +225,10 @@ exports.getUserPayments = async (req, res) => {
 
     if (search) {
       const searchClauses = [
-        { description: { contains: search, mode: 'insensitive' } },
-        { reference: { contains: search, mode: 'insensitive' } },
-        { transactionId: { contains: search, mode: 'insensitive' } },
-        { receiptNumber: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search } },
+        { reference: { contains: search } },
+        { transactionId: { contains: search } },
+        { receiptNumber: { contains: search } },
       ];
       const searchAmount = parseFloat(search);
       if (!isNaN(searchAmount)) {
@@ -277,8 +277,11 @@ exports.getPaymentStats = async (req, res) => {
     const platformFeesResult = await prisma.payment.aggregate({ _sum: { platformFee: true }, where: { ...commonWhere } });
 
     const totalRevenue = totalRevenueResult._sum.amount || new Prisma.Decimal(0);
-    const totalExpenses = totalExpensesResult._sum.amount || new Prisma.Decimal(0);
-    const totalPlatformFees = platformFeesResult._sum.platformFee || new Prisma.Decimal(0);
+const totalExpenses = totalExpensesResult._sum.amount || new Prisma.Decimal(0);
+const totalPlatformFees = platformFeesResult._sum.platformFee || new Prisma.Decimal(0);
+
+// Correct way to subtract Prisma Decimals
+const netBalanceDecimal = totalRevenue.sub(totalExpenses);
 
     let monthlyData;
     const isPostgres = prisma._engineConfig?.activeProvider === 'postgresql';
@@ -329,7 +332,7 @@ exports.getPaymentStats = async (req, res) => {
     const stats = {
       revenue: parseFloat(totalRevenue.toString()),
       expenses: parseFloat(totalExpenses.toString()),
-      netBalance: parseFloat(totalRevenue.minus(totalExpenses).toString()),
+      netBalance: parseFloat(netBalanceDecimal.toString()),
       platformFees: parseFloat(totalPlatformFees.toString()),
       monthlyData: monthlyData.map(m => ({...m, revenue: Number(m.revenue || 0), expenses: Number(m.expenses || 0), net: Number(m.revenue || 0) - Number(m.expenses || 0) })),
       paymentsByType: paymentsByType.map(p => ({ type: p.paymentType, total: parseFloat((p._sum.amount || 0).toString()) })),

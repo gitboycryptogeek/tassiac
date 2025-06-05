@@ -102,8 +102,11 @@ class AuthService {
    * @param {boolean} redirect - Whether to redirect to login page (default: true)
    */
   logout(redirect = true) {
+    const token = this.token; // Get token before clearing
     localStorage.removeItem('user');
     localStorage.removeItem('token');
+    sessionStorage.removeItem('user'); // Also clear session storage
+    sessionStorage.removeItem('token');
     this.user = null;
     this.token = null;
     

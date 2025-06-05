@@ -178,9 +178,9 @@ exports.getDashboardStats = async (req, res) => {
     const totalExpensesResult = await prisma.payment.aggregate({ _sum: { amount: true }, where: { ...commonPaymentWhere, isExpense: true } });
     const platformFeesResult = await prisma.payment.aggregate({ _sum: { platformFee: true }, where: { ...commonPaymentWhere } });
 
-    const totalRevenue = totalRevenueResult._sum.amount || new Prisma.Decimal(0);
-    const totalExpenses = totalExpensesResult._sum.amount || new Prisma.Decimal(0);
-    const totalPlatformFees = platformFeesResult._sum.platformFee || new Prisma.Decimal(0);
+    const totalRevenue = totalRevenueResult._sum.amount || 0;
+const totalExpenses = totalExpensesResult._sum.amount || 0;
+const totalPlatformFees = platformFeesResult._sum.platformFee || 0;
 
     // Monthly Stats (using $queryRaw for date formatting across DBs)
     // Adjust SQL for PostgreSQL vs SQLite if needed
@@ -241,10 +241,10 @@ exports.getDashboardStats = async (req, res) => {
         activeLast30Days: activeUsersLast30Days,
       },
       paymentStats: {
-        revenue: parseFloat(totalRevenue.toString()),
-        expenses: parseFloat(totalExpenses.toString()),
-        netBalance: parseFloat(totalRevenue.minus(totalExpenses).toString()),
-        platformFees: parseFloat(totalPlatformFees.toString()),
+        revenue: parseFloat(totalRevenue) || 0,
+expenses: parseFloat(totalExpenses) || 0,
+netBalance: parseFloat(totalRevenue) - parseFloat(totalExpenses),
+platformFees: parseFloat(totalPlatformFees) || 0,
       },
       monthlyFinancialSummary: monthlyData.map(m => ({
           month: m.month,
