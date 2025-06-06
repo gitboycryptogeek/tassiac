@@ -12,15 +12,13 @@ class MakePaymentsView {
     this.specialOfferingType = '';
     this.amount = 0;
     this.phoneNumber = this.user?.phoneNumber || '';
-    this.titheDistribution = {
-      GENERAL: 100, // Default 100% to general
-      MUSIC: 0,
-      CHILDREN: 0,
-      YOUTH: 0,
-      EDUCATION: 0,
-      MAINTENANCE: 0,
-      DEVELOPMENT: 0,
-      OTHER: 0
+    this.mpesaPhoneNumber = ''; // Dedicated M-Pesa phone number field
+    this.titheDistributionSDA = {
+      campMeetingExpenses: false,
+      welfare: false,
+      thanksgiving: false,
+      stationFund: false,
+      mediaMinistry: false
     };
     
     // UI state
@@ -132,7 +130,7 @@ class MakePaymentsView {
     try {
       // Get all special offerings
       const response = await this.queueApiRequest(() => 
-        this.apiService.getSpecialOfferings(true) // Get active offerings only
+        this.apiService.getSpecialOfferings({ activeOnly: 'true' })
       );
       
       if (response && response.specialOfferings) {
@@ -144,6 +142,15 @@ class MakePaymentsView {
         });
         
         console.log('Special offerings loaded:', this.specialOfferings.length);
+      } else if (Array.isArray(response)) {
+        // Handle direct array response
+        this.specialOfferings = response.sort((a, b) => {
+          const dateA = new Date(a.createdAt || a.startDate || 0);
+          const dateB = new Date(b.createdAt || b.startDate || 0);
+          return dateB - dateA;
+        });
+        
+        console.log('Special offerings loaded (direct array):', this.specialOfferings.length);
       }
     } catch (error) {
       console.error('Error fetching special offerings:', error);
@@ -152,7 +159,7 @@ class MakePaymentsView {
       // Try alternative endpoint if the first one fails
       try {
         const altResponse = await this.queueApiRequest(() => 
-          this.apiService.get('/payment/special-offerings')
+          this.apiService.get('/special-offerings')
         );
         
         if (altResponse && altResponse.specialOfferings) {
@@ -485,7 +492,6 @@ class MakePaymentsView {
     // Add event listener for amount input
     amountInput.addEventListener('input', (e) => {
       this.amount = parseFloat(e.target.value) || 0;
-      this.updateTitheDistributionAmounts();
     });
     
     // Focus effect
@@ -499,59 +505,66 @@ class MakePaymentsView {
       amountInput.style.border = '1px solid rgba(6, 182, 212, 0.3)';
     });
     
-    // Phone number input
-    const phoneSection = document.createElement('div');
-    phoneSection.style.marginBottom = '30px';
+    // M-Pesa Phone number input
+    const mpesaPhoneSection = document.createElement('div');
+    mpesaPhoneSection.style.marginBottom = '30px';
     
-    const phoneLabel = document.createElement('label');
-    phoneLabel.style.display = 'block';
-    phoneLabel.style.fontSize = '16px';
-    phoneLabel.style.fontWeight = '600';
-    phoneLabel.style.color = '#ffffff';
-    phoneLabel.style.marginBottom = '12px';
-    phoneLabel.textContent = 'Phone Number (M-Pesa)';
+    const mpesaPhoneLabel = document.createElement('label');
+    mpesaPhoneLabel.style.display = 'block';
+    mpesaPhoneLabel.style.fontSize = '16px';
+    mpesaPhoneLabel.style.fontWeight = '600';
+    mpesaPhoneLabel.style.color = '#ffffff';
+    mpesaPhoneLabel.style.marginBottom = '8px';
+    mpesaPhoneLabel.textContent = 'Paying Phone Number (M-Pesa)';
     
-    const phoneInput = document.createElement('input');
-    phoneInput.type = 'tel';
-    phoneInput.id = 'phone-input';
-    phoneInput.placeholder = 'e.g. 254712345678';
-    phoneInput.value = this.phoneNumber;
-    phoneInput.className = 'futuristic-input';
-    phoneInput.style.width = '100%';
-    phoneInput.style.padding = '15px';
-    phoneInput.style.background = 'rgba(15, 23, 42, 0.6)';
-    phoneInput.style.border = '1px solid rgba(6, 182, 212, 0.3)';
-    phoneInput.style.borderRadius = '12px';
-    phoneInput.style.color = '#ffffff';
-    phoneInput.style.fontSize = '16px';
-    phoneInput.style.transition = 'all 0.3s ease';
+    const mpesaPhoneHelp = document.createElement('p');
+    mpesaPhoneHelp.style.fontSize = '14px';
+    mpesaPhoneHelp.style.color = '#94a3b8';
+    mpesaPhoneHelp.style.margin = '0 0 12px';
+    mpesaPhoneHelp.textContent = 'Enter the M-Pesa phone number that will make this payment';
     
-    // Add event listener for phone input
-    phoneInput.addEventListener('input', (e) => {
-      this.phoneNumber = e.target.value;
+    const mpesaPhoneInput = document.createElement('input');
+    mpesaPhoneInput.type = 'tel';
+    mpesaPhoneInput.id = 'mpesa-phone-input';
+    mpesaPhoneInput.placeholder = 'e.g. 254712345678';
+    mpesaPhoneInput.value = this.mpesaPhoneNumber || this.user?.phoneNumber || '';
+    mpesaPhoneInput.className = 'futuristic-input';
+    mpesaPhoneInput.style.width = '100%';
+    mpesaPhoneInput.style.padding = '15px';
+    mpesaPhoneInput.style.background = 'rgba(15, 23, 42, 0.6)';
+    mpesaPhoneInput.style.border = '1px solid rgba(6, 182, 212, 0.3)';
+    mpesaPhoneInput.style.borderRadius = '12px';
+    mpesaPhoneInput.style.color = '#ffffff';
+    mpesaPhoneInput.style.fontSize = '16px';
+    mpesaPhoneInput.style.transition = 'all 0.3s ease';
+    
+    // Add event listener for M-Pesa phone input
+    mpesaPhoneInput.addEventListener('input', (e) => {
+      this.mpesaPhoneNumber = e.target.value;
     });
     
     // Focus effect
-    phoneInput.addEventListener('focus', () => {
-      phoneInput.style.boxShadow = '0 0 0 2px rgba(6, 182, 212, 0.3)';
-      phoneInput.style.border = '1px solid rgba(6, 182, 212, 0.5)';
+    mpesaPhoneInput.addEventListener('focus', () => {
+      mpesaPhoneInput.style.boxShadow = '0 0 0 2px rgba(6, 182, 212, 0.3)';
+      mpesaPhoneInput.style.border = '1px solid rgba(6, 182, 212, 0.5)';
     });
     
-    phoneInput.addEventListener('blur', () => {
-      phoneInput.style.boxShadow = 'none';
-      phoneInput.style.border = '1px solid rgba(6, 182, 212, 0.3)';
+    mpesaPhoneInput.addEventListener('blur', () => {
+      mpesaPhoneInput.style.boxShadow = 'none';
+      mpesaPhoneInput.style.border = '1px solid rgba(6, 182, 212, 0.3)';
     });
     
     amountSection.appendChild(amountLabel);
     amountSection.appendChild(amountInput);
     
-    phoneSection.appendChild(phoneLabel);
-    phoneSection.appendChild(phoneInput);
+    mpesaPhoneSection.appendChild(mpesaPhoneLabel);
+    mpesaPhoneSection.appendChild(mpesaPhoneHelp);
+    mpesaPhoneSection.appendChild(mpesaPhoneInput);
     
     leftColumn.appendChild(paymentTypeSection);
     leftColumn.appendChild(specialOfferingSection);
     leftColumn.appendChild(amountSection);
-    leftColumn.appendChild(phoneSection);
+    leftColumn.appendChild(mpesaPhoneSection);
     
     // Right column - tithe distribution (only for tithe)
     const rightColumn = document.createElement('div');
@@ -566,166 +579,113 @@ class MakePaymentsView {
     titheLabel.style.fontWeight = '600';
     titheLabel.style.color = '#ffffff';
     titheLabel.style.marginBottom = '12px';
-    titheLabel.textContent = 'Tithe Distribution';
+    titheLabel.textContent = 'Tithe Distribution Categories';
     
     // Distribution instructions
     const distributionInstructions = document.createElement('p');
     distributionInstructions.style.fontSize = '14px';
     distributionInstructions.style.color = '#e2e8f0';
     distributionInstructions.style.marginBottom = '20px';
-    distributionInstructions.textContent = 'Adjust percentages (total must be 100%). By default, 100% goes to General Fund.';
+    distributionInstructions.textContent = 'Select which SDA categories this tithe contribution should support:';
     
-    // Distribution graph
-    const distributionGraph = document.createElement('div');
-    distributionGraph.className = 'distribution-graph';
-    distributionGraph.style.marginBottom = '20px';
-    distributionGraph.style.height = '20px';
-    distributionGraph.style.borderRadius = '10px';
-    distributionGraph.style.background = 'rgba(15, 23, 42, 0.6)';
-    distributionGraph.style.position = 'relative';
-    distributionGraph.style.overflow = 'hidden';
+    // Distribution checkboxes container
+    const distributionCheckboxes = document.createElement('div');
+    distributionCheckboxes.className = 'distribution-checkboxes';
+    distributionCheckboxes.style.display = 'flex';
+    distributionCheckboxes.style.flexDirection = 'column';
+    distributionCheckboxes.style.gap = '15px';
     
-    // Distribution sliders
-    const distributionSliders = document.createElement('div');
-    distributionSliders.className = 'distribution-sliders';
-    distributionSliders.style.display = 'flex';
-    distributionSliders.style.flexDirection = 'column';
-    distributionSliders.style.gap = '15px';
-    
-    const departmentColors = {
-      GENERAL: '#06b6d4',
-      MUSIC: '#8b5cf6',
-      CHILDREN: '#10b981',
-      YOUTH: '#f59e0b',
-      EDUCATION: '#3b82f6',
-      MAINTENANCE: '#ef4444',
-      DEVELOPMENT: '#ec4899',
-      OTHER: '#64748b'
+    const titheCategories = {
+      campMeetingExpenses: 'Camp Meeting Expenses',
+      welfare: 'Welfare & Assistance',
+      thanksgiving: 'Thanksgiving Services',
+      stationFund: 'Local Station Fund',
+      mediaMinistry: 'Media Ministry'
     };
     
-    // Create distribution bars for graph
-    Object.entries(this.titheDistribution).forEach(([dept, percentage]) => {
-      if (percentage > 0) {
-        const distributionBar = document.createElement('div');
-        distributionBar.className = `distribution-bar ${dept.toLowerCase()}`;
-        distributionBar.style.position = 'absolute';
-        distributionBar.style.top = '0';
-        distributionBar.style.left = '0';
-        distributionBar.style.height = '100%';
-        distributionBar.style.width = `${percentage}%`;
-        distributionBar.style.background = departmentColors[dept] || '#64748b';
-        distributionBar.style.transition = 'all 0.3s ease';
-        
-        distributionGraph.appendChild(distributionBar);
-      }
-    });
-    
-    // Create department sliders
-    Object.entries(this.titheDistribution).forEach(([dept, percentage]) => {
-      const sliderContainer = document.createElement('div');
-      sliderContainer.style.position = 'relative';
+    // Create checkbox for each tithe category
+    Object.entries(titheCategories).forEach(([key, label]) => {
+      const checkboxContainer = document.createElement('div');
+      checkboxContainer.style.position = 'relative';
+      checkboxContainer.style.padding = '15px';
+      checkboxContainer.style.background = 'linear-gradient(135deg, rgba(30, 41, 59, 0.4), rgba(30, 41, 59, 0.2))';
+      checkboxContainer.style.borderRadius = '12px';
+      checkboxContainer.style.border = '1px solid rgba(30, 41, 59, 0.6)';
+      checkboxContainer.style.transition = 'all 0.3s ease';
+      checkboxContainer.style.cursor = 'pointer';
       
-      const sliderHeader = document.createElement('div');
-      sliderHeader.style.display = 'flex';
-      sliderHeader.style.justifyContent = 'space-between';
-      sliderHeader.style.alignItems = 'center';
-      sliderHeader.style.marginBottom = '5px';
+      const checkboxWrapper = document.createElement('label');
+      checkboxWrapper.style.display = 'flex';
+      checkboxWrapper.style.alignItems = 'center';
+      checkboxWrapper.style.cursor = 'pointer';
+      checkboxWrapper.style.gap = '12px';
       
-      const deptLabel = document.createElement('label');
-      deptLabel.style.fontSize = '14px';
-      deptLabel.style.fontWeight = '500';
-      deptLabel.style.color = '#e2e8f0';
-      deptLabel.textContent = this.formatDepartment(dept);
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.id = `tithe-${key}`;
+      checkbox.checked = this.titheDistributionSDA[key];
+      checkbox.style.width = '18px';
+      checkbox.style.height = '18px';
+      checkbox.style.accentColor = '#06b6d4';
+      checkbox.style.cursor = 'pointer';
       
-      const percentageDisplay = document.createElement('span');
-      percentageDisplay.className = `percentage-display ${dept.toLowerCase()}`;
-      percentageDisplay.style.fontSize = '14px';
-      percentageDisplay.style.fontWeight = '600';
-      percentageDisplay.style.color = departmentColors[dept] || '#64748b';
-      percentageDisplay.textContent = `${percentage}%`;
+      const checkboxLabel = document.createElement('span');
+      checkboxLabel.style.fontSize = '14px';
+      checkboxLabel.style.fontWeight = '500';
+      checkboxLabel.style.color = '#e2e8f0';
+      checkboxLabel.textContent = label;
       
-      // Amount display for current department
-      const amountDisplay = document.createElement('span');
-      amountDisplay.className = `amount-display ${dept.toLowerCase()}`;
-      amountDisplay.style.fontSize = '14px';
-      amountDisplay.style.color = '#94a3b8';
-      amountDisplay.style.marginLeft = '10px';
-      amountDisplay.textContent = `(KES 0.00)`;
-      
-      const percentageWrapper = document.createElement('div');
-      percentageWrapper.style.display = 'flex';
-      percentageWrapper.style.alignItems = 'center';
-      percentageWrapper.appendChild(percentageDisplay);
-      percentageWrapper.appendChild(amountDisplay);
-      
-      sliderHeader.appendChild(deptLabel);
-      sliderHeader.appendChild(percentageWrapper);
-      
-      const sliderInput = document.createElement('input');
-      sliderInput.type = 'range';
-      sliderInput.min = '0';
-      sliderInput.max = '100';
-      sliderInput.value = percentage;
-      sliderInput.className = `distribution-slider ${dept.toLowerCase()}`;
-      sliderInput.style.width = '100%';
-      sliderInput.style.accentColor = departmentColors[dept] || '#64748b';
-      
-      // Add event listener for slider input
-      sliderInput.addEventListener('input', (e) => {
-        this.adjustTitheDistribution(dept, parseInt(e.target.value));
+      // Add event listener for checkbox change
+      checkbox.addEventListener('change', (e) => {
+        this.titheDistributionSDA[key] = e.target.checked;
+        this.updateTitheDistributionUI();
       });
       
-      sliderContainer.appendChild(sliderHeader);
-      sliderContainer.appendChild(sliderInput);
+      // Add click handler for the container
+      checkboxContainer.addEventListener('click', (e) => {
+        if (e.target !== checkbox) {
+          checkbox.checked = !checkbox.checked;
+          this.titheDistributionSDA[key] = checkbox.checked;
+          this.updateTitheDistributionUI();
+        }
+      });
       
-      distributionSliders.appendChild(sliderContainer);
+      checkboxWrapper.appendChild(checkbox);
+      checkboxWrapper.appendChild(checkboxLabel);
+      checkboxContainer.appendChild(checkboxWrapper);
+      
+      distributionCheckboxes.appendChild(checkboxContainer);
     });
     
-    // Total percentage display
-    const totalDisplay = document.createElement('div');
-    totalDisplay.style.display = 'flex';
-    totalDisplay.style.justifyContent = 'space-between';
-    totalDisplay.style.alignItems = 'center';
-    totalDisplay.style.marginTop = '15px';
-    totalDisplay.style.padding = '10px';
-    totalDisplay.style.background = 'rgba(15, 23, 42, 0.6)';
-    totalDisplay.style.borderRadius = '8px';
+    // Summary of selected categories
+    const selectedSummary = document.createElement('div');
+    selectedSummary.id = 'tithe-summary';
+    selectedSummary.style.marginTop = '15px';
+    selectedSummary.style.padding = '15px';
+    selectedSummary.style.background = 'rgba(15, 23, 42, 0.6)';
+    selectedSummary.style.borderRadius = '8px';
+    selectedSummary.style.border = '1px solid rgba(6, 182, 212, 0.2)';
     
-    const totalLabel = document.createElement('span');
-    totalLabel.style.fontSize = '14px';
-    totalLabel.style.fontWeight = '600';
-    totalLabel.style.color = '#ffffff';
-    totalLabel.textContent = 'Total';
+    const summaryTitle = document.createElement('div');
+    summaryTitle.style.fontSize = '14px';
+    summaryTitle.style.fontWeight = '600';
+    summaryTitle.style.color = '#ffffff';
+    summaryTitle.style.marginBottom = '8px';
+    summaryTitle.textContent = 'Selected Categories:';
     
-    const totalPercentage = document.createElement('span');
-    totalPercentage.id = 'total-percentage';
-    totalPercentage.style.fontSize = '16px';
-    totalPercentage.style.fontWeight = '700';
-    const totalPercent = Object.values(this.titheDistribution).reduce((sum, val) => sum + val, 0);
-    totalPercentage.style.color = totalPercent === 100 ? '#10b981' : '#ef4444';
-    totalPercentage.textContent = `${totalPercent}%`;
+    const summaryContent = document.createElement('div');
+    summaryContent.id = 'tithe-summary-content';
+    summaryContent.style.fontSize = '14px';
+    summaryContent.style.color = '#94a3b8';
+    summaryContent.textContent = 'None selected';
     
-    totalDisplay.appendChild(totalLabel);
-    totalDisplay.appendChild(totalPercentage);
-    
-    // Equal distribution button
-    const equalDistributionButton = document.createElement('button');
-    equalDistributionButton.className = 'futuristic-button';
-    equalDistributionButton.style.width = '100%';
-    equalDistributionButton.style.marginTop = '15px';
-    equalDistributionButton.style.background = 'linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(6, 182, 212, 0.1))';
-    equalDistributionButton.textContent = 'Distribute Equally';
-    
-    equalDistributionButton.addEventListener('click', () => {
-      this.distributeEqually();
-    });
+    selectedSummary.appendChild(summaryTitle);
+    selectedSummary.appendChild(summaryContent);
     
     titheDistributionSection.appendChild(titheLabel);
     titheDistributionSection.appendChild(distributionInstructions);
-    titheDistributionSection.appendChild(distributionGraph);
-    titheDistributionSection.appendChild(distributionSliders);
-    titheDistributionSection.appendChild(totalDisplay);
-    titheDistributionSection.appendChild(equalDistributionButton);
+    titheDistributionSection.appendChild(distributionCheckboxes);
+    titheDistributionSection.appendChild(selectedSummary);
     
     rightColumn.appendChild(titheDistributionSection);
     
@@ -902,11 +862,11 @@ class MakePaymentsView {
         // Create offering card
         const offeringCard = document.createElement('div');
         offeringCard.className = 'special-offering-card';
-        offeringCard.dataset.type = offering.offeringType;
-        offeringCard.style.background = this.specialOfferingType === offering.offeringType ?
+        offeringCard.dataset.offeringId = offering.id;
+        offeringCard.style.background = this.specialOfferingType === offering.id ?
           `linear-gradient(135deg, ${offeringColor}40, ${offeringColor}20)` :
           'linear-gradient(135deg, rgba(30, 41, 59, 0.6), rgba(30, 41, 59, 0.4))';
-        offeringCard.style.border = this.specialOfferingType === offering.offeringType ?
+        offeringCard.style.border = this.specialOfferingType === offering.id ?
           `1px solid ${offeringColor}40` :
           '1px solid rgba(30, 41, 59, 0.8)';
         offeringCard.style.borderRadius = '12px';
@@ -940,7 +900,7 @@ class MakePaymentsView {
         const nameText = document.createElement('span');
         nameText.style.fontSize = '15px';
         nameText.style.fontWeight = '600';
-        nameText.style.color = this.specialOfferingType === offering.offeringType ? '#ffffff' : '#e2e8f0';
+        nameText.style.color = this.specialOfferingType === offering.id ? '#ffffff' : '#e2e8f0';
         nameText.textContent = offeringName;
         
         iconNameDiv.appendChild(offeringIcon);
@@ -1003,7 +963,7 @@ class MakePaymentsView {
         
         // Add selection functionality
         offeringCard.addEventListener('click', () => {
-          this.selectSpecialOffering(offering.offeringType);
+          this.selectSpecialOffering(offering.id);
         });
         
         // Assemble offering card
@@ -1020,7 +980,7 @@ class MakePaymentsView {
         glowEffect.style.height = '100px';
         glowEffect.style.borderRadius = '50%';
         glowEffect.style.background = `radial-gradient(circle, ${offeringColor}30 0%, transparent 70%)`;
-        glowEffect.style.opacity = this.specialOfferingType === offering.offeringType ? '1' : '0.5';
+        glowEffect.style.opacity = this.specialOfferingType === offering.id ? '1' : '0.5';
         glowEffect.style.transition = 'all 0.3s ease';
         
         offeringCard.appendChild(glowEffect);
@@ -1030,19 +990,19 @@ class MakePaymentsView {
     }
   }
   
-  selectSpecialOffering(offeringType) {
-    this.specialOfferingType = offeringType;
+  selectSpecialOffering(offeringId) {
+    this.specialOfferingType = offeringId;
     
     // Update UI
     const offeringCards = document.querySelectorAll('.special-offering-card');
     offeringCards.forEach(card => {
-      const type = card.dataset.type;
-      const color = this.getOfferingColor(type);
+      const cardOfferingId = parseInt(card.dataset.offeringId);
+      const color = this.getOfferingColor('SPECIAL'); // Default color
       
-      if (type === offeringType) {
+      if (cardOfferingId === offeringId) {
         card.style.background = `linear-gradient(135deg, ${color}40, ${color}20)`;
         card.style.border = `1px solid ${color}40`;
-        const nameText = card.querySelector('div > div > span:last-child');
+        const nameText = card.querySelector('div > div > div > span:last-child');
         if (nameText) nameText.style.color = '#ffffff';
         
         // Enhance glow effect
@@ -1051,7 +1011,7 @@ class MakePaymentsView {
       } else {
         card.style.background = 'linear-gradient(135deg, rgba(30, 41, 59, 0.6), rgba(30, 41, 59, 0.4))';
         card.style.border = '1px solid rgba(30, 41, 59, 0.8)';
-        const nameText = card.querySelector('div > div > span:last-child');
+        const nameText = card.querySelector('div > div > div > span:last-child');
         if (nameText) nameText.style.color = '#e2e8f0';
         
         // Reduce glow effect
@@ -1061,161 +1021,45 @@ class MakePaymentsView {
     });
   }
   
-  adjustTitheDistribution(department, percentage) {
-    // Store previous value for adjustment
-    const previousValue = this.titheDistribution[department];
-    
-    // Update the value for this department
-    this.titheDistribution[department] = percentage;
-    
-    // Calculate new total
-    const total = Object.values(this.titheDistribution).reduce((sum, val) => sum + val, 0);
-    
-    // If total exceeds 100%, adjust other departments
-    if (total > 100) {
-      const excess = total - 100;
-      const diff = percentage - previousValue;
-      
-      // If this is an increase, reduce other departments proportionally
-      if (diff > 0) {
-        // Get other departments that have non-zero values
-        const otherDepts = Object.keys(this.titheDistribution).filter(dept => 
-          dept !== department && this.titheDistribution[dept] > 0
-        );
-        
-        if (otherDepts.length > 0) {
-          // Calculate how much to reduce each department
-          const totalOtherValues = otherDepts.reduce((sum, dept) => sum + this.titheDistribution[dept], 0);
-          
-          // Reduce each department proportionally
-          otherDepts.forEach(dept => {
-            const proportion = this.titheDistribution[dept] / totalOtherValues;
-            const reduction = Math.min(this.titheDistribution[dept], Math.round(excess * proportion));
-            this.titheDistribution[dept] -= reduction;
-          });
-        } else {
-          // If no other departments have values, reduce this one
-          this.titheDistribution[department] = 100;
-        }
-      }
-    }
-    
-    // Update the UI to reflect changes
-    this.updateTitheDistributionUI();
-    this.updateTitheDistributionAmounts();
-  }
-  
-  distributeEqually() {
-    // Calculate equal share (handle rounding)
-    const departments = Object.keys(this.titheDistribution);
-    const equalShare = Math.floor(100 / departments.length);
-    const remainder = 100 - (equalShare * departments.length);
-    
-    // Set equal values for all departments
-    departments.forEach((dept, index) => {
-      // Add remainder to the first department to ensure total is exactly 100%
-      this.titheDistribution[dept] = (index === 0) ? equalShare + remainder : equalShare;
-    });
-    
-    // Update UI
-    this.updateTitheDistributionUI();
-    this.updateTitheDistributionAmounts();
-  }
-  
   updateTitheDistributionUI() {
-    // Update sliders and percentage displays
-    Object.entries(this.titheDistribution).forEach(([dept, percentage]) => {
-      // Update slider value
-      const slider = document.querySelector(`.distribution-slider.${dept.toLowerCase()}`);
-      if (slider) slider.value = percentage;
-      
-      // Update percentage display
-      const percentageDisplay = document.querySelector(`.percentage-display.${dept.toLowerCase()}`);
-      if (percentageDisplay) percentageDisplay.textContent = `${percentage}%`;
-      
-      // Update distribution bar
-      const distributionBar = document.querySelector(`.distribution-bar.${dept.toLowerCase()}`);
-      if (distributionBar) {
-        // If percentage is 0, hide the bar
-        if (percentage === 0) {
-          distributionBar.style.display = 'none';
+    const summaryContent = document.getElementById('tithe-summary-content');
+    if (!summaryContent) return;
+    
+    const selectedCategories = Object.entries(this.titheDistributionSDA)
+      .filter(([key, value]) => value)
+      .map(([key, value]) => {
+        const categoryNames = {
+          campMeetingExpenses: 'Camp Meeting Expenses',
+          welfare: 'Welfare & Assistance',
+          thanksgiving: 'Thanksgiving Services',
+          stationFund: 'Local Station Fund',
+          mediaMinistry: 'Media Ministry'
+        };
+        return categoryNames[key];
+      });
+    
+    if (selectedCategories.length === 0) {
+      summaryContent.textContent = 'None selected - will go to general tithe fund';
+      summaryContent.style.color = '#94a3b8';
+    } else {
+      summaryContent.textContent = selectedCategories.join(', ');
+      summaryContent.style.color = '#06b6d4';
+    }
+    
+    // Update checkbox container styles based on selection
+    Object.entries(this.titheDistributionSDA).forEach(([key, value]) => {
+      const container = document.querySelector(`#tithe-${key}`);
+      if (container && container.parentElement && container.parentElement.parentElement) {
+        const checkboxContainer = container.parentElement.parentElement;
+        if (value) {
+          checkboxContainer.style.background = 'linear-gradient(135deg, rgba(6, 182, 212, 0.3), rgba(6, 182, 212, 0.1))';
+          checkboxContainer.style.border = '1px solid rgba(6, 182, 212, 0.3)';
         } else {
-          distributionBar.style.display = 'block';
-          
-          // Calculate positions for bars based on cumulative percentages
-          let cumulativePercentage = 0;
-          Object.entries(this.titheDistribution).forEach(([d, p]) => {
-            if (d === dept) return; // Skip current department
-            if (this.getDepartmentOrder(d) < this.getDepartmentOrder(dept)) {
-              cumulativePercentage += p;
-            }
-          });
-          
-          distributionBar.style.left = `${cumulativePercentage}%`;
-          distributionBar.style.width = `${percentage}%`;
+          checkboxContainer.style.background = 'linear-gradient(135deg, rgba(30, 41, 59, 0.4), rgba(30, 41, 59, 0.2))';
+          checkboxContainer.style.border = '1px solid rgba(30, 41, 59, 0.6)';
         }
       }
     });
-    
-    // Update total percentage
-    const totalPercent = Object.values(this.titheDistribution).reduce((sum, val) => sum + val, 0);
-    const totalPercentageDisplay = document.getElementById('total-percentage');
-    if (totalPercentageDisplay) {
-      totalPercentageDisplay.textContent = `${totalPercent}%`;
-      totalPercentageDisplay.style.color = totalPercent === 100 ? '#10b981' : '#ef4444';
-    }
-  }
-  
-  updateTitheDistributionAmounts() {
-    // Only update if amount is set and tithe is selected
-    if (this.paymentType === 'TITHE' && this.amount > 0) {
-      Object.entries(this.titheDistribution).forEach(([dept, percentage]) => {
-        const deptAmount = (this.amount * percentage / 100).toFixed(2);
-        
-        // Update amount display
-        const amountDisplay = document.querySelector(`.amount-display.${dept.toLowerCase()}`);
-        if (amountDisplay) {
-          amountDisplay.textContent = `(KES ${deptAmount})`;
-        }
-      });
-    }
-  }
-  
-  getDepartmentOrder(department) {
-    // Define the order for positioning bars in the distribution graph
-    const order = {
-      GENERAL: 1,
-      MUSIC: 2,
-      CHILDREN: 3,
-      YOUTH: 4,
-      EDUCATION: 5,
-      MAINTENANCE: 6,
-      DEVELOPMENT: 7,
-      OTHER: 8
-    };
-    
-    return order[department] || 999;
-  }
-  
-  getOfferingColor(offeringType) {
-    // Extract the offering type for special offerings
-    const type = offeringType.startsWith('SPECIAL_') ? offeringType.split('_')[1] : offeringType;
-    
-    // Color palette for different offerings
-    const colors = {
-      BUILDING: '#8b5cf6', // Purple
-      MISSION: '#06b6d4', // Cyan
-      CHARITY: '#10b981', // Green
-      YOUTH: '#f59e0b', // Amber
-      EDUCATION: '#3b82f6', // Blue
-      EQUIPMENT: '#ef4444', // Red
-      COMMUNITY: '#ec4899', // Pink
-      DEVELOPMENT: '#0ea5e9', // Sky blue
-      OTHER: '#64748b', // Slate
-      DEFAULT: '#06b6d4' // Default cyan
-    };
-    
-    return colors[type] || colors.DEFAULT;
   }
   
   async processPayment() {
@@ -1231,18 +1075,22 @@ class MakePaymentsView {
       // Prepare payment data
       const paymentData = this.preparePaymentData();
       
-      // Call API to initiate payment
+      // Call API to initiate M-Pesa payment
       const response = await this.queueApiRequest(() => 
-        this.apiService.initiatePayment(paymentData)
+        this.apiService.initiateMpesaPayment(paymentData)
       );
       
       // Check response
-      if (response && response.success) {
+      if (response && response.paymentId) {
         // Handle successful initiation - show prompt message
-        this.showMessage('Payment initiated. Check your phone for the M-Pesa prompt.', 'success');
+        this.showMessage('Payment initiated successfully! Please check your phone for the M-Pesa STK prompt.', 'success');
         
-        // Poll for payment status
-        this.pollPaymentStatus(response.checkoutRequestId);
+        // Poll for payment status if we have a checkout ID
+        if (response.mpesaCheckoutID) {
+          this.pollPaymentStatus(response.paymentId, response.mpesaCheckoutID);
+        } else {
+          this.setPaymentButtonLoading(false);
+        }
       } else {
         throw new Error(response?.message || 'Failed to initiate payment');
       }
@@ -1263,9 +1111,9 @@ class MakePaymentsView {
       return false;
     }
     
-    // Validate phone number
-    if (!this.phoneNumber || !this.validatePhoneNumber(this.phoneNumber)) {
-      this.showMessage('Please enter a valid phone number starting with 254', 'error');
+    // Validate M-Pesa phone number
+    if (!this.mpesaPhoneNumber || !this.validatePhoneNumber(this.mpesaPhoneNumber)) {
+      this.showMessage('Please enter a valid M-Pesa phone number starting with 254', 'error');
       return false;
     }
     
@@ -1273,15 +1121,6 @@ class MakePaymentsView {
     if (this.paymentType === 'SPECIAL' && !this.specialOfferingType) {
       this.showMessage('Please select a special offering', 'error');
       return false;
-    }
-    
-    // Validate tithe distribution for tithe payments
-    if (this.paymentType === 'TITHE') {
-      const totalPercent = Object.values(this.titheDistribution).reduce((sum, val) => sum + val, 0);
-      if (totalPercent !== 100) {
-        this.showMessage('Tithe distribution must total exactly 100%', 'error');
-        return false;
-      }
     }
     
     return true;
@@ -1301,31 +1140,30 @@ class MakePaymentsView {
     // Basic payment data
     const paymentData = {
       amount: this.amount,
-      phoneNumber: this.phoneNumber,
-      paymentMethod: 'MPESA',
-      description: notes || `${this.formatPaymentType(this.paymentType)} payment`,
-      paymentType: this.paymentType
+      phoneNumber: this.mpesaPhoneNumber, // Use the dedicated M-Pesa phone number
+      paymentType: this.paymentType,
+      description: notes || `${this.formatPaymentType(this.paymentType)} payment`
     };
     
-    // Add special offering type if applicable
+    // Add special offering ID if applicable
     if (this.paymentType === 'SPECIAL' && this.specialOfferingType) {
-      paymentData.paymentType = this.specialOfferingType;
+      paymentData.specialOfferingId = parseInt(this.specialOfferingType);
     }
     
     // Add tithe distribution if applicable
     if (this.paymentType === 'TITHE') {
-      paymentData.titheDistribution = { ...this.titheDistribution };
+      paymentData.titheDistributionSDA = { ...this.titheDistributionSDA };
     }
     
     return paymentData;
   }
   
-  async pollPaymentStatus(checkoutRequestId, attempts = 0) {
+  async pollPaymentStatus(paymentId, checkoutId, attempts = 0) {
     // Maximum polling attempts (30 seconds * 10 attempts = 5 minutes)
     const maxAttempts = 10;
     
     if (attempts >= maxAttempts) {
-      this.showMessage('Payment status check timed out. Please check your M-Pesa messages.', 'info');
+      this.showMessage('Payment status check timed out. Please check your M-Pesa messages or contact support.', 'warning');
       this.setPaymentButtonLoading(false);
       return;
     }
@@ -1334,36 +1172,36 @@ class MakePaymentsView {
       // Wait 30 seconds before checking (typical M-Pesa processing time)
       await new Promise(resolve => setTimeout(resolve, 30000));
       
-      // Check payment status
+      // Check payment status using the payment ID
       const statusResponse = await this.queueApiRequest(() => 
-        this.apiService.get(`/payment/status/${checkoutRequestId}`)
+        this.apiService.get(`/payment/status/${paymentId}`)
       );
       
-      if (statusResponse && statusResponse.success) {
+      if (statusResponse && statusResponse.status) {
         if (statusResponse.status === 'COMPLETED') {
           // Payment successful
-          this.showMessage('Payment successful! Thank you for your contribution.', 'success');
+          this.showMessage('Payment successful! Thank you for your contribution. A receipt has been generated.', 'success');
           this.setPaymentButtonLoading(false);
           
           // Reset form
           this.resetForm();
         } else if (statusResponse.status === 'FAILED' || statusResponse.status === 'CANCELLED') {
           // Payment failed
-          this.showMessage(`Payment ${statusResponse.status.toLowerCase()}: ${statusResponse.resultDescription || 'Transaction was not completed'}`, 'error');
+          this.showMessage(`Payment ${statusResponse.status.toLowerCase()}: ${statusResponse.description || 'Transaction was not completed'}`, 'error');
           this.setPaymentButtonLoading(false);
         } else {
           // Still pending, continue polling
           console.log(`Payment still processing, attempt ${attempts + 1} of ${maxAttempts}`);
-          this.pollPaymentStatus(checkoutRequestId, attempts + 1);
+          this.pollPaymentStatus(paymentId, checkoutId, attempts + 1);
         }
       } else {
         // Error getting status, continue polling
         console.warn('Error checking payment status, retrying...');
-        this.pollPaymentStatus(checkoutRequestId, attempts + 1);
+        this.pollPaymentStatus(paymentId, checkoutId, attempts + 1);
       }
     } catch (error) {
       console.error('Error polling payment status:', error);
-      this.pollPaymentStatus(checkoutRequestId, attempts + 1);
+      this.pollPaymentStatus(paymentId, checkoutId, attempts + 1);
     }
   }
   
@@ -1371,27 +1209,36 @@ class MakePaymentsView {
     // Reset state
     this.amount = 0;
     this.specialOfferingType = '';
+    this.mpesaPhoneNumber = this.user?.phoneNumber || '';
     
     // Reset form fields
     const amountInput = document.getElementById('amount-input');
     if (amountInput) amountInput.value = '';
     
+    const mpesaPhoneInput = document.getElementById('mpesa-phone-input');
+    if (mpesaPhoneInput) mpesaPhoneInput.value = this.mpesaPhoneNumber;
+    
     const notesInput = document.getElementById('notes-input');
     if (notesInput) notesInput.value = '';
     
     // Reset tithe distribution to default
-    this.titheDistribution = {
-      GENERAL: 100,
-      MUSIC: 0,
-      CHILDREN: 0,
-      YOUTH: 0,
-      EDUCATION: 0,
-      MAINTENANCE: 0,
-      DEVELOPMENT: 0,
-      OTHER: 0
+    this.titheDistributionSDA = {
+      campMeetingExpenses: false,
+      welfare: false,
+      thanksgiving: false,
+      stationFund: false,
+      mediaMinistry: false
     };
     
-    // Update UI
+    // Update UI checkboxes
+    Object.keys(this.titheDistributionSDA).forEach(key => {
+      const checkbox = document.getElementById(`tithe-${key}`);
+      if (checkbox) {
+        checkbox.checked = false;
+      }
+    });
+    
+    // Update tithe distribution UI
     this.updateTitheDistributionUI();
     
     // Reset special offering selection
@@ -1399,7 +1246,7 @@ class MakePaymentsView {
     offeringCards.forEach(card => {
       card.style.background = 'linear-gradient(135deg, rgba(30, 41, 59, 0.6), rgba(30, 41, 59, 0.4))';
       card.style.border = '1px solid rgba(30, 41, 59, 0.8)';
-      const nameText = card.querySelector('div > div > span:last-child');
+      const nameText = card.querySelector('div > div > div > span:last-child');
       if (nameText) nameText.style.color = '#e2e8f0';
       
       const glow = card.querySelector('div:last-child');
@@ -1471,10 +1318,6 @@ class MakePaymentsView {
   formatPaymentType(type) {
     if (!type) return 'Unknown';
     
-    if (type.startsWith('SPECIAL_')) {
-      return this.formatSpecialOfferingName(type);
-    }
-    
     switch (type) {
       case 'TITHE':
         return 'Tithe';
@@ -1526,29 +1369,25 @@ class MakePaymentsView {
     }
   }
   
-  formatDepartment(department) {
-    if (!department) return 'Unknown';
-
-    switch (department) {
-      case 'GENERAL':
-        return 'General Fund';
-      case 'MUSIC':
-        return 'Music Ministry';
-      case 'CHILDREN':
-        return 'Children\'s Ministry';
-      case 'YOUTH':
-        return 'Youth Ministry';
-      case 'EDUCATION':
-        return 'Education';
-      case 'MAINTENANCE':
-        return 'Maintenance';
-      case 'DEVELOPMENT':
-        return 'Development';
-      case 'OTHER':
-        return 'Other';
-      default:
-        return department;
-    }
+  getOfferingColor(offeringType) {
+    // Extract the offering type for special offerings
+    const type = offeringType && offeringType.startsWith && offeringType.startsWith('SPECIAL_') ? offeringType.split('_')[1] : offeringType;
+    
+    // Color palette for different offerings
+    const colors = {
+      BUILDING: '#8b5cf6', // Purple
+      MISSION: '#06b6d4', // Cyan
+      CHARITY: '#10b981', // Green
+      YOUTH: '#f59e0b', // Amber
+      EDUCATION: '#3b82f6', // Blue
+      EQUIPMENT: '#ef4444', // Red
+      COMMUNITY: '#ec4899', // Pink
+      DEVELOPMENT: '#0ea5e9', // Sky blue
+      OTHER: '#64748b', // Slate
+      DEFAULT: '#06b6d4' // Default cyan
+    };
+    
+    return colors[type] || colors.DEFAULT;
   }
   
   addGlobalStyles() {
@@ -1866,6 +1705,41 @@ class MakePaymentsView {
           
           nav div:nth-child(2) {
             display: none;
+          }
+          
+          .make-payments-container {
+            padding: 20px 15px !important;
+          }
+          
+          .neo-card {
+            border-radius: 16px !important;
+          }
+          
+          .distribution-checkboxes {
+            gap: 12px !important;
+          }
+          
+          .payment-type-card {
+            min-height: 80px !important;
+          }
+          
+          .special-offering-card {
+            padding: 12px !important;
+          }
+        }
+        
+        @media (max-width: 480px) {
+          .make-payments-container {
+            padding: 15px 10px !important;
+          }
+          
+          .neo-card {
+            border-radius: 12px !important;
+          }
+          
+          .formContent {
+            grid-template-columns: 1fr !important;
+            gap: 20px !important;
           }
         }
       `;

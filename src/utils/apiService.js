@@ -34,8 +34,6 @@ export class ApiService {
       responseData = isJson ? await response.json() : await response.text();
     } catch (e) {
       console.error('Error parsing API response:', e);
-      // If parsing fails, but status suggests success, this is an issue.
-      // If status suggests error, the original status text might be more useful.
       throw new Error(response.ok ? 'Invalid JSON response from server.' : `Request failed with status ${response.status}: ${response.statusText}`);
     }
 
@@ -51,7 +49,6 @@ export class ApiService {
           errorDetails = responseData.error.details || responseData.error;
         }
       } else if (typeof responseData === 'string' && responseData.length > 0 && responseData.length < 200) {
-        // Use text response if it's short and likely an error message
         errorMessage = responseData;
       }
 
@@ -59,7 +56,7 @@ export class ApiService {
       error.code = errorCode;
       error.status = response.status;
       error.details = errorDetails;
-      error.response = responseData; // Attach full response data
+      error.response = responseData;
       console.error('API Error:', error.message, 'Code:', error.code, 'Details:', error.details, 'Full Response:', responseData);
       throw error;
     }
@@ -67,9 +64,8 @@ export class ApiService {
     // Handle standardized successful response
     if (responseData && typeof responseData === 'object' && responseData.hasOwnProperty('success')) {
       if (responseData.success === true) {
-        return responseData.data !== undefined ? responseData.data : { message: responseData.message }; // Return data or success message
+        return responseData.data !== undefined ? responseData.data : { message: responseData.message };
       } else {
-        // Backend reported success: false
         const errorMessage = responseData.message || 'API operation reported failure.';
         const error = new Error(errorMessage);
         error.code = responseData.error?.code || 'OPERATION_FAILED';
@@ -80,7 +76,6 @@ export class ApiService {
       }
     }
 
-    // Fallback for successful responses not using the new standard structure (legacy or simple text/file responses)
     return responseData;
   }
 
@@ -98,22 +93,20 @@ export class ApiService {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ username, password: pwd }),
-      credentials: 'include', // Important for session cookies if used, though JWT is primary
+      credentials: 'include',
     });
-    const data = await this.handleResponse(response); // `handleResponse` now returns the `data` payload directly on success
+    const data = await this.handleResponse(response);
     
-    // Assuming `data` here is { user, token } as returned by a successful login
     if (this.authService && data && data.user && data.token) {
       this.authService.saveUserToStorage(data.user, data.token);
     }
-    return data; // Return the { user, token } payload
+    return data;
   }
 
   logout() {
     if (this.authService) {
       return this.authService.logout();
     }
-    // Fallback
     localStorage.removeItem('user');
     localStorage.removeItem('token');
     window.location.href = '/login';
@@ -159,8 +152,7 @@ export class ApiService {
   }
 
   async uploadFile(endpoint, formData) {
-    // For FormData, the browser sets the Content-Type header automatically with the boundary
-    const headers = this.getHeaders(true); // Pass true to indicate FormData
+    const headers = this.getHeaders(true);
     delete headers['Content-Type'];
 
     const response = await fetch(`${this.baseUrl}${endpoint}`, {
@@ -172,111 +164,223 @@ export class ApiService {
     return this.handleResponse(response);
   }
 
-  // --- Specific API methods ---
+  // --- Authentication Methods ---
+  async getUserProfile() { return this.get('/auth/profile'); }
+  async changePassword(currentPassword, newPassword) { 
+    return this.post('/auth/change-password', { currentPassword, newPassword }); 
+  }
 
-  // Admin related
-  async getPaymentStats() { return this.get('/admin/dashboard-stats'); } // Assuming this endpoint gives all necessary stats
-  async getRecentActivity(params) { return this.get('/admin/activity', params); }
+  // --- Admin User Management ---
   async getAllUsers() { return this.get('/auth/users'); }
   async registerUser(userData) { return this.post('/auth/register', userData); }
   async updateUser(userId, userData) { return this.put(`/auth/users/${userId}`, userData); }
   async deleteUser(userId) { return this.delete(`/auth/users/${userId}`); }
-  async adminResetUserPassword(userId, newPassword) { return this.post(`/auth/admin/reset-password/${userId}`, { newPassword }); }
-  async generateReport(reportParams) { return this.post('/admin/reports', reportParams); }
-  async getAllAdminPayments(params) { return this.get('/payment/all', params); } // Renamed for clarity
-  async addManualPayment(paymentData) { return this.post('/payment/manual', paymentData); }
-  async updatePaymentStatus(paymentId, status) { return this.put(`/payment/${paymentId}/status`, { status }); }
-  async adminDeletePayment(paymentId) { return this.delete(`/payment/${paymentId}`); }
-  
-  // Contact Inquiries (Admin)
-  async getAllInquiries(params) { return this.get('/contact/inquiries', params); }
-  async getInquiryById(inquiryId) { return this.get(`/contact/inquiries/${inquiryId}`); }
+  async adminResetUserPassword(userId, newPassword) { 
+    return this.post(`/auth/reset-password/${userId}`, { newPassword }); 
+  }
+
+  // --- Payment Methods ---
+
+  // User payment methods
+  async getUserPayments(userId = null, params = {}) {
+    const endpoint = userId ? `/payment/user/${userId}` : '/payment/user';
+    return this.get(endpoint, params);
+  }
+
+  async getPaymentStatus(paymentId) {
+    return this.get(`/payment/status/${paymentId}`);
+  }
+
+  // Unified payment initiation method
+  async initiatePayment(paymentData) {
+    return this.post('/payment/initiate', paymentData);
+  }
+
+  // Specific payment method initiators
+  async initiateMpesaPayment(paymentData) {
+    return this.post('/payment/initiate-mpesa', paymentData);
+  }
+
+  async initiateKcbPayment(paymentData) {
+    return this.post('/payment/initiate-kcb', paymentData);
+  }
+
+  // Admin payment methods
+  async getAllAdminPayments(params = {}) { 
+    return this.get('/payment/all', params); 
+  }
+
+  async getPaymentStats() { 
+    return this.get('/payment/stats'); 
+  }
+
+  async addManualPayment(paymentData) { 
+    return this.post('/payment/manual', paymentData); 
+  }
+
+  async addManualPaymentWithReceipt(paymentData, receiptFile) {
+    const formData = new FormData();
+    
+    // Add all payment data fields to FormData
+    Object.keys(paymentData).forEach(key => {
+      if (paymentData[key] !== null && paymentData[key] !== undefined) {
+        if (typeof paymentData[key] === 'object') {
+          formData.append(key, JSON.stringify(paymentData[key]));
+        } else {
+          formData.append(key, paymentData[key]);
+        }
+      }
+    });
+    
+    // Add receipt file if provided
+    if (receiptFile) {
+      formData.append('expenseReceiptImage', receiptFile);
+    }
+    
+    return this.uploadFile('/payment/manual', formData);
+  }
+
+  async updatePaymentStatus(paymentId, status) { 
+    return this.put(`/payment/${paymentId}/status`, { status }); 
+  }
+
+  async adminDeletePayment(paymentId) { 
+    return this.delete(`/payment/${paymentId}`); 
+  }
+
+  // --- Admin Dashboard ---
+  async getDashboardStats() { 
+    return this.get('/admin/dashboard-stats'); 
+  }
+
+  async getRecentActivity(params = {}) { 
+    return this.get('/admin/activity', params); 
+  }
+
+  async generateReport(reportParams) { 
+    return this.post('/admin/reports', reportParams); 
+  }
+
+  // --- Receipt Methods ---
+  async getUserReceipts(userId = null, params = {}) {
+    const endpoint = userId ? `/receipt/user/${userId}` : '/receipt/user';
+    return this.get(endpoint, params);
+  }
+
+  async getReceiptById(receiptId) { 
+    return this.get(`/receipt/${receiptId}`); 
+  }
+
+  async downloadReceipt(receiptId) {
+    return this.downloadFile(`/receipt/${receiptId}/pdf`, `receipt-${receiptId}.pdf`);
+  }
+
+  async uploadReceiptAttachment(receiptId, formData) {
+    return this.uploadFile(`/receipt/${receiptId}/attachment`, formData);
+  }
+
+  // --- Special Offerings ---
+  async getSpecialOfferings(params = { activeOnly: 'true' }) { 
+    return this.get('/special-offerings', params); 
+  }
+
+  async createSpecialOffering(offeringData) { 
+    return this.post('/special-offerings', offeringData); 
+  }
+
+  async getSpecialOfferingDetails(identifier) { 
+    return this.get(`/special-offerings/${identifier}`); 
+  }
+
+  async getSpecialOfferingProgress(identifier) { 
+    return this.get(`/special-offerings/${identifier}/progress`); 
+  }
+
+  async updateSpecialOffering(identifier, updateData) { 
+    return this.put(`/special-offerings/${identifier}`, updateData); 
+  }
+
+  async deleteSpecialOffering(identifier) { 
+    return this.delete(`/special-offerings/${identifier}`);
+  }
+
+  async makeSpecialOfferingContribution(identifier, paymentData) {
+    return this.post(`/special-offerings/${identifier}/contribution`, paymentData);
+  }
+
+  // --- Contact Inquiries ---
+  async submitContactForm(formData) { 
+    return this.post('/contact/submit', formData); 
+  }
+
+  async getContactInfo() { 
+    return this.get('/contact/info'); 
+  }
+
+  // Admin contact inquiry methods
+  async getAllInquiries(params = {}) { 
+    return this.get('/contact/inquiries', params); 
+  }
+
+  async getInquiryById(inquiryId) { 
+    return this.get(`/contact/inquiries/${inquiryId}`); 
+  }
+
   async updateInquiryStatus(inquiryId, status, resolutionNotes = null) {
     const data = { status };
     if (resolutionNotes) data.resolutionNotes = resolutionNotes;
     return this.put(`/contact/inquiries/${inquiryId}/status`, data);
   }
-  async archiveInquiry(inquiryId) { return this.delete(`/contact/inquiries/${inquiryId}`); }
 
-  async getDashboardStats() { 
-    return this.get('/admin/dashboard-stats'); 
+  async archiveInquiry(inquiryId) { 
+    return this.delete(`/contact/inquiries/${inquiryId}`); 
   }
 
-
-  // User Profile and Auth
-  async getUserProfile() { return this.get('/auth/profile'); }
-  async changePassword(currentPassword, newPassword) { return this.post('/auth/change-password', { currentPassword, newPassword }); }
-  // Password reset request flow might involve other steps not covered here like verify-token
-  // async requestPasswordReset(email) { return this.post('/auth/request-password-reset', { email }); }
-  // async completePasswordReset(token, newPassword) { return this.post('/auth/reset-password-confirm', { token, newPassword }); }
-
-  // Payments (User)
-  async getUserPayments(userId = null, params = {}) { // userId can be null to fetch for current logged-in user
-    const endpoint = userId ? `/payment/user/${userId}` : '/payment/user';
-    return this.get(endpoint, params);
-  }
-  async initiateMpesaPayment(paymentData) { // Changed from initiatePayment for clarity
-    return this.post('/payment/initiate-mpesa', paymentData);
-  }
-  async adminResetUserPassword(userId, newPassword) {
-    // Ensure this path matches the route in your authRoutes.js that's handled by
-    // authController.resetUserPassword and has the corrected validation (no oldPassword).
-    return this.post(`/auth/reset-password/${userId}`, { newPassword });
-  }
-
-  // Receipts (User)
-  async getUserReceipts(userId = null, params = {}) {
-    const endpoint = userId ? `/receipt/user/${userId}` : '/receipt/user';
-    return this.get(endpoint, params);
-  }
-  async getReceiptById(receiptId) { return this.get(`/receipt/${receiptId}`); }
-  async downloadReceipt(receiptId) {
-    // This will trigger a browser download directly if backend sends correct headers
-    // Or use downloadFile helper if backend returns a path
-    return this.downloadFile(`/receipt/${receiptId}/pdf`, `receipt-${receiptId}.pdf`);
-  }
-   async uploadReceiptAttachment(receiptId, formData) {
-    return this.uploadFile(`/receipt/${receiptId}/attachment`, formData);
-  }
-
-
-  // Special Offerings
-  async getSpecialOfferings(params = { activeOnly: 'true' }) { return this.get('/special-offerings', params); }
-  async createSpecialOffering(offeringData) { return this.post('/special-offerings', offeringData); }
-  async getSpecialOfferingDetails(identifier) { return this.get(`/special-offerings/${identifier}`); }
-  async getSpecialOfferingProgress(identifier) { return this.get(`/special-offerings/${identifier}/progress`); }
-  async updateSpecialOffering(identifier, updateData) { return this.put(`/special-offerings/${identifier}`, updateData); }
-  async deleteSpecialOffering(identifier) { return this.delete(`/special-offerings/${identifier}`);}
-  async makeSpecialOfferingContribution(identifier, paymentData) { // Renamed for clarity
-    return this.post(`/special-offerings/${identifier}/contribution`, paymentData);
-  }
-
-  // Public Contact
-  async submitContactForm(formData) { return this.post('/contact/submit', formData); }
-  async getContactInfo() { return this.get('/contact/info'); }
-
+  // --- Utility Methods ---
 
   /**
    * Format custom fields for special offering.
-   * The backend for createSpecialOffering now expects customFields to be an object/JSON.
-   * This helper might be used by the frontend form logic to construct that object
-   * before passing it to createSpecialOffering.
-   * If your form already builds the object, this explicit formatting here might be less needed.
-   * @param {Object} offeringData - Raw offering data from a form.
-   * @returns {Object} - Formatted custom fields object (or null if none).
    */
   formatCustomFields(offeringData) {
-    // Example: if your form has fields like customField1_name, customField1_desc, etc.
-    // This is highly dependent on how your frontend form for custom fields is structured.
-    // For now, assuming `offeringData.customFields` is already an array of {name, description} objects.
     if (Array.isArray(offeringData.customFields) && offeringData.customFields.length > 0) {
-        // Ensure it's in the { fields: [...] } structure if backend expects that in customFields JSON
-        // return { fields: offeringData.customFields };
-        return offeringData.customFields; // Or just return the array if Prisma model `customFields` expects array directly
+        return offeringData.customFields;
     }
-    return null; // Or Prisma.JsonNull for Prisma
+    return null;
   }
 
+  /**
+   * Validate phone number format
+   */
+  validatePhoneNumber(phoneNumber) {
+    const kenyanPhoneRegex = /^254\d{9}$/;
+    return kenyanPhoneRegex.test(phoneNumber);
+  }
+
+  /**
+   * Format phone number to Kenya format
+   */
+  formatPhoneNumber(phoneNumber) {
+    // Remove all non-digit characters
+    let cleaned = phoneNumber.replace(/\D/g, '');
+    
+    // Handle different input formats
+    if (cleaned.startsWith('0')) {
+      // Convert 0712345678 to 254712345678
+      cleaned = '254' + cleaned.substring(1);
+    } else if (cleaned.startsWith('7') && cleaned.length === 9) {
+      // Convert 712345678 to 254712345678
+      cleaned = '254' + cleaned;
+    } else if (cleaned.startsWith('254')) {
+      // Already in correct format
+      return cleaned;
+    }
+    
+    return cleaned;
+  }
+
+  /**
+   * Download file with proper error handling
+   */
   async downloadFile(endpoint, filename) {
     try {
       const url = `${this.baseUrl}${endpoint}`;
@@ -289,12 +393,10 @@ export class ApiService {
       });
       
       if (!response.ok) {
-        // Try to parse error message if JSON
         let errorData;
         try {
             errorData = await response.json();
         } catch (e) {
-            // If not JSON, use text
             errorData = { message: await response.text() || `File download failed with status ${response.status}`};
         }
         const error = new Error(errorData.message || `File download failed with status ${response.status}`);
@@ -316,11 +418,90 @@ export class ApiService {
         document.body.removeChild(a);
       }, 0);
       
-      return { success: true, message: 'File download initiated.' }; // Return a success indicator
+      return { success: true, message: 'File download initiated.' };
     } catch (error) {
       console.error('API file download error:', error.message);
-      throw error; // Re-throw for the caller to handle
+      throw error;
     }
+  }
+
+  /**
+   * Handle file upload with progress tracking
+   */
+  async uploadFileWithProgress(endpoint, formData, onProgress = null) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      
+      if (onProgress) {
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable) {
+            const percentComplete = (e.loaded / e.total) * 100;
+            onProgress(percentComplete);
+          }
+        });
+      }
+      
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const response = JSON.parse(xhr.responseText);
+            resolve(response);
+          } catch (e) {
+            resolve(xhr.responseText);
+          }
+        } else {
+          reject(new Error(`Upload failed with status ${xhr.status}`));
+        }
+      });
+      
+      xhr.addEventListener('error', () => {
+        reject(new Error('Upload failed due to network error'));
+      });
+      
+      xhr.open('POST', `${this.baseUrl}${endpoint}`);
+      
+      // Set auth headers
+      const headers = this.getHeaders(true);
+      Object.keys(headers).forEach(key => {
+        xhr.setRequestHeader(key, headers[key]);
+      });
+      
+      xhr.send(formData);
+    });
+  }
+
+  /**
+   * Prepare payment data for submission
+   */
+  preparePaymentData(rawData) {
+    const cleanData = { ...rawData };
+    
+    // Format phone number
+    if (cleanData.phoneNumber) {
+      cleanData.phoneNumber = this.formatPhoneNumber(cleanData.phoneNumber);
+    }
+    
+    // Ensure amount is a number
+    if (cleanData.amount) {
+      cleanData.amount = parseFloat(cleanData.amount);
+    }
+    
+    // Handle special offering ID conversion
+    if (cleanData.paymentType === 'SPECIAL' && cleanData.specialOfferingId) {
+      cleanData.specialOfferingId = parseInt(cleanData.specialOfferingId);
+    }
+    
+    // Clean up tithe distribution
+    if (cleanData.titheDistributionSDA) {
+      const cleanDistribution = {};
+      const validKeys = ['campMeetingExpenses', 'welfare', 'thanksgiving', 'stationFund', 'mediaMinistry'];
+      validKeys.forEach(key => {
+        cleanDistribution[key] = Boolean(cleanData.titheDistributionSDA[key]);
+      });
+      cleanData.titheDistributionSDA = cleanDistribution;
+    }
+    
+    return cleanData;
   }
 }
 
