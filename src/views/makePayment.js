@@ -9,6 +9,7 @@ class MakePaymentsView {
     
     // Payment state
     this.paymentType = 'TITHE'; // Default payment type
+    this.paymentMethod = 'MPESA'; // Default payment method (MPESA or KCB)
     this.specialOfferingType = '';
     this.amount = 0;
     this.phoneNumber = this.user?.phoneNumber || '';
@@ -342,7 +343,7 @@ class MakePaymentsView {
     formSubtitle.style.fontSize = '16px';
     formSubtitle.style.color = '#e2e8f0';
     formSubtitle.style.margin = '10px 0 0';
-    formSubtitle.textContent = 'Select payment type and enter amount to contribute';
+    formSubtitle.textContent = 'Select payment type and method to contribute';
     
     formHeader.appendChild(formTitle);
     formHeader.appendChild(formSubtitle);
@@ -421,6 +422,109 @@ class MakePaymentsView {
     
     paymentTypeSection.appendChild(paymentTypeLabel);
     paymentTypeSection.appendChild(paymentTypeGrid);
+    
+    // Payment method selection
+    const paymentMethodSection = document.createElement('div');
+    paymentMethodSection.style.marginBottom = '30px';
+    
+    const paymentMethodLabel = document.createElement('label');
+    paymentMethodLabel.style.display = 'block';
+    paymentMethodLabel.style.fontSize = '16px';
+    paymentMethodLabel.style.fontWeight = '600';
+    paymentMethodLabel.style.color = '#ffffff';
+    paymentMethodLabel.style.marginBottom = '12px';
+    paymentMethodLabel.textContent = 'Payment Method';
+    
+    const paymentMethodGrid = document.createElement('div');
+    paymentMethodGrid.style.display = 'grid';
+    paymentMethodGrid.style.gridTemplateColumns = 'repeat(auto-fit, minmax(200px, 1fr))';
+    paymentMethodGrid.style.gap = '15px';
+    
+    const paymentMethods = [
+      { 
+        id: 'MPESA', 
+        name: 'M-Pesa', 
+        icon: '📱', 
+        description: 'Pay with M-Pesa mobile money',
+        color: '#10b981'
+      },
+      { 
+        id: 'KCB', 
+        name: 'KCB Mobile', 
+        icon: '🏦', 
+        description: 'Pay with KCB mobile banking',
+        color: '#3b82f6'
+      }
+    ];
+    
+    paymentMethods.forEach(method => {
+      const methodCard = document.createElement('div');
+      methodCard.className = 'payment-method-card';
+      methodCard.dataset.method = method.id;
+      methodCard.style.background = this.paymentMethod === method.id ? 
+        `linear-gradient(135deg, ${method.color}40, ${method.color}20)` :
+        'linear-gradient(135deg, rgba(30, 41, 59, 0.4), rgba(30, 41, 59, 0.2))';
+      methodCard.style.borderRadius = '12px';
+      methodCard.style.padding = '20px';
+      methodCard.style.cursor = 'pointer';
+      methodCard.style.transition = 'all 0.3s ease';
+      methodCard.style.border = this.paymentMethod === method.id ?
+        `1px solid ${method.color}60` :
+        '1px solid rgba(30, 41, 59, 0.6)';
+      methodCard.style.position = 'relative';
+      methodCard.style.overflow = 'hidden';
+      
+      const methodHeader = document.createElement('div');
+      methodHeader.style.display = 'flex';
+      methodHeader.style.alignItems = 'center';
+      methodHeader.style.marginBottom = '8px';
+      
+      const methodIcon = document.createElement('div');
+      methodIcon.style.fontSize = '24px';
+      methodIcon.style.marginRight = '10px';
+      methodIcon.textContent = method.icon;
+      
+      const methodName = document.createElement('div');
+      methodName.style.fontSize = '16px';
+      methodName.style.fontWeight = '600';
+      methodName.style.color = this.paymentMethod === method.id ? '#ffffff' : '#e2e8f0';
+      methodName.textContent = method.name;
+      
+      const methodDescription = document.createElement('div');
+      methodDescription.style.fontSize = '14px';
+      methodDescription.style.color = this.paymentMethod === method.id ? '#e2e8f0' : '#94a3b8';
+      methodDescription.style.lineHeight = '1.4';
+      methodDescription.textContent = method.description;
+      
+      // Add selection functionality
+      methodCard.addEventListener('click', () => {
+        this.setPaymentMethod(method.id);
+      });
+      
+      // Add glow effect
+      const methodGlow = document.createElement('div');
+      methodGlow.style.position = 'absolute';
+      methodGlow.style.bottom = '-10px';
+      methodGlow.style.right = '-10px';
+      methodGlow.style.width = '60px';
+      methodGlow.style.height = '60px';
+      methodGlow.style.borderRadius = '50%';
+      methodGlow.style.background = `radial-gradient(circle, ${method.color}30 0%, transparent 70%)`;
+      methodGlow.style.opacity = this.paymentMethod === method.id ? '1' : '0.3';
+      methodGlow.style.transition = 'all 0.3s ease';
+      
+      methodHeader.appendChild(methodIcon);
+      methodHeader.appendChild(methodName);
+      
+      methodCard.appendChild(methodGlow);
+      methodCard.appendChild(methodHeader);
+      methodCard.appendChild(methodDescription);
+      
+      paymentMethodGrid.appendChild(methodCard);
+    });
+    
+    paymentMethodSection.appendChild(paymentMethodLabel);
+    paymentMethodSection.appendChild(paymentMethodGrid);
     
     // Special offering selection (initially hidden)
     const specialOfferingSection = document.createElement('div');
@@ -505,66 +609,86 @@ class MakePaymentsView {
       amountInput.style.border = '1px solid rgba(6, 182, 212, 0.3)';
     });
     
-    // M-Pesa Phone number input
-    const mpesaPhoneSection = document.createElement('div');
-    mpesaPhoneSection.style.marginBottom = '30px';
+    // Phone number input (dynamic label based on payment method)
+    const phoneSection = document.createElement('div');
+    phoneSection.style.marginBottom = '30px';
     
-    const mpesaPhoneLabel = document.createElement('label');
-    mpesaPhoneLabel.style.display = 'block';
-    mpesaPhoneLabel.style.fontSize = '16px';
-    mpesaPhoneLabel.style.fontWeight = '600';
-    mpesaPhoneLabel.style.color = '#ffffff';
-    mpesaPhoneLabel.style.marginBottom = '8px';
-    mpesaPhoneLabel.textContent = 'Paying Phone Number (M-Pesa)';
+    const phoneLabel = document.createElement('label');
+    phoneLabel.id = 'phone-label';
+    phoneLabel.style.display = 'block';
+    phoneLabel.style.fontSize = '16px';
+    phoneLabel.style.fontWeight = '600';
+    phoneLabel.style.color = '#ffffff';
+    phoneLabel.style.marginBottom = '8px';
+    phoneLabel.textContent = this.paymentMethod === 'MPESA' ? 'M-Pesa Phone Number' : 'KCB Mobile Phone Number';
     
-    const mpesaPhoneHelp = document.createElement('p');
-    mpesaPhoneHelp.style.fontSize = '14px';
-    mpesaPhoneHelp.style.color = '#94a3b8';
-    mpesaPhoneHelp.style.margin = '0 0 12px';
-    mpesaPhoneHelp.textContent = 'Enter the M-Pesa phone number that will make this payment';
+    const phoneHelp = document.createElement('p');
+    phoneHelp.id = 'phone-help';
+    phoneHelp.style.fontSize = '14px';
+    phoneHelp.style.color = '#94a3b8';
+    phoneHelp.style.margin = '0 0 12px';
+    phoneHelp.textContent = this.paymentMethod === 'MPESA' ? 
+      'Enter M-Pesa phone number (e.g. 0712345678 or 0112345678)' :
+      'Enter KCB Mobile phone number (e.g. 0712345678 or 0112345678)';
     
-    const mpesaPhoneInput = document.createElement('input');
-    mpesaPhoneInput.type = 'tel';
-    mpesaPhoneInput.id = 'mpesa-phone-input';
-    mpesaPhoneInput.placeholder = 'e.g. 254712345678';
-    mpesaPhoneInput.value = this.mpesaPhoneNumber || this.user?.phoneNumber || '';
-    mpesaPhoneInput.className = 'futuristic-input';
-    mpesaPhoneInput.style.width = '100%';
-    mpesaPhoneInput.style.padding = '15px';
-    mpesaPhoneInput.style.background = 'rgba(15, 23, 42, 0.6)';
-    mpesaPhoneInput.style.border = '1px solid rgba(6, 182, 212, 0.3)';
-    mpesaPhoneInput.style.borderRadius = '12px';
-    mpesaPhoneInput.style.color = '#ffffff';
-    mpesaPhoneInput.style.fontSize = '16px';
-    mpesaPhoneInput.style.transition = 'all 0.3s ease';
+    const phoneInput = document.createElement('input');
+    phoneInput.type = 'tel';
+    phoneInput.id = 'phone-input';
+    phoneInput.placeholder = 'e.g. 0712345678 or 0112345678';
+    phoneInput.value = this.mpesaPhoneNumber || this.user?.phoneNumber || '';
+    phoneInput.className = 'futuristic-input';
+    phoneInput.style.width = '100%';
+    phoneInput.style.padding = '15px';
+    phoneInput.style.background = 'rgba(15, 23, 42, 0.6)';
+    phoneInput.style.border = '1px solid rgba(6, 182, 212, 0.3)';
+    phoneInput.style.borderRadius = '12px';
+    phoneInput.style.color = '#ffffff';
+    phoneInput.style.fontSize = '16px';
+    phoneInput.style.transition = 'all 0.3s ease';
     
-    // Add event listener for M-Pesa phone input
-    mpesaPhoneInput.addEventListener('input', (e) => {
+    // Add event listener for phone input
+    phoneInput.addEventListener('input', (e) => {
       this.mpesaPhoneNumber = e.target.value;
+      
+      // Show formatted version in a subtle way
+      const formattedNumber = this.formatPhoneNumber(e.target.value);
+      if (formattedNumber && formattedNumber !== e.target.value && formattedNumber.length === 12) {
+        // Add a subtle visual indicator that the number will be formatted
+        phoneInput.style.borderColor = 'rgba(16, 185, 129, 0.5)';
+        phoneInput.title = `Will be sent as: ${formattedNumber}`;
+      } else {
+        phoneInput.style.borderColor = 'rgba(6, 182, 212, 0.3)';
+        phoneInput.title = '';
+      }
     });
     
     // Focus effect
-    mpesaPhoneInput.addEventListener('focus', () => {
-      mpesaPhoneInput.style.boxShadow = '0 0 0 2px rgba(6, 182, 212, 0.3)';
-      mpesaPhoneInput.style.border = '1px solid rgba(6, 182, 212, 0.5)';
+    phoneInput.addEventListener('focus', () => {
+      phoneInput.style.boxShadow = '0 0 0 2px rgba(6, 182, 212, 0.3)';
+      if (!phoneInput.style.borderColor.includes('185, 129')) {
+        phoneInput.style.border = '1px solid rgba(6, 182, 212, 0.5)';
+      }
     });
     
-    mpesaPhoneInput.addEventListener('blur', () => {
-      mpesaPhoneInput.style.boxShadow = 'none';
-      mpesaPhoneInput.style.border = '1px solid rgba(6, 182, 212, 0.3)';
+    phoneInput.addEventListener('blur', () => {
+      phoneInput.style.boxShadow = 'none';
+      if (!phoneInput.style.borderColor.includes('185, 129')) {
+        phoneInput.style.border = '1px solid rgba(6, 182, 212, 0.3)';
+      }
     });
     
     amountSection.appendChild(amountLabel);
     amountSection.appendChild(amountInput);
     
-    mpesaPhoneSection.appendChild(mpesaPhoneLabel);
-    mpesaPhoneSection.appendChild(mpesaPhoneHelp);
-    mpesaPhoneSection.appendChild(mpesaPhoneInput);
+    phoneSection.appendChild(phoneLabel);
+    phoneSection.appendChild(phoneHelp);
+    phoneSection.appendChild(phoneInput);
     
     leftColumn.appendChild(paymentTypeSection);
+    leftColumn.appendChild(paymentMethodSection);
     leftColumn.appendChild(specialOfferingSection);
     leftColumn.appendChild(amountSection);
-    leftColumn.appendChild(mpesaPhoneSection);
+    leftColumn.appendChild(phoneSection);
     
     // Right column - tithe distribution (only for tithe)
     const rightColumn = document.createElement('div');
@@ -739,8 +863,10 @@ class MakePaymentsView {
     paymentButton.style.marginTop = '30px';
     paymentButton.style.fontSize = '18px';
     paymentButton.style.fontWeight = '600';
-    paymentButton.style.background = 'linear-gradient(135deg, rgba(6, 182, 212, 0.8), rgba(8, 145, 178, 0.6))';
-    paymentButton.textContent = 'Make Payment';
+    paymentButton.style.background = this.paymentMethod === 'MPESA' ? 
+      'linear-gradient(135deg, rgba(16, 185, 129, 0.8), rgba(16, 185, 129, 0.6))' :
+      'linear-gradient(135deg, rgba(59, 130, 246, 0.8), rgba(59, 130, 246, 0.6))';
+    paymentButton.textContent = `Pay with ${this.paymentMethod === 'MPESA' ? 'M-Pesa' : 'KCB Mobile'}`;
     
     // Add payment event
     paymentButton.addEventListener('click', () => {
@@ -809,6 +935,62 @@ class MakePaymentsView {
     // Update special offerings list if needed
     if (type === 'SPECIAL' && !this.isLoadingSpecial) {
       this.updateSpecialOfferingsUI();
+    }
+  }
+  
+  setPaymentMethod(method) {
+    this.paymentMethod = method;
+    
+    // Update payment method cards
+    const paymentMethodCards = document.querySelectorAll('.payment-method-card');
+    paymentMethodCards.forEach(card => {
+      const cardMethod = card.dataset.method;
+      const methodColor = cardMethod === 'MPESA' ? '#10b981' : '#3b82f6';
+      
+      if (cardMethod === method) {
+        card.style.background = `linear-gradient(135deg, ${methodColor}40, ${methodColor}20)`;
+        card.style.border = `1px solid ${methodColor}60`;
+        const methodName = card.querySelector('div > div:last-child');
+        if (methodName) methodName.style.color = '#ffffff';
+        
+        // Update glow
+        const glow = card.querySelector('div:first-child');
+        if (glow) glow.style.opacity = '1';
+      } else {
+        card.style.background = 'linear-gradient(135deg, rgba(30, 41, 59, 0.4), rgba(30, 41, 59, 0.2))';
+        card.style.border = '1px solid rgba(30, 41, 59, 0.6)';
+        const methodName = card.querySelector('div > div:last-child');
+        if (methodName) methodName.style.color = '#e2e8f0';
+        
+        // Update glow
+        const glow = card.querySelector('div:first-child');
+        if (glow) glow.style.opacity = '0.3';
+      }
+    });
+    
+    // Update phone number label and help text
+    const phoneLabel = document.getElementById('phone-label');
+    const phoneHelp = document.getElementById('phone-help');
+    
+    if (phoneLabel) {
+      phoneLabel.textContent = method === 'MPESA' ? 'M-Pesa Phone Number' : 'KCB Mobile Phone Number';
+    }
+    
+    if (phoneHelp) {
+      phoneHelp.textContent = method === 'MPESA' ? 
+        'Enter M-Pesa phone number (e.g. 0712345678 or 0112345678)' :
+        'Enter KCB Mobile phone number (e.g. 0712345678 or 0112345678)';
+    }
+    
+    // Update payment button
+    const paymentButton = document.getElementById('payment-button');
+    if (paymentButton) {
+      const buttonColor = method === 'MPESA' ? 
+        'linear-gradient(135deg, rgba(16, 185, 129, 0.8), rgba(16, 185, 129, 0.6))' :
+        'linear-gradient(135deg, rgba(59, 130, 246, 0.8), rgba(59, 130, 246, 0.6))';
+      
+      paymentButton.style.background = buttonColor;
+      paymentButton.textContent = `Pay with ${method === 'MPESA' ? 'M-Pesa' : 'KCB Mobile'}`;
     }
   }
   
@@ -1075,19 +1257,29 @@ class MakePaymentsView {
       // Prepare payment data
       const paymentData = this.preparePaymentData();
       
-      // Call API to initiate M-Pesa payment
-      const response = await this.queueApiRequest(() => 
-        this.apiService.initiateMpesaPayment(paymentData)
-      );
+      // Call appropriate API method based on payment method
+      let response;
+      if (this.paymentMethod === 'MPESA') {
+        response = await this.queueApiRequest(() => 
+          this.apiService.initiateMpesaPayment(paymentData)
+        );
+      } else if (this.paymentMethod === 'KCB') {
+        response = await this.queueApiRequest(() => 
+          this.apiService.initiateKcbPayment(paymentData)
+        );
+      } else {
+        throw new Error('Invalid payment method selected');
+      }
       
       // Check response
       if (response && response.paymentId) {
         // Handle successful initiation - show prompt message
-        this.showMessage('Payment initiated successfully! Please check your phone for the M-Pesa STK prompt.', 'success');
+        const methodName = this.paymentMethod === 'MPESA' ? 'M-Pesa' : 'KCB Mobile';
+        this.showMessage(`Payment initiated successfully! Please check your phone for the ${methodName} prompt.`, 'success');
         
         // Poll for payment status if we have a checkout ID
-        if (response.mpesaCheckoutID) {
-          this.pollPaymentStatus(response.paymentId, response.mpesaCheckoutID);
+        if (response.checkoutRequestId) {
+          this.pollPaymentStatus(response.paymentId, response.checkoutRequestId);
         } else {
           this.setPaymentButtonLoading(false);
         }
@@ -1111,9 +1303,10 @@ class MakePaymentsView {
       return false;
     }
     
-    // Validate M-Pesa phone number
+    // Validate phone number
     if (!this.mpesaPhoneNumber || !this.validatePhoneNumber(this.mpesaPhoneNumber)) {
-      this.showMessage('Please enter a valid M-Pesa phone number starting with 254', 'error');
+      const methodName = this.paymentMethod === 'MPESA' ? 'M-Pesa' : 'KCB Mobile';
+      this.showMessage(`Please enter a valid ${methodName} phone number (e.g. 0712345678)`, 'error');
       return false;
     }
     
@@ -1127,9 +1320,39 @@ class MakePaymentsView {
   }
   
   validatePhoneNumber(phone) {
-    // Basic validation for Kenyan phone numbers
+    // Clean and format the phone number first
+    const formattedPhone = this.formatPhoneNumber(phone);
+    
+    // Validate the formatted phone number
     const phoneRegex = /^254\d{9}$/;
-    return phoneRegex.test(phone);
+    return phoneRegex.test(formattedPhone);
+  }
+  
+  formatPhoneNumber(phone) {
+    if (!phone) return '';
+    
+    // Remove all non-digit characters
+    let cleaned = phone.replace(/\D/g, '');
+    
+    // Handle different Kenyan phone number formats
+    if (cleaned.startsWith('0')) {
+      // Convert 0712345678 to 254712345678
+      cleaned = '254' + cleaned.substring(1);
+    } else if (cleaned.startsWith('7') && cleaned.length === 9) {
+      // Convert 712345678 to 254712345678
+      cleaned = '254' + cleaned;
+    } else if (cleaned.startsWith('1') && cleaned.length === 9) {
+      // Convert 112345678 to 254112345678
+      cleaned = '254' + cleaned;
+    } else if (cleaned.startsWith('254')) {
+      // Already in correct format
+      return cleaned;
+    } else if (cleaned.length === 9 && (cleaned.startsWith('7') || cleaned.startsWith('1'))) {
+      // Handle 9-digit numbers starting with 7 or 1
+      cleaned = '254' + cleaned;
+    }
+    
+    return cleaned;
   }
   
   preparePaymentData() {
@@ -1137,12 +1360,16 @@ class MakePaymentsView {
     const notesInput = document.getElementById('notes-input');
     const notes = notesInput ? notesInput.value : '';
     
+    // Format phone number to international format
+    const formattedPhoneNumber = this.formatPhoneNumber(this.mpesaPhoneNumber);
+    
     // Basic payment data
     const paymentData = {
       amount: this.amount,
-      phoneNumber: this.mpesaPhoneNumber, // Use the dedicated M-Pesa phone number
+      phoneNumber: formattedPhoneNumber,
       paymentType: this.paymentType,
-      description: notes || `${this.formatPaymentType(this.paymentType)} payment`
+      paymentMethod: this.paymentMethod,
+      description: notes || `${this.formatPaymentType(this.paymentType)} payment via ${this.paymentMethod === 'MPESA' ? 'M-Pesa' : 'KCB Mobile'}`
     };
     
     // Add special offering ID if applicable
@@ -1163,18 +1390,19 @@ class MakePaymentsView {
     const maxAttempts = 10;
     
     if (attempts >= maxAttempts) {
-      this.showMessage('Payment status check timed out. Please check your M-Pesa messages or contact support.', 'warning');
+      const methodName = this.paymentMethod === 'MPESA' ? 'M-Pesa' : 'KCB Mobile';
+      this.showMessage(`Payment status check timed out. Please check your ${methodName} messages or contact support.`, 'warning');
       this.setPaymentButtonLoading(false);
       return;
     }
     
     try {
-      // Wait 30 seconds before checking (typical M-Pesa processing time)
+      // Wait 30 seconds before checking (typical processing time)
       await new Promise(resolve => setTimeout(resolve, 30000));
       
       // Check payment status using the payment ID
       const statusResponse = await this.queueApiRequest(() => 
-        this.apiService.get(`/payment/status/${paymentId}`)
+        this.apiService.getPaymentStatus(paymentId)
       );
       
       if (statusResponse && statusResponse.status) {
@@ -1187,7 +1415,8 @@ class MakePaymentsView {
           this.resetForm();
         } else if (statusResponse.status === 'FAILED' || statusResponse.status === 'CANCELLED') {
           // Payment failed
-          this.showMessage(`Payment ${statusResponse.status.toLowerCase()}: ${statusResponse.description || 'Transaction was not completed'}`, 'error');
+          const methodName = this.paymentMethod === 'MPESA' ? 'M-Pesa' : 'KCB Mobile';
+          this.showMessage(`${methodName} payment ${statusResponse.status.toLowerCase()}: ${statusResponse.description || 'Transaction was not completed'}`, 'error');
           this.setPaymentButtonLoading(false);
         } else {
           // Still pending, continue polling
@@ -1215,8 +1444,8 @@ class MakePaymentsView {
     const amountInput = document.getElementById('amount-input');
     if (amountInput) amountInput.value = '';
     
-    const mpesaPhoneInput = document.getElementById('mpesa-phone-input');
-    if (mpesaPhoneInput) mpesaPhoneInput.value = this.mpesaPhoneNumber;
+    const phoneInput = document.getElementById('phone-input');
+    if (phoneInput) phoneInput.value = this.mpesaPhoneNumber;
     
     const notesInput = document.getElementById('notes-input');
     if (notesInput) notesInput.value = '';
@@ -1264,7 +1493,8 @@ class MakePaymentsView {
       paymentButton.style.opacity = '0.8';
     } else {
       paymentButton.disabled = false;
-      paymentButton.innerHTML = 'Make Payment';
+      const methodName = this.paymentMethod === 'MPESA' ? 'M-Pesa' : 'KCB Mobile';
+      paymentButton.innerHTML = `Pay with ${methodName}`;
       paymentButton.style.opacity = '1';
     }
   }
@@ -1561,7 +1791,6 @@ class MakePaymentsView {
         }
         
         .futuristic-button:not(:disabled):hover {
-          background: linear-gradient(135deg, rgba(6, 182, 212, 0.3), rgba(6, 182, 212, 0.2));
           transform: translateY(-2px);
           box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 255, 255, 0.1) inset;
         }
@@ -1623,30 +1852,6 @@ class MakePaymentsView {
           animation: fadeIn 0.6s ease-out forwards;
         }
         
-        input[type="range"] {
-          -webkit-appearance: none;
-          appearance: none;
-          background: rgba(15, 23, 42, 0.6);
-          height: 6px;
-          border-radius: 3px;
-          margin: 10px 0;
-        }
-        
-        input[type="range"]::-webkit-slider-thumb {
-          -webkit-appearance: none;
-          appearance: none;
-          width: 18px;
-          height: 18px;
-          border-radius: 50%;
-          cursor: pointer;
-          transition: all 0.3s ease;
-          box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
-        }
-        
-        input[type="range"]::-webkit-slider-thumb:hover {
-          transform: scale(1.2);
-        }
-        
         .loading-spinner {
           display: inline-block;
           width: 40px;
@@ -1693,6 +1898,11 @@ class MakePaymentsView {
           animation: spinner 1.2s cubic-bezier(0.68, -0.55, 0.27, 1.55) infinite;
         }
         
+        .payment-method-card:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+        }
+        
         /* Mobile responsive styles */
         @media (max-width: 768px) {
           .mobile-menu-button {
@@ -1725,6 +1935,10 @@ class MakePaymentsView {
           
           .special-offering-card {
             padding: 12px !important;
+          }
+          
+          .payment-method-card {
+            padding: 15px !important;
           }
         }
         

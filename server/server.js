@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const bodyParser = require('body-parser');
 const path = require('path');
 const session = require('express-session');
+const receiptRoutes = require('./routes/receiptRoutes');
 const errorHandler = require('./middlewares/errorHandler.js');
 
 // Import PrismaClient
@@ -66,7 +67,6 @@ if (!IS_PRODUCTION) {
   });
 }
 // --- End Debug Logging ---
-
 
 // CORS configuration
 app.use(cors({
@@ -130,8 +130,15 @@ app.use(session({
 // Serve static files from public directory
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
+// Serve receipt PDFs and attachments
+app.use('/receipts', express.static(path.join(__dirname, 'public/receipts')));
+app.use('/uploads/receipt_attachments', express.static(path.join(__dirname, 'public/uploads/receipt_attachments')));
+
 // API Routes
 app.use('/api', mainApiRoutes);
+
+// Receipt routes (registered separately)
+app.use('/api/receipt', receiptRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -141,6 +148,33 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
   });
+});
+
+// Receipt health check endpoint
+app.get('/api/receipt-health', async (req, res) => {
+  try {
+    // Check if receipts directory exists
+    const receiptsDir = path.join(__dirname, 'public/receipts');
+    const receiptsExists = fs ? fs.existsSync(receiptsDir) : false;
+    
+    // Check if we can query receipts from database
+    const receiptCount = await prisma.receipt.count();
+    
+    res.status(200).json({
+      status: 'up',
+      message: 'Receipt system is operational.',
+      receiptsDirectory: receiptsExists ? 'exists' : 'missing',
+      receiptCount: receiptCount,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: 'Receipt system check failed.',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // Production static file serving
@@ -179,6 +213,7 @@ const startServer = () => {
     if (!IS_PRODUCTION) {
       console.log(`Frontend dev server likely at http://localhost:5173`);
       console.log(`Backend API accessible at http://localhost:${PORT}/api`);
+      console.log(`Receipt system accessible at http://localhost:${PORT}/api/receipt`);
     } else {
       console.log(`Application accessible at your production URL.`);
     }
@@ -228,6 +263,30 @@ async function checkDbConnection() {
     await prisma.$disconnect().catch(e => console.error("Error disconnecting Prisma during check:", e));
   }
 }
+
+// Ensure required directories exist
+function ensureDirectories() {
+  const requiredDirs = [
+    path.join(__dirname, 'public'),
+    path.join(__dirname, 'public/receipts'),
+    path.join(__dirname, 'public/uploads'),
+    path.join(__dirname, 'public/uploads/receipt_attachments'),
+    path.join(__dirname, 'public/uploads/expense_receipts'),
+    path.join(__dirname, 'logs')
+  ];
+
+  if (!IS_PRODUCTION && fs) {
+    requiredDirs.forEach(dir => {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+        debugLog(`Created directory: ${dir}`);
+      }
+    });
+  }
+}
+
+// Initialize directories and start server
+ensureDirectories();
 
 checkDbConnection().then(isConnected => {
   if (isConnected) {
