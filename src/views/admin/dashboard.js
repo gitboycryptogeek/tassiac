@@ -7,42 +7,25 @@ export class AdminDashboardView extends BaseComponent {
     this.title = 'Admin Dashboard';
     this.user = this.authService ? this.authService.getUser() : null;
     this.apiService = window.apiService;
-    this.initializeData();
+    
+    // Simplified state management with safe defaults
+    this.paymentStats = { revenue: 0, expenses: 0, netBalance: 0 };
+    this.userStats = { total: 0, activeLast30Days: 0 };
+    this.inquiries = [];
+    this.activityLog = [];
+    this.currentInquiry = null;
+    
+    // Loading states - start with false to render immediately
+    this.isLoading = false;
+    this.error = null;
     
     // API Request Management
     this.apiRequestQueue = [];
     this.isProcessingQueue = false;
-    this.requestThrottleTime = 300; // ms between API calls
+    this.requestThrottleTime = 300;
     
     // Privacy controls
     this.statsAreVisible = false;
-    
-    // Data Cache System
-    this.dataCache = {
-      paymentStats: null,
-      inquiries: null,
-      userCount: null,
-      lastFetchTime: {
-        paymentStats: 0,
-        inquiries: 0,
-        userCount: 0
-      },
-      cacheDuration: 60000 // 1 minute cache
-    };
-  }
-
-  initializeData() {
-    this.paymentStats = {
-      revenue: 0,
-      expenses: 0,
-      netBalance: 0
-    };
-    this.inquiries = [];
-    this.userCount = 0;
-    this.isLoadingStats = true;
-    this.isLoadingInquiries = true;
-    this.isLoadingUserCount = true;
-    this.error = null;
   }
 
   async render() {
@@ -78,269 +61,296 @@ export class AdminDashboardView extends BaseComponent {
       }
     });
 
-    // Add futuristic background (only if not already present)
-    if (!document.querySelector('.gradient-background')) {
-      const gradientBackground = this.createElement('div', {
-        className: 'gradient-background',
-        style: {
-          position: 'fixed',
-          top: '0',
-          left: '0',
-          width: '100%',
-          height: '100%',
-          background: 'linear-gradient(125deg, #0f172a 0%, #1e293b 40%, #0f172a 100%)',
-          backgroundSize: '400% 400%',
-          zIndex: '-2',
-          animation: 'gradientBG 15s ease infinite'
-        }
-      });
-      document.body.appendChild(gradientBackground);
-    }
-
-    // Add particle overlay (only if not already present)
-    if (!document.querySelector('.particle-overlay')) {
-      const particleOverlay = this.createElement('div', {
-        className: 'particle-overlay',
-        style: {
-          position: 'fixed',
-          top: '0',
-          left: '0',
-          width: '100%',
-          height: '100%',
-          background: 'url("data:image/svg+xml,%3Csvg width=\'100\' height=\'100\' viewBox=\'0 0 100 100\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cpath d=\'M11 18c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm48 25c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm-43-7c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm63 31c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM34 90c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm56-76c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM12 86c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm28-65c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm23-11c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-6 60c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm29 22c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zM32 63c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm57-13c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-9-21c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM60 91c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM35 41c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM12 60c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2z\' fill=\'%234f6bff\' fill-opacity=\'0.03\' fill-rule=\'evenodd\'/%3E%3C/svg%3E")',
-          backgroundSize: '100px 100px',
-          backgroundRepeat: 'repeat',
-          zIndex: '-1',
-          animation: 'floatParticles 150s linear infinite'
-        }
-      });
-      document.body.appendChild(particleOverlay);
+    this.addBackgroundEffects();
+    
+    // Add modal to body if not exists
+    if (!document.getElementById('inquiry-modal')) {
+      document.body.appendChild(this.renderInquiryModal());
     }
     
-    // Welcome section with futuristic design
-    container.appendChild(this.renderWelcomeSection());
+    if (this.error) {
+      container.appendChild(this.renderErrorState());
+    } else {
+      // Always render the main content - data will load asynchronously
+      container.appendChild(this.renderWelcomeSection());
+      container.appendChild(this.renderStatsGrid());
+      container.appendChild(this.renderActionsSection());
+      
+      const mainGrid = this.createElement('div', {
+        style: {
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))',
+          gap: '30px',
+          marginBottom: '40px'
+        }
+      });
+      
+      mainGrid.appendChild(this.renderInquiriesSection());
+      mainGrid.appendChild(this.renderActivityLogSection());
+      container.appendChild(mainGrid);
+    }
     
-    // Stats Grid with glowing effects
-    container.appendChild(this.renderStatsGrid());
-    
-    // Quick Actions section with holographic icons
-    container.appendChild(this.renderActionsSection());
-    
-    // User Inquiries section
-    container.appendChild(this.renderInquiriesSection());
-    
-    // Add advanced animation styles
+    // Add animation styles
     this.addAnimationStyles();
     
-    // Initialize data more efficiently
+    // Load data after rendering
+    this.loadDashboardData();
+    
+    // Attach event listeners
     setTimeout(() => {
-      this.fetchDashboardData();
+      this.attachEventListeners(container);
     }, 100);
     
     return container;
   }
-  
-  // API Request Throttling
-  queueApiRequest(requestFunction) {
-    return new Promise((resolve, reject) => {
-      this.apiRequestQueue.push({
-        request: requestFunction,
-        resolve,
-        reject
-      });
-      
-      if (!this.isProcessingQueue) {
-        this.processApiRequestQueue();
+
+  renderErrorState() {
+    const errorContainer = this.createElement('div', {
+      className: 'neo-card',
+      style: {
+        padding: '40px',
+        textAlign: 'center',
+        background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.1), rgba(185, 28, 28, 0.05))',
+        border: '1px solid rgba(239, 68, 68, 0.2)'
       }
     });
+    
+    const errorIcon = this.createElement('div', {
+      style: {
+        fontSize: '48px',
+        marginBottom: '16px'
+      }
+    }, '⚠️');
+    
+    const errorTitle = this.createElement('h3', {
+      style: {
+        fontSize: '20px',
+        fontWeight: '600',
+        color: '#f1f5f9',
+        margin: '0 0 8px'
+      }
+    }, 'Failed to Load Dashboard Data');
+    
+    const errorMessage = this.createElement('p', {
+      style: {
+        fontSize: '14px',
+        color: '#94a3b8',
+        margin: '0 0 20px'
+      }
+    }, this.error || 'An error occurred while loading the dashboard data.');
+    
+    const retryButton = this.createElement('button', {
+      className: 'futuristic-button',
+      style: {
+        background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(185, 28, 28, 0.1))'
+      },
+      onClick: () => {
+        this.error = null;
+        this.loadDashboardData();
+        this.updateView();
+      }
+    }, 'Retry Loading');
+    
+    errorContainer.appendChild(errorIcon);
+    errorContainer.appendChild(errorTitle);
+    errorContainer.appendChild(errorMessage);
+    errorContainer.appendChild(retryButton);
+    
+    return errorContainer;
   }
 
-  processApiRequestQueue() {
-    if (this.apiRequestQueue.length === 0) {
-      this.isProcessingQueue = false;
-      return;
-    }
-    
-    this.isProcessingQueue = true;
-    const { request, resolve, reject } = this.apiRequestQueue.shift();
-    
+  // Simplified data loading that doesn't block rendering
+  async loadDashboardData() {
     try {
-      request()
-        .then(result => resolve(result))
-        .catch(error => reject(error))
-        .finally(() => {
-          setTimeout(() => {
-            this.processApiRequestQueue();
-          }, this.requestThrottleTime);
-        });
-    } catch (error) {
-      reject(error);
-      setTimeout(() => {
-        this.processApiRequestQueue();
-      }, this.requestThrottleTime);
-    }
-  }
-
-  // Efficient Data Fetching with Cache
-  isCacheValid(key) {
-    const now = Date.now();
-    return this.dataCache[key] !== null && 
-           (now - this.dataCache.lastFetchTime[key] < this.dataCache.cacheDuration);
-  }
-
-  async fetchDashboardData(forceFresh = false) {
-    // Fetch all data sequentially to reduce server load
-    await this.fetchPaymentStats(forceFresh);
-    await this.fetchInquiries(forceFresh);
-    await this.fetchUserCount(forceFresh);
-  }
-
-  async fetchPaymentStats(forceFresh = false) {
-    if (!forceFresh && this.isCacheValid('paymentStats')) {
-      this.paymentStats = this.dataCache.paymentStats;
-      this.isLoadingStats = false;
-      this.updateStatsUI();
-      return;
-    }
-    
-    this.isLoadingStats = true;
-    
-    try {
-      // Direct database query for increased security and reliability
-      const response = await this.queueApiRequest(() => this.apiService.get('/payment/stats'));
+      // Load data in parallel without blocking the UI
+      const promises = [];
       
-      if (response) {
+      // Try the efficient endpoint first, fallback to individual calls
+      promises.push(this.loadStatsData());
+      promises.push(this.loadInquiriesData());
+      promises.push(this.loadActivityData());
+      
+      await Promise.allSettled(promises);
+      
+      // Update the UI after data loads
+      this.updateDataInUI();
+      
+    } catch (error) {
+      console.error('Error loading dashboard data:', error);
+      this.error = 'Failed to load dashboard data. Please try refreshing the page.';
+      this.updateView();
+    }
+  }
+
+  async loadStatsData() {
+    try {
+      // Try the efficient endpoint first
+      if (this.apiService.getDashboardStats) {
+        const dashboardStats = await this.apiService.getDashboardStats();
+        if (dashboardStats) {
+          this.paymentStats = dashboardStats.paymentStats || { revenue: 0, expenses: 0, netBalance: 0 };
+          this.userStats = dashboardStats.userStats || { total: 0, activeLast30Days: 0 };
+          return;
+        }
+      }
+    } catch (error) {
+      console.log('Dashboard stats endpoint not available, trying individual calls');
+    }
+
+    // Fallback to individual API calls
+    try {
+      const [paymentResponse, userResponse] = await Promise.allSettled([
+        this.apiService.getPaymentStats ? this.apiService.getPaymentStats() : Promise.resolve(null),
+        this.apiService.getAllUsers ? this.apiService.getAllUsers() : Promise.resolve(null)
+      ]);
+
+      if (paymentResponse.status === 'fulfilled' && paymentResponse.value) {
         this.paymentStats = {
-          revenue: response.revenue || 0,
-          expenses: response.expenses || 0,
-          netBalance: response.netBalance || 0
+          revenue: paymentResponse.value.revenue || 0,
+          expenses: paymentResponse.value.expenses || 0,
+          netBalance: paymentResponse.value.netBalance || 0
         };
+      }
+
+      if (userResponse.status === 'fulfilled' && userResponse.value && userResponse.value.users) {
+        const users = userResponse.value.users;
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
         
-        // Cache the result
-        this.dataCache.paymentStats = this.paymentStats;
-        this.dataCache.lastFetchTime.paymentStats = Date.now();
-      } else {
-        throw new Error('Failed to fetch payment stats');
+        const activeUsers = users.filter(user => {
+          const lastLogin = new Date(user.lastLoginAt || user.updatedAt || user.createdAt);
+          return lastLogin > thirtyDaysAgo;
+        });
+        
+        this.userStats = {
+          total: users.length,
+          activeLast30Days: activeUsers.length
+        };
       }
     } catch (error) {
-      console.error('Error fetching payment stats:', error);
-      // Use minimal fallback data without percentages
-      this.paymentStats = {
-        revenue: 0,
-        expenses: 0,
-        netBalance: 0
-      };
-    } finally {
-      this.isLoadingStats = false;
-      this.updateStatsUI();
+      console.error('Error loading stats:', error);
     }
   }
 
-  async fetchUserCount(forceFresh = false) {
-    if (!forceFresh && this.isCacheValid('userCount')) {
-      this.userCount = this.dataCache.userCount;
-      this.isLoadingUserCount = false;
-      this.updateUserCountUI();
-      return;
-    }
-    
-    this.isLoadingUserCount = true;
-    
+  async loadInquiriesData() {
     try {
-      // Get total user count from auth API
-      const response = await this.queueApiRequest(() => this.apiService.get('/auth/users'));
-      
-      if (response && response.users) {
-        this.userCount = response.users.length;
-        
-        // Cache the result
-        this.dataCache.userCount = this.userCount;
-        this.dataCache.lastFetchTime.userCount = Date.now();
-      } else {
-        throw new Error('Failed to fetch user count');
+      if (this.apiService.getAllInquiries) {
+        const response = await this.apiService.getAllInquiries({ status: 'PENDING', limit: 5 });
+        if (response && response.inquiries) {
+          this.inquiries = response.inquiries;
+        } else if (response && Array.isArray(response)) {
+          this.inquiries = response;
+        }
       }
     } catch (error) {
-      console.error('Error fetching user count:', error);
-      this.userCount = 0;
-    } finally {
-      this.isLoadingUserCount = false;
-      this.updateUserCountUI();
-    }
-  }
-
-  async fetchInquiries(forceFresh = false) {
-    if (!forceFresh && this.isCacheValid('inquiries')) {
-      this.inquiries = this.dataCache.inquiries;
-      this.isLoadingInquiries = false;
-      return;
-    }
-    
-    this.isLoadingInquiries = true;
-    
-    try {
-      // Try multiple possible endpoints in sequence
-      let response;
-      
-      // First try contact/form-submissions endpoint
-      try {
-        response = await this.queueApiRequest(() => this.apiService.get('/contact/form-submissions'));
-      } catch (e) {
-        console.log('First endpoint failed, trying alternates');
-      }
-      
-      // If first fails, try admin/inquiries
-      if (!response || !response.inquiries) {
-        try {
-          response = await this.queueApiRequest(() => this.apiService.get('/admin/inquiries'));
-        } catch (e) {
-          console.log('Second endpoint failed, trying next');
-        }
-      }
-      
-      // If second fails, try a more generic endpoint
-      if (!response || !response.inquiries) {
-        try {
-          response = await this.queueApiRequest(() => this.apiService.get('/contact/inquiries'));
-        } catch (e) {
-          console.log('Third endpoint failed');
-        }
-      }
-      
-      // If all API calls fail, look for inquiry data elsewhere
-      if (!response) {
-        const contactData = await this.queueApiRequest(() => this.apiService.get('/contact/info'));
-        if (contactData && contactData.recentInquiries) {
-          response = { inquiries: contactData.recentInquiries };
-        }
-      }
-      
-      // Process whatever response we got
-      if (response && (response.inquiries || response.submissions || response.messages)) {
-        this.inquiries = Array.isArray(response.inquiries || response.submissions || response.messages) 
-          ? (response.inquiries || response.submissions || response.messages) 
-          : [];
-        this.dataCache.inquiries = this.inquiries;
-        this.dataCache.lastFetchTime.inquiries = Date.now();
-      } else {
-        // Use fallback data from mock submissions
-        this.inquiries = [
-          {
-            id: 1,
-            name: "John Doe",
-            email: "john.doe@example.com",
-            subject: "Question about Tithe Allocation",
-            message: "I would like to understand more about how the church allocates tithes.",
-            createdAt: new Date(Date.now() - 3600000)
-          }
-        ];
-        this.dataCache.inquiries = this.inquiries;
-        this.dataCache.lastFetchTime.inquiries = Date.now();
-      }
-    } catch (error) {
-      console.error('Error in fetchInquiries:', error);
+      console.error('Error loading inquiries:', error);
       this.inquiries = [];
-    } finally {
-      this.isLoadingInquiries = false;
+    }
+  }
+
+  async loadActivityData() {
+    try {
+      if (this.apiService.getRecentActivity) {
+        const response = await this.apiService.getRecentActivity({ limit: 10 });
+        if (response && response.activities) {
+          this.activityLog = response.activities;
+        } else if (response && Array.isArray(response)) {
+          this.activityLog = response;
+        }
+      }
+    } catch (error) {
+      console.error('Error loading activity:', error);
+      this.activityLog = [];
+    }
+  }
+
+  updateDataInUI() {
+    // Update user stats
+    const totalUsersValue = document.querySelector('#total-users-chip .chip-value');
+    if (totalUsersValue) {
+      totalUsersValue.textContent = this.userStats.total.toString();
+    }
+    
+    const activeUsersValue = document.querySelector('#active-users-chip .chip-value');
+    if (activeUsersValue) {
+      activeUsersValue.textContent = this.userStats.activeLast30Days.toString();
+    }
+
+    // Update stat values if visible
+    if (this.statsAreVisible) {
+      const statValues = document.querySelectorAll('.stat-value');
+      const values = [
+        this.formatCurrency(this.paymentStats.revenue),
+        this.formatCurrency(this.paymentStats.expenses),
+        this.formatCurrency(this.paymentStats.netBalance)
+      ];
+      statValues.forEach((statValue, index) => {
+        if (values[index]) {
+          statValue.textContent = values[index];
+        }
+      });
+    }
+
+    // Update inquiries section
+    this.updateInquiriesSection();
+    
+    // Update activity section
+    this.updateActivitySection();
+  }
+
+  updateInquiriesSection() {
+    const inquiriesCard = document.querySelector('.inquiries-content');
+    if (inquiriesCard) {
+      inquiriesCard.innerHTML = '';
+      
+      if (this.inquiries.length === 0) {
+        inquiriesCard.innerHTML = `
+          <div style="padding: 50px 20px; text-align: center; color: #94a3b8;">
+            <div style="font-size: 48px; margin-bottom: 16px; background: linear-gradient(135deg, #8b5cf6, #6d28d9); -webkit-background-clip: text; -webkit-text-fill-color: transparent; display: inline-block;">📬</div>
+            <h3 style="font-size: 18px; font-weight: 600; color: #f1f5f9; margin: 0 0 8px;">No New Inquiries</h3>
+            <p style="font-size: 14px; color: #94a3b8; margin: 0; max-width: 300px; margin: 0 auto;">There are no pending user inquiries at this time. New inquiries will appear here.</p>
+          </div>
+        `;
+      } else {
+        const inquiriesList = this.createElement('div', {
+          style: { maxHeight: '400px', overflowY: 'auto' }
+        });
+        
+        this.inquiries.forEach((inquiry, index) => {
+          const inquiryItem = this.renderInquiryItem(inquiry, index);
+          inquiriesList.appendChild(inquiryItem);
+        });
+        
+        inquiriesCard.appendChild(inquiriesList);
+      }
+    }
+  }
+
+  updateActivitySection() {
+    const activityCard = document.querySelector('.activity-content');
+    if (activityCard) {
+      activityCard.innerHTML = '';
+      
+      if (this.activityLog.length === 0) {
+        activityCard.innerHTML = `
+          <div style="padding: 50px 20px; text-align: center; color: #94a3b8;">
+            <div style="font-size: 48px; margin-bottom: 16px; background: linear-gradient(135deg, #f59e0b, #d97706); -webkit-background-clip: text; -webkit-text-fill-color: transparent; display: inline-block;">📋</div>
+            <h3 style="font-size: 18px; font-weight: 600; color: #f1f5f9; margin: 0 0 8px;">No Recent Activity</h3>
+            <p style="font-size: 14px; color: #94a3b8; margin: 0; max-width: 300px; margin: 0 auto;">System activity will appear here as actions are performed.</p>
+          </div>
+        `;
+      } else {
+        const activityList = this.createElement('div', {
+          style: { maxHeight: '400px', overflowY: 'auto' }
+        });
+        
+        this.activityLog.forEach((activity, index) => {
+          const activityItem = this.renderActivityItem(activity, index);
+          activityList.appendChild(activityItem);
+        });
+        
+        activityCard.appendChild(activityList);
+      }
     }
   }
 
@@ -397,7 +407,6 @@ export class AdminDashboardView extends BaseComponent {
       }
     });
     
-    // Improved welcome title with better visibility
     const welcomeTitle = this.createElement('h1', {
       style: {
         fontSize: '32px',
@@ -410,7 +419,7 @@ export class AdminDashboardView extends BaseComponent {
         WebkitTextFillColor: 'transparent',
         textShadow: '0 2px 4px rgba(0, 0, 0, 0.3)'
       }
-    }, `Welcome back, ${this.user?.fullName || 'Admin'}`);
+    }, `Welcome back, ${this.user?.fullName?.split(' ')[0] || 'Admin'}`);
     
     const dateDisplay = this.createElement('div', {
       style: {
@@ -433,11 +442,8 @@ export class AdminDashboardView extends BaseComponent {
       }
     });
     
-    // Clock icon
     const clockIcon = this.createElement('span', {
-      style: {
-        fontSize: '16px'
-      }
+      style: { fontSize: '16px' }
     }, '🕒');
     
     const dateContent = document.createTextNode(new Date().toLocaleDateString('en-US', {
@@ -463,40 +469,98 @@ export class AdminDashboardView extends BaseComponent {
         maxWidth: '600px',
         lineHeight: '1.5'
       }
-    }, 'Manage your church administration and finances with real-time insights');
+    }, 'Here is the latest overview of your church\'s activities.');
     
-    // Add logout button
-    const logoutButton = this.createElement('button', {
-      className: 'futuristic-button',
+    // Status bar with user stats
+    const statusBar = this.createElement('div', {
       style: {
-        background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(185, 28, 28, 0.1))',
-        marginTop: '10px',
-        padding: '12px 24px'
-      },
-      onClick: () => {
-        if (this.authService) {
-          // Use GET request for logout to avoid JSON parsing issues
-          fetch('/api/auth/logout', { 
-            method: 'GET',
-            headers: {
-              'Authorization': `Bearer ${this.authService.getToken()}`
-            }
-          })
-          .then(() => {
-            this.authService.logout();
-            window.location.href = '/login';
-          })
-          .catch(err => {
-            console.error('Logout failed:', err);
-            // Force logout anyway
-            this.authService.logout();
-            window.location.href = '/login';
-          });
-        }
+        display: 'flex',
+        gap: '15px',
+        marginTop: '25px',
+        flexWrap: 'wrap',
+        justifyContent: 'space-between',
+        alignItems: 'center'
       }
     });
     
-    // Logout icon
+    // User stats chips
+    const userStatsContainer = this.createElement('div', {
+      style: {
+        display: 'flex',
+        gap: '15px',
+        flexWrap: 'wrap'
+      }
+    });
+    
+    const totalUsersChip = this.createElement('div', {
+      id: 'total-users-chip',
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '8px 16px',
+        borderRadius: '12px',
+        background: 'rgba(30, 41, 59, 0.4)',
+        backdropFilter: 'blur(10px)',
+        border: '1px solid rgba(139, 92, 246, 0.2)',
+        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(139, 92, 246, 0.1)',
+        fontSize: '14px'
+      }
+    });
+    
+    const totalUsersLabel = this.createElement('span', {
+      style: { color: '#94a3b8' }
+    }, '👥 Registered Users:');
+    
+    const totalUsersValue = this.createElement('span', {
+      className: 'chip-value',
+      style: { color: '#8b5cf6', fontWeight: '600' }
+    }, this.userStats.total.toString());
+    
+    totalUsersChip.appendChild(totalUsersLabel);
+    totalUsersChip.appendChild(totalUsersValue);
+    
+    const activeUsersChip = this.createElement('div', {
+      id: 'active-users-chip',
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '8px 16px',
+        borderRadius: '12px',
+        background: 'rgba(30, 41, 59, 0.4)',
+        backdropFilter: 'blur(10px)',
+        border: '1px solid rgba(16, 185, 129, 0.2)',
+        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(16, 185, 129, 0.1)',
+        fontSize: '14px'
+      }
+    });
+    
+    const activeUsersLabel = this.createElement('span', {
+      style: { color: '#94a3b8' }
+    }, '⚡ Active Users (30d):');
+    
+    const activeUsersValue = this.createElement('span', {
+      className: 'chip-value',
+      style: { color: '#10b981', fontWeight: '600' }
+    }, this.userStats.activeLast30Days.toString());
+    
+    activeUsersChip.appendChild(activeUsersLabel);
+    activeUsersChip.appendChild(activeUsersValue);
+    
+    userStatsContainer.appendChild(totalUsersChip);
+    userStatsContainer.appendChild(activeUsersChip);
+    
+    // Logout button
+    const logoutButton = this.createElement('button', {
+      className: 'futuristic-button',
+      id: 'logout-button',
+      style: {
+        background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(185, 28, 28, 0.1))',
+        padding: '12px 24px'
+      }
+    });
+    
     const logoutIcon = this.createElement('span', {
       style: {
         fontSize: '16px',
@@ -509,51 +573,7 @@ export class AdminDashboardView extends BaseComponent {
     logoutButton.appendChild(logoutIcon);
     logoutButton.appendChild(logoutText);
     
-    // Quick status chip for active users
-    const statusBar = this.createElement('div', {
-      style: {
-        display: 'flex',
-        gap: '15px',
-        marginTop: '25px',
-        flexWrap: 'wrap',
-        justifyContent: 'space-between',
-        alignItems: 'center'
-      }
-    });
-    
-    const activeUsersChip = this.createElement('div', {
-      id: 'active-users-chip',
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        padding: '8px 16px',
-        borderRadius: '12px',
-        background: 'rgba(30, 41, 59, 0.4)',
-        backdropFilter: 'blur(10px)',
-        border: `1px solid rgba(139, 92, 246, 0.2)`,
-        boxShadow: `0 2px 8px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(139, 92, 246, 0.1)`,
-        fontSize: '14px'
-      }
-    });
-    
-    const usersLabel = this.createElement('span', {
-      style: {
-        color: '#94a3b8'
-      }
-    }, 'Registered Users:');
-    
-    const usersValue = this.createElement('span', {
-      style: {
-        color: '#8b5cf6',
-        fontWeight: '600'
-      }
-    }, this.isLoadingUserCount ? '...' : this.userCount.toString());
-    
-    activeUsersChip.appendChild(usersLabel);
-    activeUsersChip.appendChild(usersValue);
-    
-    statusBar.appendChild(activeUsersChip);
+    statusBar.appendChild(userStatsContainer);
     statusBar.appendChild(logoutButton);
     
     welcomeSection.appendChild(welcomeHeader);
@@ -562,7 +582,7 @@ export class AdminDashboardView extends BaseComponent {
     
     return welcomeSection;
   }
-  
+
   renderStatsGrid() {
     const statsGrid = this.createElement('div', {
       style: {
@@ -573,11 +593,10 @@ export class AdminDashboardView extends BaseComponent {
       }
     });
     
-    // Create stat cards
     const statCards = [
       {
         title: 'Total Revenue',
-        value: this.isLoadingStats ? '...' : this.formatCurrency(this.paymentStats.revenue),
+        value: this.formatCurrency(this.paymentStats.revenue),
         icon: '💰',
         color: '#3b82f6',
         id: 'revenue-card',
@@ -586,7 +605,7 @@ export class AdminDashboardView extends BaseComponent {
       },
       {
         title: 'Total Expenses',
-        value: this.isLoadingStats ? '...' : this.formatCurrency(this.paymentStats.expenses),
+        value: this.formatCurrency(this.paymentStats.expenses),
         icon: '📉',
         color: '#ef4444',
         id: 'expenses-card',
@@ -595,7 +614,7 @@ export class AdminDashboardView extends BaseComponent {
       },
       {
         title: 'Net Balance',
-        value: this.isLoadingStats ? '...' : this.formatCurrency(this.paymentStats.netBalance),
+        value: this.formatCurrency(this.paymentStats.netBalance),
         icon: '⚖️',
         color: '#10b981',
         id: 'balance-card',
@@ -617,12 +636,9 @@ export class AdminDashboardView extends BaseComponent {
         }
       });
       
-      // Add glow effect
       const cardGlow = this.createElement('div', {
         className: 'card-glow',
-        style: {
-          background: card.glow
-        }
+        style: { background: card.glow }
       });
       statCard.appendChild(cardGlow);
       
@@ -642,7 +658,7 @@ export class AdminDashboardView extends BaseComponent {
           border: `1px solid rgba(${this.hexToRgb(card.color)}, 0.3)`,
           flexShrink: '0'
         }
-      }, card.icon || '');
+      }, card.icon);
       
       const contentContainer = this.createElement('div');
       
@@ -653,7 +669,7 @@ export class AdminDashboardView extends BaseComponent {
           margin: '0 0 8px',
           fontWeight: '500'
         }
-      }, card.title || 'Stats');
+      }, card.title);
       
       const statValueContainer = this.createElement('div', {
         style: {
@@ -673,9 +689,8 @@ export class AdminDashboardView extends BaseComponent {
           margin: '0',
           transition: 'all 0.3s ease'
         }
-      }, this.statsAreVisible ? (card.value || '0') : '••••••');
+      }, this.statsAreVisible ? card.value : '••••••');
       
-      // Eye toggle for privacy
       const eyeToggle = this.createElement('button', {
         className: 'eye-toggle',
         style: {
@@ -700,7 +715,6 @@ export class AdminDashboardView extends BaseComponent {
         }
       }, this.statsAreVisible ? '👁️' : '👁️‍🗨️');
       
-      // Hover effect for eye toggle
       eyeToggle.addEventListener('mouseenter', () => {
         eyeToggle.style.background = `rgba(${this.hexToRgb(card.color)}, 0.1)`;
         eyeToggle.style.color = card.color;
@@ -735,7 +749,6 @@ export class AdminDashboardView extends BaseComponent {
       }
     });
     
-    // Improved section title visibility
     const actionsTitle = this.createElement('h2', {
       style: {
         fontSize: '20px',
@@ -753,7 +766,6 @@ export class AdminDashboardView extends BaseComponent {
       }
     }, 'Quick Actions');
     
-    // Add a small accent bar to the left of the title
     const titleAccent = this.createElement('div', {
       style: {
         position: 'absolute',
@@ -814,7 +826,7 @@ export class AdminDashboardView extends BaseComponent {
     
     actions.forEach((action, index) => {
       const actionCard = this.createElement('a', {
-        href: action.link || '#',
+        href: action.link,
         className: 'neo-card animated-item',
         style: {
           padding: '0',
@@ -826,7 +838,6 @@ export class AdminDashboardView extends BaseComponent {
         }
       });
       
-      // Add glow effect
       const actionGlow = this.createElement('div', {
         className: 'card-glow',
         style: {
@@ -835,7 +846,6 @@ export class AdminDashboardView extends BaseComponent {
       });
       actionCard.appendChild(actionGlow);
       
-      // Add content with hover overlay
       const actionContent = this.createElement('div', {
         style: {
           padding: '25px',
@@ -846,7 +856,6 @@ export class AdminDashboardView extends BaseComponent {
         }
       });
       
-      // Futuristic floating icon
       const iconContainer = this.createElement('div', {
         className: 'hologram-icon',
         style: {
@@ -856,12 +865,10 @@ export class AdminDashboardView extends BaseComponent {
           border: `1px solid rgba(${this.hexToRgb(action.color)}, 0.3)`,
           animationDuration: `${3 + Math.random()}s`
         }
-      }, action.icon || '');
+      }, action.icon);
       
       const contentContainer = this.createElement('div', {
-        style: {
-          marginLeft: '16px'
-        }
+        style: { marginLeft: '16px' }
       });
       
       const actionTitle = this.createElement('h3', {
@@ -871,7 +878,7 @@ export class AdminDashboardView extends BaseComponent {
           color: '#f1f5f9',
           margin: '0 0 6px'
         }
-      }, action.title || 'Action');
+      }, action.title);
       
       const actionDescription = this.createElement('p', {
         style: {
@@ -879,9 +886,8 @@ export class AdminDashboardView extends BaseComponent {
           color: '#94a3b8',
           margin: '0'
         }
-      }, action.description || '');
+      }, action.description);
       
-      // Arrow indicator
       const arrowIcon = this.createElement('div', {
         style: {
           position: 'absolute',
@@ -908,7 +914,6 @@ export class AdminDashboardView extends BaseComponent {
       actionContent.appendChild(contentContainer);
       actionContent.appendChild(arrowIcon);
       
-      // Add hover effects as event listeners
       actionCard.addEventListener('mouseenter', () => {
         arrowIcon.style.background = `rgba(${this.hexToRgb(action.color)}, 0.2)`;
         arrowIcon.style.color = action.color;
@@ -922,7 +927,6 @@ export class AdminDashboardView extends BaseComponent {
       });
       
       actionCard.appendChild(actionContent);
-      
       actionsGrid.appendChild(actionCard);
     });
     
@@ -935,14 +939,9 @@ export class AdminDashboardView extends BaseComponent {
   renderInquiriesSection() {
     const inquiriesSection = this.createElement('div', {
       className: 'animated-item',
-      style: {
-        marginBottom: '30px',
-        width: '100%',
-        animationDelay: '0.7s'
-      }
+      style: { animationDelay: '0.3s' }
     });
     
-    // Improved section title visibility
     const inquiriesTitle = this.createElement('h2', {
       style: {
         fontSize: '20px',
@@ -960,7 +959,6 @@ export class AdminDashboardView extends BaseComponent {
       }
     }, 'Contact Inquiries');
     
-    // Add a small accent bar to the left of the title
     const titleAccent = this.createElement('div', {
       style: {
         position: 'absolute',
@@ -980,11 +978,11 @@ export class AdminDashboardView extends BaseComponent {
       className: 'neo-card',
       style: {
         overflow: 'hidden',
-        borderTop: '1px solid rgba(139, 92, 246, 0.2)'
+        borderTop: '1px solid rgba(139, 92, 246, 0.2)',
+        minHeight: '300px'
       }
     });
     
-    // Add glow effect
     const inquiriesGlow = this.createElement('div', {
       className: 'card-glow',
       style: {
@@ -993,318 +991,19 @@ export class AdminDashboardView extends BaseComponent {
     });
     inquiriesCard.appendChild(inquiriesGlow);
     
-    // Inquiries content
     const inquiriesContent = this.createElement('div', {
-      style: {
-        position: 'relative'
-      }
+      className: 'inquiries-content',
+      style: { position: 'relative' }
     });
     
-    // Loading state for inquiries
-    if (this.isLoadingInquiries) {
-      inquiriesContent.style.padding = '50px 0';
-      inquiriesContent.style.display = 'flex';
-      inquiriesContent.style.justifyContent = 'center';
-      inquiriesContent.style.alignItems = 'center';
-      
-      const spinner = this.createElement('div', {
-        className: 'loading-spinner'
-      });
-      
-      inquiriesContent.appendChild(spinner);
-    } else if (!this.inquiries || this.inquiries.length === 0) {
-      inquiriesContent.style.padding = '50px 20px';
-      inquiriesContent.style.textAlign = 'center';
-      
-      const emptyState = this.createElement('div', {
-        style: {
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: '#94a3b8'
-        }
-      });
-      
-      const emptyIcon = this.createElement('div', {
-        style: {
-          fontSize: '48px',
-          marginBottom: '16px',
-          background: 'linear-gradient(135deg, #8b5cf6, #6d28d9)',
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
-          display: 'inline-block'
-        }
-      }, '📬');
-      
-      const emptyTitle = this.createElement('h3', {
-        style: {
-          fontSize: '18px',
-          fontWeight: '600',
-          color: '#f1f5f9',
-          margin: '0 0 8px'
-        }
-      }, 'No New Inquiries');
-      
-      const emptyText = this.createElement('p', {
-        style: {
-          fontSize: '14px',
-          color: '#94a3b8',
-          margin: '0',
-          maxWidth: '300px'
-        }
-      }, 'There are no pending user inquiries at this time. New inquiries will appear here.');
-      
-      emptyState.appendChild(emptyIcon);
-      emptyState.appendChild(emptyTitle);
-      emptyState.appendChild(emptyText);
-      
-      inquiriesContent.appendChild(emptyState);
-    } else {
-      // Create inquiries list
-      inquiriesContent.style.padding = '0';
-      
-      // Create a styled list container
-      const inquiriesList = this.createElement('div', {
-        style: {
-          maxHeight: '500px',
-          overflowY: 'auto'
-        }
-      });
-      
-      // Ensure inquiries is an array before using forEach
-      Array.isArray(this.inquiries) && this.inquiries.forEach((inquiry, index) => {
-        const inquiryItem = this.createElement('div', {
-          className: 'animated-item',
-          style: {
-            padding: '25px',
-            borderBottom: index < this.inquiries.length - 1 ? '1px solid rgba(30, 41, 59, 0.8)' : 'none',
-            transition: 'all 0.2s ease',
-            position: 'relative',
-            animationDelay: `${0.8 + (index * 0.1)}s`
-          },
-          onMouseenter: (e) => {
-            e.currentTarget.style.background = 'rgba(30, 41, 59, 0.3)';
-          },
-          onMouseleave: (e) => {
-            e.currentTarget.style.background = 'transparent';
-          }
-        });
-        
-        // Add a subtle left colored indicator based on urgency
-        const urgencyIndicator = this.createElement('div', {
-          style: {
-            position: 'absolute',
-            left: '0',
-            top: '0',
-            bottom: '0',
-            width: '4px',
-            background: index % 2 === 0 ? 'linear-gradient(to bottom, #8b5cf6, #6d28d9)' : 'linear-gradient(to bottom, #10b981, #059669)'
-          }
-        });
-        
-        inquiryItem.appendChild(urgencyIndicator);
-        
-        // Header with user info and subject
-        const inquiryHeader = this.createElement('div', {
-          style: {
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'flex-start',
-            marginBottom: '15px'
-          }
-        });
-        
-        const userInfo = this.createElement('div');
-        
-        const inquirySubject = this.createElement('h3', {
-          style: {
-            fontSize: '17px',
-            fontWeight: '600',
-            color: '#f1f5f9',
-            margin: '0 0 8px'
-          }
-        }, inquiry.subject || 'No Subject');
-        
-        const senderInfo = this.createElement('div', {
-          style: {
-            fontSize: '14px',
-            color: '#94a3b8',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px'
-          }
-        });
-        
-        // User icon
-        const userIcon = this.createElement('span', {
-          style: {
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: '20px',
-            height: '20px',
-            borderRadius: '50%',
-            background: 'rgba(139, 92, 246, 0.2)',
-            fontSize: '12px',
-            color: '#a5b4fc'
-          }
-        }, '👤');
-        
-        const userName = this.createElement('span', {
-          style: {
-            fontWeight: '500'
-          }
-        }, inquiry.name || 'Unknown');
-        
-        const userContact = this.createElement('span', {
-          style: {
-            color: '#64748b'
-          }
-        }, `(${inquiry.email || 'No email'}${inquiry.phone ? `, ${inquiry.phone}` : ''})`);
-        
-        senderInfo.appendChild(userIcon);
-        senderInfo.appendChild(userName);
-        senderInfo.appendChild(userContact);
-        
-        userInfo.appendChild(inquirySubject);
-        userInfo.appendChild(senderInfo);
-        
-        // Time chip with futuristic style
-        const inquiryDate = this.createElement('div', {
-          style: {
-            fontSize: '13px',
-            color: '#94a3b8',
-            padding: '6px 12px',
-            borderRadius: '12px',
-            background: 'rgba(30, 41, 59, 0.4)',
-            backdropFilter: 'blur(10px)',
-            border: '1px solid rgba(255, 255, 255, 0.05)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px'
-          }
-        });
-        
-        // Clock icon
-        const clockIcon = this.createElement('span', {
-          style: {
-            fontSize: '12px',
-            color: '#a5b4fc'
-          }
-        }, '🕒');
-        
-        const dateContent = document.createTextNode(
-          inquiry.createdAt ? 
-          this.formatActivityTime(inquiry.createdAt) : 
-          'Unknown time'
-        );
-        
-        inquiryDate.appendChild(clockIcon);
-        inquiryDate.appendChild(dateContent);
-        
-        inquiryHeader.appendChild(userInfo);
-        inquiryHeader.appendChild(inquiryDate);
-        
-        // Message content
-        const messageContent = this.createElement('div', {
-          style: {
-            padding: '12px 15px',
-            borderRadius: '12px',
-            background: 'rgba(30, 41, 59, 0.4)',
-            border: '1px solid rgba(99, 102, 241, 0.1)',
-            fontSize: '14px',
-            color: '#cbd5e1',
-            lineHeight: '1.6',
-            marginBottom: '20px',
-            position: 'relative'
-          }
-        }, inquiry.message || 'No message content');
-        
-        // Add speech bubble arrow
-        const bubbleArrow = this.createElement('div', {
-          style: {
-            position: 'absolute',
-            top: '-8px',
-            left: '15px',
-            width: '0',
-            height: '0',
-            borderLeft: '8px solid transparent',
-            borderRight: '8px solid transparent',
-            borderBottom: '8px solid rgba(30, 41, 59, 0.4)'
-          }
-        });
-        
-        messageContent.appendChild(bubbleArrow);
-        
-        // Action buttons
-        const actionButtons = this.createElement('div', {
-          style: {
-            display: 'flex',
-            gap: '12px'
-          }
-        });
-        
-        const replyButton = this.createElement('button', {
-          className: 'futuristic-button',
-          style: {
-            background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(109, 40, 217, 0.1))'
-          },
-          onClick: () => {
-            if (inquiry.email) {
-              window.open(`mailto:${inquiry.email}?subject=Re: ${inquiry.subject || 'Your inquiry'}`);
-            }
-          }
-        });
-        
-        // Reply icon
-        const replyIcon = this.createElement('span', {
-          style: {
-            fontSize: '16px'
-          }
-        }, '✉️');
-        
-        const replyText = document.createTextNode('Reply via Email');
-        
-        replyButton.appendChild(replyIcon);
-        replyButton.appendChild(replyText);
-        
-        const markButton = this.createElement('button', {
-          className: 'futuristic-button',
-          style: {
-            background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.3), rgba(30, 41, 59, 0.2))'
-          },
-          onClick: () => {
-            if (inquiry.id) {
-              this.resolveInquiry(inquiry.id);
-            }
-          }
-        });
-        
-        // Check icon
-        const checkIcon = this.createElement('span', {
-          style: {
-            fontSize: '16px'
-          }
-        }, '✓');
-        
-        const markText = document.createTextNode('Mark as Resolved');
-        
-        markButton.appendChild(checkIcon);
-        markButton.appendChild(markText);
-        
-        actionButtons.appendChild(replyButton);
-        actionButtons.appendChild(markButton);
-        
-        inquiryItem.appendChild(inquiryHeader);
-        inquiryItem.appendChild(messageContent);
-        inquiryItem.appendChild(actionButtons);
-        
-        inquiriesList.appendChild(inquiryItem);
-      });
-      
-      inquiriesContent.appendChild(inquiriesList);
-    }
+    // Initial empty state
+    inquiriesContent.innerHTML = `
+      <div style="padding: 50px 20px; text-align: center; color: #94a3b8;">
+        <div style="font-size: 48px; margin-bottom: 16px; background: linear-gradient(135deg, #8b5cf6, #6d28d9); -webkit-background-clip: text; -webkit-text-fill-color: transparent; display: inline-block;">📬</div>
+        <h3 style="font-size: 18px; font-weight: 600; color: #f1f5f9; margin: 0 0 8px;">Loading Inquiries...</h3>
+        <p style="font-size: 14px; color: #94a3b8; margin: 0; max-width: 300px; margin: 0 auto;">Fetching the latest contact inquiries...</p>
+      </div>
+    `;
     
     inquiriesCard.appendChild(inquiriesContent);
     inquiriesSection.appendChild(inquiriesTitle);
@@ -1313,27 +1012,573 @@ export class AdminDashboardView extends BaseComponent {
     return inquiriesSection;
   }
 
-  async resolveInquiry(inquiryId) {
-    if (!inquiryId) return;
+  renderActivityLogSection() {
+    const activitySection = this.createElement('div', {
+      className: 'animated-item',
+      style: { animationDelay: '0.4s' }
+    });
+    
+    const activityTitle = this.createElement('h2', {
+      style: {
+        fontSize: '20px',
+        fontWeight: '600',
+        color: '#f1f5f9',
+        marginBottom: '20px',
+        position: 'relative',
+        marginLeft: '15px',
+        background: 'linear-gradient(to right, #ffffff, #e0e7ff)',
+        backgroundClip: 'text',
+        WebkitBackgroundClip: 'text',
+        color: 'transparent',
+        WebkitTextFillColor: 'transparent',
+        textShadow: '0 2px 4px rgba(0, 0, 0, 0.3)'
+      }
+    }, 'System Activity Log');
+    
+    const titleAccent = this.createElement('div', {
+      style: {
+        position: 'absolute',
+        left: '-15px',
+        top: '50%',
+        transform: 'translateY(-50%)',
+        width: '6px',
+        height: '24px',
+        background: 'linear-gradient(to bottom, #f59e0b, #d97706)',
+        borderRadius: '3px'
+      }
+    });
+    
+    activityTitle.appendChild(titleAccent);
+    
+    const activityCard = this.createElement('div', {
+      className: 'neo-card',
+      style: {
+        overflow: 'hidden',
+        borderTop: '1px solid rgba(245, 158, 11, 0.2)',
+        minHeight: '300px'
+      }
+    });
+    
+    const activityGlow = this.createElement('div', {
+      className: 'card-glow',
+      style: {
+        background: 'radial-gradient(circle at center, rgba(245, 158, 11, 0.3), transparent 70%)'
+      }
+    });
+    activityCard.appendChild(activityGlow);
+    
+    const activityContent = this.createElement('div', {
+      className: 'activity-content',
+      style: { position: 'relative' }
+    });
+    
+    // Initial empty state
+    activityContent.innerHTML = `
+      <div style="padding: 50px 20px; text-align: center; color: #94a3b8;">
+        <div style="font-size: 48px; margin-bottom: 16px; background: linear-gradient(135deg, #f59e0b, #d97706); -webkit-background-clip: text; -webkit-text-fill-color: transparent; display: inline-block;">📋</div>
+        <h3 style="font-size: 18px; font-weight: 600; color: #f1f5f9; margin: 0 0 8px;">Loading Activity...</h3>
+        <p style="font-size: 14px; color: #94a3b8; margin: 0; max-width: 300px; margin: 0 auto;">Fetching recent system activity...</p>
+      </div>
+    `;
+    
+    activityCard.appendChild(activityContent);
+    activitySection.appendChild(activityTitle);
+    activitySection.appendChild(activityCard);
+    
+    return activitySection;
+  }
 
+  renderInquiryItem(inquiry, index) {
+    const inquiryItem = this.createElement('div', {
+      className: 'animated-item inquiry-item',
+      'data-inquiry-id': inquiry.id,
+      style: {
+        padding: '20px',
+        borderBottom: index < this.inquiries.length - 1 ? '1px solid rgba(30, 41, 59, 0.8)' : 'none',
+        transition: 'all 0.2s ease',
+        position: 'relative',
+        cursor: 'pointer',
+        animationDelay: `${0.8 + (index * 0.1)}s`
+      }
+    });
+    
+    inquiryItem.addEventListener('mouseenter', () => {
+      inquiryItem.style.background = 'rgba(30, 41, 59, 0.3)';
+    });
+    
+    inquiryItem.addEventListener('mouseleave', () => {
+      inquiryItem.style.background = 'transparent';
+    });
+    
+    const urgencyIndicator = this.createElement('div', {
+      style: {
+        position: 'absolute',
+        left: '0',
+        top: '0',
+        bottom: '0',
+        width: '4px',
+        background: index % 2 === 0 ? 
+          'linear-gradient(to bottom, #8b5cf6, #6d28d9)' : 
+          'linear-gradient(to bottom, #10b981, #059669)'
+      }
+    });
+    
+    inquiryItem.appendChild(urgencyIndicator);
+    
+    const inquiryHeader = this.createElement('div', {
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        marginBottom: '12px'
+      }
+    });
+    
+    const userInfo = this.createElement('div', { style: { flex: '1' } });
+    
+    const inquirySubject = this.createElement('h3', {
+      style: {
+        fontSize: '16px',
+        fontWeight: '600',
+        color: '#f1f5f9',
+        margin: '0 0 6px'
+      }
+    }, inquiry.subject || 'No Subject');
+    
+    const senderInfo = this.createElement('div', {
+      style: {
+        fontSize: '14px',
+        color: '#94a3b8',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px'
+      }
+    });
+    
+    const userIcon = this.createElement('span', {
+      style: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: '18px',
+        height: '18px',
+        borderRadius: '50%',
+        background: 'rgba(139, 92, 246, 0.2)',
+        fontSize: '10px',
+        color: '#a5b4fc'
+      }
+    }, '👤');
+    
+    const userName = this.createElement('span', {
+      style: { fontWeight: '500' }
+    }, inquiry.name || 'Unknown');
+    
+    senderInfo.appendChild(userIcon);
+    senderInfo.appendChild(userName);
+    
+    userInfo.appendChild(inquirySubject);
+    userInfo.appendChild(senderInfo);
+    
+    const inquiryDate = this.createElement('div', {
+      style: {
+        fontSize: '12px',
+        color: '#94a3b8',
+        padding: '4px 8px',
+        borderRadius: '8px',
+        background: 'rgba(30, 41, 59, 0.4)',
+        backdropFilter: 'blur(10px)',
+        border: '1px solid rgba(255, 255, 255, 0.05)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '4px'
+      }
+    });
+    
+    const clockIcon = this.createElement('span', {
+      style: { fontSize: '10px', color: '#a5b4fc' }
+    }, '🕒');
+    
+    const dateText = document.createTextNode(
+      inquiry.createdAt ? this.formatActivityTime(inquiry.createdAt) : 'Unknown time'
+    );
+    
+    inquiryDate.appendChild(clockIcon);
+    inquiryDate.appendChild(dateText);
+    
+    inquiryHeader.appendChild(userInfo);
+    inquiryHeader.appendChild(inquiryDate);
+    
+    // Message preview
+    const messagePreview = this.createElement('div', {
+      style: {
+        padding: '10px 12px',
+        borderRadius: '8px',
+        background: 'rgba(30, 41, 59, 0.4)',
+        border: '1px solid rgba(99, 102, 241, 0.1)',
+        fontSize: '13px',
+        color: '#cbd5e1',
+        lineHeight: '1.5',
+        marginBottom: '15px',
+        maxHeight: '40px',
+        overflow: 'hidden',
+        position: 'relative'
+      }
+    });
+    
+    const messageText = inquiry.message || 'No message content';
+    const previewText = messageText.length > 100 ? 
+      messageText.substring(0, 100) + '...' : messageText;
+    
+    messagePreview.textContent = previewText;
+    
+    // View Details button
+    const viewButton = this.createElement('button', {
+      className: 'futuristic-button inquiry-view-btn',
+      'data-inquiry-id': inquiry.id,
+      style: {
+        background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(109, 40, 217, 0.1))',
+        padding: '8px 16px',
+        fontSize: '14px'
+      }
+    });
+    
+    const viewIcon = this.createElement('span', {
+      style: { fontSize: '14px', marginRight: '6px' }
+    }, '👁️');
+    
+    const viewText = document.createTextNode('View Details');
+    
+    viewButton.appendChild(viewIcon);
+    viewButton.appendChild(viewText);
+    
+    inquiryItem.appendChild(inquiryHeader);
+    inquiryItem.appendChild(messagePreview);
+    inquiryItem.appendChild(viewButton);
+    
+    return inquiryItem;
+  }
+
+  renderActivityItem(activity, index) {
+    const activityItem = this.createElement('div', {
+      className: 'animated-item',
+      style: {
+        padding: '15px 20px',
+        borderBottom: index < this.activityLog.length - 1 ? '1px solid rgba(30, 41, 59, 0.8)' : 'none',
+        transition: 'all 0.2s ease',
+        position: 'relative',
+        animationDelay: `${0.8 + (index * 0.1)}s`
+      }
+    });
+    
+    activityItem.addEventListener('mouseenter', () => {
+      activityItem.style.background = 'rgba(30, 41, 59, 0.3)';
+    });
+    
+    activityItem.addEventListener('mouseleave', () => {
+      activityItem.style.background = 'transparent';
+    });
+    
+    const activityHeader = this.createElement('div', {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px'
+      }
+    });
+    
+    const { icon, text } = this.formatActivityLog(activity);
+    
+    const activityIcon = this.createElement('div', {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: '32px',
+        height: '32px',
+        borderRadius: '50%',
+        background: 'rgba(245, 158, 11, 0.2)',
+        color: '#fbbf24',
+        fontSize: '16px',
+        flexShrink: '0'
+      }
+    }, icon);
+    
+    const activityContentDiv = this.createElement('div', { style: { flex: '1' } });
+    
+    const activityText = this.createElement('div', {
+      style: {
+        fontSize: '14px',
+        color: '#f1f5f9',
+        fontWeight: '500',
+        marginBottom: '4px'
+      }
+    }, text);
+    
+    const activityMeta = this.createElement('div', {
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        fontSize: '12px',
+        color: '#94a3b8'
+      }
+    });
+    
+    const activityUser = this.createElement('span', {
+      style: { fontWeight: '500' }
+    }, `By: ${activity.initiator?.fullName || activity.user?.fullName || 'System'}`);
+    
+    const activityTime = this.createElement('span', {}, 
+      activity.createdAt ? this.formatActivityTime(activity.createdAt) : 'Unknown time'
+    );
+    
+    activityMeta.appendChild(activityUser);
+    activityMeta.appendChild(activityTime);
+    
+    activityContentDiv.appendChild(activityText);
+    activityContentDiv.appendChild(activityMeta);
+    
+    activityHeader.appendChild(activityIcon);
+    activityHeader.appendChild(activityContentDiv);
+    
+    activityItem.appendChild(activityHeader);
+    
+    return activityItem;
+  }
+
+  renderInquiryModal() {
+    const modal = this.createElement('div', {
+      id: 'inquiry-modal',
+      className: 'modal-overlay',
+      style: {
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        width: '100%',
+        height: '100%',
+        background: 'rgba(0, 0, 0, 0.8)',
+        backdropFilter: 'blur(10px)',
+        display: 'none',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: '9999',
+        padding: '20px'
+      }
+    });
+    
+    const modalContent = this.createElement('div', {
+      className: 'neo-card',
+      style: {
+        maxWidth: '600px',
+        width: '100%',
+        maxHeight: '80vh',
+        overflow: 'auto',
+        position: 'relative'
+      }
+    });
+    
+    const modalGlow = this.createElement('div', {
+      className: 'card-glow',
+      style: {
+        background: 'radial-gradient(circle at center, rgba(139, 92, 246, 0.3), transparent 70%)'
+      }
+    });
+    modalContent.appendChild(modalGlow);
+    
+    const modalHeader = this.createElement('div', {
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '25px 25px 15px',
+        borderBottom: '1px solid rgba(255, 255, 255, 0.1)'
+      }
+    });
+    
+    const modalTitle = this.createElement('h2', {
+      id: 'modal-title',
+      style: {
+        fontSize: '22px',
+        fontWeight: '600',
+        color: '#f1f5f9',
+        margin: '0'
+      }
+    }, 'Contact Inquiry');
+    
+    const closeButton = this.createElement('button', {
+      id: 'modal-close-btn',
+      style: {
+        background: 'none',
+        border: 'none',
+        color: '#94a3b8',
+        fontSize: '24px',
+        cursor: 'pointer',
+        padding: '5px',
+        borderRadius: '50%',
+        width: '35px',
+        height: '35px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        transition: 'all 0.2s ease'
+      },
+      onMouseenter: (e) => {
+        e.target.style.background = 'rgba(239, 68, 68, 0.1)';
+        e.target.style.color = '#ef4444';
+      },
+      onMouseleave: (e) => {
+        e.target.style.background = 'none';
+        e.target.style.color = '#94a3b8';
+      }
+    }, '×');
+    
+    modalHeader.appendChild(modalTitle);
+    modalHeader.appendChild(closeButton);
+    
+    const modalBody = this.createElement('div', {
+      id: 'modal-body',
+      style: {
+        padding: '25px'
+      }
+    });
+    
+    modalContent.appendChild(modalHeader);
+    modalContent.appendChild(modalBody);
+    modal.appendChild(modalContent);
+    
+    return modal;
+  }
+
+  // Event Handling
+  attachEventListeners(container) {
+    // Delegate inquiry view button clicks
+    container.addEventListener('click', (e) => {
+      const viewBtn = e.target.closest('.inquiry-view-btn');
+      if (viewBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const inquiryId = parseInt(viewBtn.dataset.inquiryId);
+        this.showInquiryModal(inquiryId);
+      }
+      
+      const logoutBtn = e.target.closest('#logout-button');
+      if (logoutBtn) {
+        e.preventDefault();
+        this.handleLogout();
+      }
+    });
+
+    // Modal event listeners
+    const modal = document.getElementById('inquiry-modal');
+    if (modal && !modal.dataset.listenerAttached) {
+      modal.dataset.listenerAttached = 'true';
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal || e.target.closest('#modal-close-btn')) {
+          modal.style.display = 'none';
+          this.currentInquiry = null;
+        }
+        
+        if (e.target.id === 'mark-resolved-btn') {
+          this.resolveCurrentInquiry();
+        }
+      });
+    }
+  }
+
+  handleLogout() {
+    if (this.authService) {
+      fetch('/api/auth/logout', { 
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.authService.getToken()}`
+        }
+      })
+      .then(() => {
+        this.authService.logout();
+        window.location.href = '/login';
+      })
+      .catch(err => {
+        console.error('Logout failed:', err);
+        this.authService.logout();
+        window.location.href = '/login';
+      });
+    }
+  }
+
+  showInquiryModal(inquiryId) {
+    const inquiry = this.inquiries.find(i => i.id === inquiryId);
+    if (!inquiry) return;
+    
+    this.currentInquiry = inquiry;
+    
+    const modal = document.getElementById('inquiry-modal');
+    const modalBody = document.getElementById('modal-body');
+    
+    modalBody.innerHTML = `
+      <div style="margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+          <div>
+            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 4px;">From:</div>
+            <div style="font-size: 16px; color: #f1f5f9; font-weight: 500;">${this.escapeHtml(inquiry.name)}</div>
+            <div style="font-size: 14px; color: #94a3b8;">${this.escapeHtml(inquiry.email)}</div>
+            ${inquiry.phone ? `<div style="font-size: 14px; color: #94a3b8;">${this.escapeHtml(inquiry.phone)}</div>` : ''}
+          </div>
+          <div style="text-align: right;">
+            <div style="font-size: 12px; color: #94a3b8; margin-bottom: 4px;">Received:</div>
+            <div style="font-size: 14px; color: #f1f5f9;">${inquiry.createdAt ? this.formatActivityTime(inquiry.createdAt) : 'Unknown time'}</div>
+          </div>
+        </div>
+        
+        <div style="margin-bottom: 20px;">
+          <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">Subject:</div>
+          <div style="font-size: 18px; color: #f1f5f9; font-weight: 600;">${this.escapeHtml(inquiry.subject || 'No Subject')}</div>
+        </div>
+        
+        <div style="margin-bottom: 25px;">
+          <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">Message:</div>
+          <div style="padding: 15px; border-radius: 12px; background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(99, 102, 241, 0.1); font-size: 14px; color: #cbd5e1; line-height: 1.6; white-space: pre-wrap;">${this.escapeHtml(inquiry.message || 'No message content')}</div>
+        </div>
+        
+        <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+          <a href="mailto:${inquiry.email}?subject=Re: ${encodeURIComponent(inquiry.subject || 'Your inquiry')}" 
+             class="futuristic-button" 
+             style="background: linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(8, 145, 178, 0.1)); text-decoration: none; display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 16px;">✉️</span>
+            Respond via Email
+          </a>
+          <button id="mark-resolved-btn" 
+                  class="futuristic-button" 
+                  style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(5, 150, 105, 0.1)); display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 16px;">✓</span>
+            Mark as Resolved
+          </button>
+        </div>
+      </div>
+    `;
+    
+    modal.style.display = 'flex';
+  }
+
+  async resolveCurrentInquiry() {
+    if (!this.currentInquiry) return;
+    
+    const inquiryId = this.currentInquiry.id;
+    
     try {
-      // Use the throttled API request
-      if (this.apiService && this.apiService.resolveInquiry) {
-        await this.queueApiRequest(() => this.apiService.resolveInquiry(inquiryId));
-      } else if (this.apiService && this.apiService.put) {
-        // Try alternate endpoint
-        await this.queueApiRequest(() => this.apiService.put(`/contact/inquiries/${inquiryId}/resolve`));
+      if (this.apiService.updateInquiryStatus) {
+        await this.apiService.updateInquiryStatus(inquiryId, 'RESOLVED');
       }
       
       // Remove from local array
-      this.inquiries = Array.isArray(this.inquiries) ? 
-        this.inquiries.filter(inquiry => inquiry && inquiry.id !== inquiryId) : [];
+      this.inquiries = this.inquiries.filter(inquiry => inquiry.id !== inquiryId);
       
-      // Update cache
-      this.dataCache.inquiries = this.inquiries;
-      this.dataCache.lastFetchTime.inquiries = Date.now();
+      // Close modal
+      document.getElementById('inquiry-modal').style.display = 'none';
+      this.currentInquiry = null;
       
-      this.updateView();
+      // Update UI
+      this.updateInquiriesSection();
+      
       this.showNotification('Inquiry marked as resolved', 'success');
     } catch (error) {
       console.error('Error resolving inquiry:', error);
@@ -1341,7 +1586,32 @@ export class AdminDashboardView extends BaseComponent {
     }
   }
 
-  // Show a notification toast
+  updateView() {
+    // Simple view update that doesn't cause infinite loops
+    this.updateDataInUI();
+  }
+
+  toggleStatsVisibility() {
+    this.statsAreVisible = !this.statsAreVisible;
+    
+    // Update all eye icons
+    const eyeIcons = document.querySelectorAll('.eye-toggle');
+    eyeIcons.forEach(icon => {
+      icon.textContent = this.statsAreVisible ? '👁️' : '👁️‍🗨️';
+    });
+    
+    // Update all stat values
+    const statCards = document.querySelectorAll('.stat-value');
+    statCards.forEach((statValue, index) => {
+      const values = [
+        this.formatCurrency(this.paymentStats.revenue),
+        this.formatCurrency(this.paymentStats.expenses),
+        this.formatCurrency(this.paymentStats.netBalance)
+      ];
+      statValue.textContent = this.statsAreVisible ? values[index] : '••••••';
+    });
+  }
+
   showNotification(message, type = 'success') {
     const notification = this.createElement('div', {
       style: {
@@ -1365,7 +1635,6 @@ export class AdminDashboardView extends BaseComponent {
     
     document.body.appendChild(notification);
     
-    // Remove the notification after 3 seconds
     setTimeout(() => {
       notification.style.animation = 'fadeOut 0.3s ease-out';
       setTimeout(() => {
@@ -1374,6 +1643,44 @@ export class AdminDashboardView extends BaseComponent {
         }
       }, 300);
     }, 3000);
+  }
+
+  // Utility Methods
+  formatActivityLog(log) {
+    const actionTextMap = {
+      'ADMIN_CREATE_USER': 'created a new user',
+      'ADMIN_UPDATE_USER': 'updated user profile',
+      'ADMIN_DELETE_USER': 'deleted user',
+      'USER_LOGIN': 'user logged in',
+      'ADMIN_ADD_MANUAL_PAYMENT': 'added a manual payment',
+      'ADMIN_ADD_EXPENSE': 'recorded an expense',
+      'PAYMENT_CREATED': 'payment was created',
+      'USER_REGISTERED': 'new user registered',
+      'INQUIRY_SUBMITTED': 'inquiry was submitted',
+      'INQUIRY_RESOLVED': 'inquiry was resolved'
+    };
+    
+    const iconMap = {
+      'USER': '👤',
+      'PAYMENT': '💰',
+      'EXPENSE': '📝',
+      'LOGIN': '🔑',
+      'CREATE': '➕',
+      'UPDATE': '✏️',
+      'DELETE': '🗑️',
+      'INQUIRY': '✉️'
+    };
+    
+    let text = actionTextMap[log.actionType] || log.actionType.replace(/_/g, ' ').toLowerCase();
+    
+    if (log.actionData?.createdUsername) {
+      text += `: ${log.actionData.createdUsername}`;
+    }
+    
+    const iconKey = Object.keys(iconMap).find(key => log.actionType.includes(key));
+    const icon = iconMap[iconKey] || '⚙️';
+    
+    return { icon, text };
   }
 
   formatActivityTime(timestamp) {
@@ -1405,111 +1712,73 @@ export class AdminDashboardView extends BaseComponent {
     }
   }
 
-  updateStatsUI() {
-    // Update stats cards with actual data
-    const revenueCard = document.getElementById('revenue-card');
-    const expensesCard = document.getElementById('expenses-card');
-    const balanceCard = document.getElementById('balance-card');
-
-    if (revenueCard) {
-      const valueElement = revenueCard.querySelector('.stat-value');
-      if (valueElement) {
-        valueElement.textContent = this.statsAreVisible 
-          ? this.formatCurrency(this.paymentStats.revenue)
-          : '••••••';
-      }
-    }
-
-    if (expensesCard) {
-      const valueElement = expensesCard.querySelector('.stat-value');
-      if (valueElement) {
-        valueElement.textContent = this.statsAreVisible 
-          ? this.formatCurrency(this.paymentStats.expenses)
-          : '••••••';
-      }
-    }
-
-    if (balanceCard) {
-      const valueElement = balanceCard.querySelector('.stat-value');
-      if (valueElement) {
-        valueElement.textContent = this.statsAreVisible 
-          ? this.formatCurrency(this.paymentStats.netBalance)
-          : '••••••';
-      }
-    }
+  formatCurrency(amount, currency = 'KES') {
+    if (typeof amount !== 'number') return `${currency} 0.00`;
+    return `${currency} ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
-  
-  toggleStatsVisibility() {
-    this.statsAreVisible = !this.statsAreVisible;
+
+  hexToRgb(hex) {
+    if (!hex) return '0, 0, 0';
     
-    // Update all eye icons
-    const eyeIcons = document.querySelectorAll('.eye-toggle');
-    eyeIcons.forEach(icon => {
-      icon.textContent = this.statsAreVisible ? '👁️' : '👁️‍🗨️';
-    });
-    
-    // Update all stat values
-    this.updateStatsUI();
-  }
+    hex = hex.replace('#', '');
 
-  updateUserCountUI() {
-    const usersChip = document.getElementById('active-users-chip');
-    if (usersChip) {
-      const valueElement = usersChip.querySelector('span:last-child');
-      if (valueElement) {
-        valueElement.textContent = this.userCount.toString();
-      }
-    }
-  }
-
-  updateView() {
-    requestAnimationFrame(() => {
-      this.renderPage();
-    });
-  }
-
-  renderPage() {
-    const appContainer = document.getElementById('app');
-    if (!appContainer) {
-      console.error('App container not found');
-      return;
+    if (hex.length === 3) {
+      hex = hex.split('').map(c => c + c).join('');
     }
 
-    // Clear the container
-    while (appContainer.firstChild) {
-      appContainer.removeChild(appContainer.firstChild);
+    const r = parseInt(hex.substring(0, 2), 16);
+    const g = parseInt(hex.substring(2, 4), 16);
+    const b = parseInt(hex.substring(4, 6), 16);
+
+    return `${r}, ${g}, ${b}`;
+  }
+
+  escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  addBackgroundEffects() {
+    // Add futuristic background
+    if (!document.querySelector('.gradient-background')) {
+      const gradientBackground = this.createElement('div', {
+        className: 'gradient-background',
+        style: {
+          position: 'fixed',
+          top: '0',
+          left: '0',
+          width: '100%',
+          height: '100%',
+          background: 'linear-gradient(125deg, #0f172a 0%, #1e293b 40%, #0f172a 100%)',
+          backgroundSize: '400% 400%',
+          zIndex: '-2',
+          animation: 'gradientBG 15s ease infinite'
+        }
+      });
+      document.body.appendChild(gradientBackground);
     }
 
-    // Render the updated content
-    Promise.resolve(this.render()).then(content => {
-      if (content instanceof Node) {
-        appContainer.appendChild(content);
-      } else {
-        console.error('Render method did not return a valid DOM node');
-        
-        const errorDiv = document.createElement('div');
-        errorDiv.style.padding = '20px';
-        errorDiv.style.color = '#fff';
-        errorDiv.style.background = 'linear-gradient(135deg, #dc2626, #991b1b)';
-        errorDiv.style.borderRadius = '12px';
-        errorDiv.style.margin = '20px';
-        errorDiv.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)';
-        
-        const errorTitle = document.createElement('h3');
-        errorTitle.textContent = 'Error Loading Dashboard';
-        errorTitle.style.marginBottom = '10px';
-        
-        const errorMessage = document.createElement('p');
-        errorMessage.textContent = 'The dashboard could not be loaded. Please try refreshing the page.';
-        
-        errorDiv.appendChild(errorTitle);
-        errorDiv.appendChild(errorMessage);
-        
-        appContainer.appendChild(errorDiv);
-      }
-    }).catch(error => {
-      console.error('Error rendering page:', error);
-    });
+    // Add particle overlay
+    if (!document.querySelector('.particle-overlay')) {
+      const particleOverlay = this.createElement('div', {
+        className: 'particle-overlay',
+        style: {
+          position: 'fixed',
+          top: '0',
+          left: '0',
+          width: '100%',
+          height: '100%',
+          background: 'url("data:image/svg+xml,%3Csvg width=\'100\' height=\'100\' viewBox=\'0 0 100 100\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cpath d=\'M11 18c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm48 25c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm-43-7c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm63 31c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM34 90c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm56-76c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM12 86c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm28-65c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm23-11c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-6 60c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm29 22c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zM32 63c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm57-13c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-9-21c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM60 91c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM35 41c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM12 60c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2z\' fill=\'%234f6bff\' fill-opacity=\'0.03\' fill-rule=\'evenodd\'/%3E%3C/svg%3E")',
+          backgroundSize: '100px 100px',
+          backgroundRepeat: 'repeat',
+          zIndex: '-1',
+          animation: 'floatParticles 150s linear infinite'
+        }
+      });
+      document.body.appendChild(particleOverlay);
+    }
   }
 
   addGlobalStyles() {
@@ -1615,29 +1884,6 @@ export class AdminDashboardView extends BaseComponent {
           opacity: 0.15;
         }
         
-        /* Improved gradient text for better visibility */
-        .gradient-text {
-          background: linear-gradient(to right, #ffffff, #e0e7ff) !important;
-          -webkit-background-clip: text !important;
-          background-clip: text !important;
-          color: transparent !important;
-          -webkit-text-fill-color: transparent !important;
-          display: inline-block !important;
-          text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2) !important;
-        }
-        
-        .circle-glow {
-          position: absolute;
-          width: 300px;
-          height: 300px;
-          border-radius: 50%;
-          background: radial-gradient(circle, rgba(99, 102, 241, 0.15) 0%, rgba(99, 102, 241, 0) 70%);
-          pointer-events: none;
-          z-index: 0;
-          opacity: 0;
-          transition: opacity 0.5s ease;
-        }
-        
         @keyframes gradientBG {
           0% { background-position: 0% 50% }
           50% { background-position: 100% 50% }
@@ -1665,15 +1911,10 @@ export class AdminDashboardView extends BaseComponent {
           to { opacity: 0; transform: translateY(10px); }
         }
         
-        @keyframes shimmer {
-          0% { background-position: -1000px 0; }
-          100% { background-position: 1000px 0; }
-        }
-        
-        @keyframes loadingPulse {
-          0% { opacity: 0.6; transform: scale(0.95); }
-          50% { opacity: 1; transform: scale(1); }
-          100% { opacity: 0.6; transform: scale(0.95); }
+        @keyframes float {
+          0% { transform: translateY(0px); }
+          50% { transform: translateY(-10px); }
+          100% { transform: translateY(0px); }
         }
         
         .futuristic-button {
@@ -1694,6 +1935,7 @@ export class AdminDashboardView extends BaseComponent {
           align-items: center;
           justify-content: center;
           gap: 8px;
+          text-decoration: none;
         }
         
         .futuristic-button::before {
@@ -1762,37 +2004,15 @@ export class AdminDashboardView extends BaseComponent {
           0% { transform: rotate(0deg); }
           100% { transform: rotate(360deg); }
         }
-
-        .loading-spinner {
-          display: inline-block;
-          width: 40px;
-          height: 40px;
-          position: relative;
-        }
         
-        .loading-spinner:after {
-          content: " ";
-          display: block;
-          width: 32px;
-          height: 32px;
-          margin: 4px;
-          border-radius: 50%;
-          border: 3px solid transparent;
-          border-top-color: #818cf8;
-          border-left-color: #818cf8;
-          animation: spinner 1.2s cubic-bezier(0.68, -0.55, 0.27, 1.55) infinite;
-          box-shadow: 0 0 10px rgba(129, 140, 248, 0.3);
-        }
-        
-        @keyframes spinner {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
+        .animated-item {
+          animation: fadeIn 0.6s ease-out forwards;
         }
         
         /* Responsive styles */
         @media (max-width: 768px) {
           .dashboard-container {
-            padding: 20px 15px;
+            padding: 20px 15px !important;
           }
           
           h1 {
@@ -1816,7 +2036,7 @@ export class AdminDashboardView extends BaseComponent {
         
         @media (max-width: 480px) {
           .dashboard-container {
-            padding: 15px 10px;
+            padding: 15px 10px !important;
           }
           
           h1 {
@@ -1829,6 +2049,7 @@ export class AdminDashboardView extends BaseComponent {
           
           .neo-card {
             padding: 15px !important;
+            border-radius: 16px !important;
           }
           
           .hologram-icon {
@@ -1852,22 +2073,6 @@ export class AdminDashboardView extends BaseComponent {
       const styleElement = document.createElement('style');
       styleElement.id = 'dashboard-animation-styles';
       styleElement.textContent = `
-        @keyframes float {
-          0% { transform: translateY(0px); }
-          50% { transform: translateY(-10px); }
-          100% { transform: translateY(0px); }
-        }
-        
-        @keyframes pulse-glow {
-          0% { box-shadow: 0 0 5px rgba(99, 102, 241, 0.5); }
-          50% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.8); }
-          100% { box-shadow: 0 0 5px rgba(99, 102, 241, 0.5); }
-        }
-        
-        .animated-item {
-          animation: fadeIn 0.6s ease-out forwards;
-        }
-        
         .animated-item:nth-child(1) { animation-delay: 0.1s; }
         .animated-item:nth-child(2) { animation-delay: 0.2s; }
         .animated-item:nth-child(3) { animation-delay: 0.3s; }
@@ -1876,31 +2081,5 @@ export class AdminDashboardView extends BaseComponent {
       `;
       document.head.appendChild(styleElement);
     }
-  }
-
-  // Utility method to format currency values
-  formatCurrency(amount, currency = 'KES') {
-    if (typeof amount !== 'number') return `${currency} 0.00`;
-    return `${currency} ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }
-
-  // Helper for hexToRgb conversion
-  hexToRgb(hex) {
-    if (!hex) return '0, 0, 0';
-    
-    // Remove # if present
-    hex = hex.replace('#', '');
-
-    // Handle shorthand hex
-    if (hex.length === 3) {
-      hex = hex.split('').map(c => c + c).join('');
-    }
-
-    // Convert to RGB
-    const r = parseInt(hex.substring(0, 2), 16);
-    const g = parseInt(hex.substring(2, 4), 16);
-    const b = parseInt(hex.substring(4, 6), 16);
-
-    return `${r}, ${g}, ${b}`;
   }
 }

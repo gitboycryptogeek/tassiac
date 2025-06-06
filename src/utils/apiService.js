@@ -198,6 +198,10 @@ export class ApiService {
   }
   async archiveInquiry(inquiryId) { return this.delete(`/contact/inquiries/${inquiryId}`); }
 
+  async getDashboardStats() { 
+    return this.get('/admin/dashboard-stats'); 
+  }
+
 
   // User Profile and Auth
   async getUserProfile() { return this.get('/auth/profile'); }
