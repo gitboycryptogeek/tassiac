@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite" // Changed for SQLite development
+  provider = "postgresql" // changed from sqlite
   url      = env("DATABASE_URL_PRISMA")
 }
 

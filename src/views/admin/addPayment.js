@@ -21,6 +21,8 @@ export class AdminAddPaymentView extends BaseComponent {
     this.users = [];
     this.specialOfferings = [];
     this.filteredUsers = [];
+    this.paymentBatch = [];
+    this.editingPaymentIndex = null;
     this.formData = {
       userId: '',
       amount: '',
@@ -300,6 +302,7 @@ export class AdminAddPaymentView extends BaseComponent {
         }
         
         container.appendChild(this.renderPaymentForm());
+        container.appendChild(this.renderBatchView());
         
         document.body.appendChild(this.renderSpecialOfferingModal());
         
@@ -345,7 +348,7 @@ export class AdminAddPaymentView extends BaseComponent {
           left: '0',
           width: '100%',
           height: '100%',
-          background: 'url("data:image/svg+xml,%3Csvg width=\'100\' height=\'100\' viewBox=\'0 0 100 100\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cpath d=\'M11 18c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm48 25c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm-43-7c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm63 31c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM34 90c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm56-76c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM12 86c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm28-65c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm23-11c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-6 60c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm29 22c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zM32 63c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm57-13c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-9-21c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM60 91c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM35 41c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM12 60c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2z\' fill=\'%234f6bff\' fill-opacity=\'0.03\' fill-rule=\'evenodd\'/%3E%3C/svg%3E")',
+          background: 'url("data:image/svg+xml,%3Csvg width=\'100\' height=\'100\' viewBox=\'0 0 100 100\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cpath d=\'M11 18c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm48 25c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm-43-7c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm63 31c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM34 90c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm56-76c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM12 86c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm28-65c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm23-11c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-6 60c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm29 22c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm32 63c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-9-21c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM60 91c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM35 41c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM12 60c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2z\' fill=\'%234f6bff\' fill-opacity=\'0.03\' fill-rule=\'evenodd\'/%3E%3C/svg%3E")',
           backgroundSize: '100px 100px',
           backgroundRepeat: 'repeat',
           zIndex: '-1',
@@ -970,6 +973,20 @@ export class AdminAddPaymentView extends BaseComponent {
     }, 'Tithe Distribution Categories');
     
     titheSection.appendChild(sectionTitle);
+
+    const amountInfo = this.createElement('div', {
+        id: 'tithe-amount-info',
+        style: {
+            padding: '15px',
+            backgroundColor: 'rgba(15, 23, 42, 0.8)',
+            borderRadius: '12px',
+            marginBottom: '20px',
+            border: '1px solid rgba(59, 130, 246, 0.1)',
+            fontSize: '14px',
+            color: '#94a3b8'
+        }
+    });
+    titheSection.appendChild(amountInfo);
     
     const subtitle = this.createElement('p', {
       style: {
@@ -978,16 +995,16 @@ export class AdminAddPaymentView extends BaseComponent {
         marginTop: '0',
         marginBottom: '25px'
       }
-    }, 'Select which SDA categories this tithe should be allocated to:');
+    }, 'Enter amounts for each category. Leave fields blank to distribute the remainder equally.');
     
     titheSection.appendChild(subtitle);
     
-    const checkboxContainer = this.createElement('div', {
-      className: 'tithe-checkbox-container',
+    const inputsContainer = this.createElement('div', {
+      className: 'tithe-inputs-container',
       style: {
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
-        gap: '15px'
+        gap: '20px'
       }
     });
     
@@ -1000,63 +1017,35 @@ export class AdminAddPaymentView extends BaseComponent {
     ];
     
     titheCategories.forEach(category => {
-      const checkboxItem = this.createElement('div', {
-        className: 'checkbox-item',
-        style: {
-          padding: '15px',
-          backgroundColor: 'rgba(30, 41, 59, 0.3)',
-          borderRadius: '12px',
-          border: '1px solid rgba(59, 130, 246, 0.1)',
-          transition: 'all 0.2s ease'
-        }
-      });
-      
-      const checkboxLabel = this.createElement('label', {
-        style: {
-          display: 'flex',
-          alignItems: 'center',
-          cursor: 'pointer',
-          color: '#e0e7ff',
-          fontSize: '14px',
-          fontWeight: '500'
-        }
-      });
-      
-      const checkbox = this.createElement('input', {
-        type: 'checkbox',
-        id: category.id,
-        name: 'titheDistribution',
-        value: category.id,
-        style: {
-          width: '18px',
-          height: '18px',
-          marginRight: '12px',
-          accentColor: '#3b82f6',
-          cursor: 'pointer'
-        }
-      });
-      
-      const labelText = document.createTextNode(category.label);
-      
-      checkboxLabel.appendChild(checkbox);
-      checkboxLabel.appendChild(labelText);
-      checkboxItem.appendChild(checkboxLabel);
-      
-      // Add hover effect
-      checkboxItem.addEventListener('mouseenter', () => {
-        checkboxItem.style.backgroundColor = 'rgba(59, 130, 246, 0.1)';
-        checkboxItem.style.borderColor = 'rgba(59, 130, 246, 0.2)';
-      });
-      
-      checkboxItem.addEventListener('mouseleave', () => {
-        checkboxItem.style.backgroundColor = 'rgba(30, 41, 59, 0.3)';
-        checkboxItem.style.borderColor = 'rgba(59, 130, 246, 0.1)';
-      });
-      
-      checkboxContainer.appendChild(checkboxItem);
+        const inputGroup = this.createElement('div', { className: 'form-group' });
+
+        const fieldLabel = this.createElement('label', {
+            htmlFor: `tithe-${category.id}`,
+            style: {
+                display: 'block',
+                marginBottom: '8px',
+                color: '#94a3b8',
+                fontSize: '13px',
+                fontWeight: '500'
+            }
+        }, category.label);
+
+        const input = this.createElement('input', {
+            type: 'number',
+            id: `tithe-${category.id}`,
+            'data-category': category.id,
+            className: 'futuristic-input tithe-distribution-input',
+            placeholder: '0.00',
+            step: '0.01',
+            min: '0'
+        });
+        
+        inputGroup.appendChild(fieldLabel);
+        inputGroup.appendChild(input);
+        inputsContainer.appendChild(inputGroup);
     });
     
-    titheSection.appendChild(checkboxContainer);
+    titheSection.appendChild(inputsContainer);
     
     return titheSection;
   }
@@ -1066,9 +1055,24 @@ export class AdminAddPaymentView extends BaseComponent {
       style: {
         display: 'flex',
         justifyContent: 'flex-end',
+        alignItems: 'center',
+        gap: '15px',
         marginTop: '30px'
       }
     });
+
+    const cancelButton = this.createElement('button', {
+        type: 'button',
+        id: 'cancel-edit-btn',
+        className: 'futuristic-button',
+        style: {
+            display: 'none', // Hidden by default
+            backgroundColor: 'rgba(127, 29, 29, 0.2)',
+            color: '#ef4444'
+        },
+        onClick: () => this.cancelEdit()
+    }, 'Cancel Edit');
+    actionsContainer.appendChild(cancelButton);
     
     const submitButton = this.createElement('button', {
       type: 'submit',
@@ -1096,10 +1100,11 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    const buttonText = document.createTextNode('Add Payment');
-    
+    const buttonTextNode = document.createTextNode(
+        this.editingPaymentIndex !== null ? 'Update Batch Item' : 'Add to Batch'
+    );
     submitButton.appendChild(spinner);
-    submitButton.appendChild(buttonText);
+    submitButton.appendChild(buttonTextNode);
     
     actionsContainer.appendChild(submitButton);
     
@@ -1400,6 +1405,120 @@ export class AdminAddPaymentView extends BaseComponent {
     });
     
     return modal;
+  }
+  
+  renderBatchView() {
+    const batchContainer = this.createElement('div', {
+      id: 'batch-view-container',
+      className: 'neo-card animated-item',
+      style: {
+        marginTop: '30px',
+        padding: '30px',
+        display: 'none'
+      }
+    });
+
+    const title = this.createElement('h2', {
+      style: {
+        fontSize: '20px',
+        fontWeight: '600',
+        marginTop: '0',
+        marginBottom: '25px',
+        background: 'linear-gradient(to right, #ffffff, #e0e7ff)',
+        backgroundClip: 'text',
+        WebkitBackgroundClip: 'text',
+        color: 'transparent',
+        WebkitTextFillColor: 'transparent'
+      }
+    }, 'Payment Batch');
+    batchContainer.appendChild(title);
+    
+    const tableContainer = this.createElement('div', { style: { overflowX: 'auto' } });
+    const table = this.createElement('table', {
+      id: 'batch-table',
+      style: { width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }
+    });
+    
+    table.innerHTML = `
+      <thead>
+        <tr style="border-bottom: 1px solid rgba(59, 130, 246, 0.2);">
+          <th style="padding: 12px 15px; text-align: left; color: #94a3b8; font-size: 14px; width: 25%;">Member</th>
+          <th style="padding: 12px 15px; text-align: left; color: #94a3b8; font-size: 14px; width: 20%;">Type</th>
+          <th style="padding: 12px 15px; text-align: right; color: #94a3b8; font-size: 14px; width: 15%;">Amount</th>
+          <th style="padding: 12px 15px; text-align: left; color: #94a3b8; font-size: 14px; width: 25%;">Description</th>
+          <th style="padding: 12px 15px; text-align: center; color: #94a3b8; font-size: 14px; width: 15%;">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="batch-items-body"></tbody>
+      <tfoot>
+        <tr id="batch-total-row" style="border-top: 2px solid rgba(59, 130, 246, 0.3);">
+          <td colspan="2" style="padding: 15px; text-align: right; font-weight: 600; font-size: 16px;">Total Batch Amount:</td>
+          <td id="batch-total-amount" style="padding: 15px; text-align: right; font-weight: 600; font-size: 16px;"></td>
+          <td colspan="2"></td>
+        </tr>
+      </tfoot>
+    `;
+    tableContainer.appendChild(table);
+    batchContainer.appendChild(tableContainer);
+
+    const actionsContainer = this.createElement('div', {
+      style: { display: 'flex', justifyContent: 'flex-end', marginTop: '25px' }
+    });
+    const processBatchBtn = this.createElement('button', {
+      id: 'process-batch-btn',
+      className: 'futuristic-button',
+      style: {
+        background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(5, 150, 105, 0.1))',
+        color: '#10b981'
+      }
+    });
+
+    processBatchBtn.innerHTML = `
+      <span id="batch-spinner" class="spinner" style="display: none; width: 16px; height: 16px; border: 2px solid rgba(255, 255, 255, 0.3); border-top: 2px solid #fff; border-radius: 50%; animation: spin 0.75s linear infinite;"></span>
+      Process Batch with KCB Express
+    `;
+
+    actionsContainer.appendChild(processBatchBtn);
+    batchContainer.appendChild(actionsContainer);
+
+    return batchContainer;
+  }
+
+  updateBatchView() {
+    const batchContainer = document.getElementById('batch-view-container');
+    const tbody = document.getElementById('batch-items-body');
+    const totalAmountEl = document.getElementById('batch-total-amount');
+
+    if (!batchContainer || !tbody || !totalAmountEl) return;
+
+    if (this.paymentBatch.length === 0) {
+      batchContainer.style.display = 'none';
+      return;
+    }
+
+    batchContainer.style.display = 'block';
+    tbody.innerHTML = '';
+    let totalAmount = 0;
+
+    this.paymentBatch.forEach((payment, index) => {
+      const user = this.users.find(u => u.id === payment.userId);
+      totalAmount += payment.amount;
+      const tr = this.createElement('tr', { style: { borderBottom: '1px solid rgba(148, 163, 184, 0.1)' } });
+
+      tr.innerHTML = `
+        <td style="padding: 12px 15px; font-size: 14px;">${user ? user.fullName : 'Unknown User'}</td>
+        <td style="padding: 12px 15px; font-size: 14px;">${payment.paymentTypeDisplay || payment.paymentType}</td>
+        <td style="padding: 12px 15px; text-align: right; font-size: 14px;">${this.formatCurrency(payment.amount)}</td>
+        <td style="padding: 12px 15px; font-size: 14px; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${payment.description}">${payment.description}</td>
+        <td style="padding: 12px 15px; text-align: center;">
+          <button class="edit-batch-item" data-index="${index}" style="background:none; border:none; color:#3b82f6; cursor:pointer; font-size: 13px; margin-right: 5px;">Edit</button>
+          <button class="remove-batch-item" data-index="${index}" style="background:none; border:none; color:#ef4444; cursor:pointer; font-size: 13px;">Remove</button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    totalAmountEl.textContent = this.formatCurrency(totalAmount);
   }
   
   addStyles() {
@@ -1813,41 +1932,66 @@ export class AdminAddPaymentView extends BaseComponent {
         }
       });
     }
+
+    const amountInput = document.getElementById('amount');
+    if (amountInput) {
+        amountInput.addEventListener('input', () => this.updateTitheDistributionState());
+    }
+
+    const titheDistributionSection = document.getElementById('tithe-distribution-section');
+    if (titheDistributionSection) {
+        titheDistributionSection.addEventListener('input', (e) => {
+            if (e.target.classList.contains('tithe-distribution-input')) {
+                this.updateTitheDistributionState();
+            }
+        });
+    }
+
+    const batchViewContainer = document.getElementById('batch-view-container');
+    if(batchViewContainer) {
+        batchViewContainer.addEventListener('click', e => {
+            if (e.target.classList.contains('edit-batch-item')) {
+                const index = e.target.getAttribute('data-index');
+                this.handleEditBatchItem(parseInt(index));
+            }
+            if (e.target.classList.contains('remove-batch-item')) {
+                const index = e.target.getAttribute('data-index');
+                this.handleRemoveBatchItem(parseInt(index));
+            }
+        });
+    }
+
+    const processBatchBtn = document.getElementById('process-batch-btn');
+    if (processBatchBtn) {
+        processBatchBtn.addEventListener('click', () => this.handleProcessBatch());
+    }
   }
   
   async handleSubmit(e) {
     e.preventDefault();
+    if (this.isSubmitting) return;
     
+    this.isSubmitting = true;
+    const submitBtn = document.getElementById('submit-payment-btn');
+    const spinner = document.getElementById('submit-spinner');
+    if (submitBtn && spinner) {
+      submitBtn.disabled = true;
+      spinner.style.display = 'inline-block';
+    }
+
     try {
-      if (this.isSubmitting) return;
-      this.isSubmitting = true;
-      
-      const submitBtn = document.getElementById('submit-payment-btn');
-      const submitSpinner = document.getElementById('submit-spinner');
-      if (submitBtn && submitSpinner) {
-        submitBtn.disabled = true;
-        submitSpinner.style.display = 'inline-block';
-      }
-      
       const form = e.target;
       const userId = form.querySelector('#userId').value;
-      const paymentType = form.querySelector('#paymentType').value;
+      const paymentTypeSelect = form.querySelector('#paymentType');
+      const paymentType = paymentTypeSelect.value;
       const amount = parseFloat(form.querySelector('#amount').value);
-      const description = form.querySelector('#description').value || '';
+      let description = form.querySelector('#description').value || '';
       const paymentDate = form.querySelector('#paymentDate').value;
-
-      console.log('Form submission data:', {
-        userId,
-        paymentType,
-        amount,
-        description,
-        paymentDate
-      });
-
+      
       if (!userId) throw new Error('Please select a member');
       if (!paymentType) throw new Error('Please select a payment type');
       if (isNaN(amount) || amount <= 0) throw new Error('Please enter a valid amount');
-
+      
       let paymentData = {
         userId: parseInt(userId),
         amount: amount,
@@ -1855,92 +1999,199 @@ export class AdminAddPaymentView extends BaseComponent {
         description: description,
         paymentDate: paymentDate,
         paymentMethod: 'MANUAL',
-        isExpense: paymentType === 'EXPENSE'
+        isExpense: paymentType === 'EXPENSE',
+        paymentTypeDisplay: paymentTypeSelect.options[paymentTypeSelect.selectedIndex].text
       };
-
+      
       if (paymentType === 'TITHE') {
-        const titheDistributionSDA = {
-          campMeetingExpenses: false,
-          welfare: false,
-          thanksgiving: false,
-          stationFund: false,
-          mediaMinistry: false
-        };
-        
-        const checkboxes = form.querySelectorAll('input[name="titheDistribution"]:checked');
-        checkboxes.forEach(checkbox => {
-          if (titheDistributionSDA.hasOwnProperty(checkbox.value)) {
-            titheDistributionSDA[checkbox.value] = true;
-          }
+        const titheDistributionSDA = {};
+        const titheInputs = form.querySelectorAll('.tithe-distribution-input');
+        let distributedTotal = 0;
+        const emptyFields = [];
+        const filledFields = {};
+
+        titheInputs.forEach(input => {
+            const categoryId = input.dataset.category;
+            const value = parseFloat(input.value);
+            if (value > 0) {
+                filledFields[categoryId] = value;
+                distributedTotal += value;
+            } else {
+                emptyFields.push(categoryId);
+            }
         });
+
+        if (distributedTotal > amount) {
+            throw new Error('Tithe distribution total cannot exceed the main tithe amount.');
+        }
+
+        Object.assign(titheDistributionSDA, filledFields);
+
+        if (emptyFields.length > 0) {
+            const remainingForDistribution = amount - distributedTotal;
+            if (remainingForDistribution > 0) {
+                const equalShare = remainingForDistribution / emptyFields.length;
+                emptyFields.forEach(categoryId => {
+                    titheDistributionSDA[categoryId] = parseFloat(equalShare.toFixed(2));
+                });
+            }
+        }
         
         paymentData.titheDistributionSDA = titheDistributionSDA;
-        paymentData.paymentType = 'TITHE';
       } else if (paymentType.startsWith('SPECIAL_OFFERING_')) {
         const offeringId = parseInt(paymentType.replace('SPECIAL_OFFERING_', ''), 10);
-        if (isNaN(offeringId)) {
-          throw new Error('Invalid special offering selection');
-        }
-        
         const offering = this.specialOfferings.find(o => o.id === offeringId);
-        if (!offering) {
-          throw new Error('Special offering not found');
-        }
-        
-        paymentData.specialOfferingId = offeringId;
-        // Keep original payment type format for server
-        paymentData.paymentType = paymentType;
-        
-        // Add display name to description
-        if (description && !description.includes(offering.name)) {
-          paymentData.description = `${offering.name} - ${description}`;
-        } else if (!description) {
-          paymentData.description = offering.name;
+        if (offering) {
+            paymentData.specialOfferingId = offeringId;
+            if (description && !description.includes(offering.name)) {
+                paymentData.description = `${offering.name} - ${description}`;
+            } else if (!description) {
+                paymentData.description = offering.name;
+            }
         }
       } else if (paymentType === 'EXPENSE') {
-        paymentData.isExpense = true;
         paymentData.department = 'General';
       }
-
-      const response = await this.queueApiRequest(() => 
-        this.apiService.addManualPayment(paymentData)
-      );
-
-      // Payment succeeded - backend logs show successful creation
-      this.successMessage = 'Payment processed successfully!';
-      this.errorMessage = '';
-      this.hasSubmitted = true;
-
-      // Force complete view refresh
-      setTimeout(() => {
-        window.location.reload();
-      }, 1500);
-
-      this.showNotification('Payment processed successfully!', 'success');
+      
+      if (this.editingPaymentIndex !== null) {
+        this.paymentBatch[this.editingPaymentIndex] = paymentData;
+        this.showNotification('Batch item updated successfully!', 'success');
+      } else {
+        this.paymentBatch.push(paymentData);
+        this.showNotification('Payment added to batch successfully!', 'success');
+      }
+      
+      this.resetForm();
+      this.updateBatchView();
 
     } catch (error) {
-      console.error('Payment submission error:', error);
-      this.errorMessage = error.message || 'Failed to process payment. Please try again.';
-      this.successMessage = '';
-      this.hasSubmitted = true;
-      this.showNotification(this.errorMessage, 'error');
+      this.showNotification(error.message, 'error');
     } finally {
       this.isSubmitting = false;
-      const submitBtn = document.getElementById('submit-payment-btn');
-      const submitSpinner = document.getElementById('submit-spinner');
-      if (submitBtn && submitSpinner) {
+      if (submitBtn && spinner) {
         submitBtn.disabled = false;
-        submitSpinner.style.display = 'none';
-      }
-
-      const appContainer = document.getElementById('app');
-      if (appContainer) {
-        appContainer.innerHTML = '';
-        appContainer.appendChild(this.render());
+        spinner.style.display = 'none';
       }
     }
   }
   
+  resetForm() {
+    const form = document.getElementById('add-payment-form');
+    if (form) form.reset();
+
+    document.getElementById('userId').value = '';
+    document.getElementById('userSearch').value = '';
+    this.editingPaymentIndex = null;
+
+    const submitBtn = document.getElementById('submit-payment-btn');
+    if (submitBtn) {
+      submitBtn.childNodes[1].nodeValue = 'Add to Batch';
+    }
+    
+    const cancelBtn = document.getElementById('cancel-edit-btn');
+    if(cancelBtn) cancelBtn.style.display = 'none';
+
+    const titheSection = document.getElementById('tithe-distribution-section');
+    if (titheSection) {
+      titheSection.style.display = 'none';
+    }
+    this.updateTitheDistributionState();
+  }
+
+  cancelEdit() {
+    this.resetForm();
+    this.showNotification('Edit cancelled', 'info');
+  }
+
+  handleEditBatchItem(index) {
+    if (index < 0 || index >= this.paymentBatch.length) return;
+
+    this.editingPaymentIndex = index;
+    const payment = this.paymentBatch[index];
+    
+    const user = this.users.find(u => u.id === payment.userId);
+    if (user) {
+        document.getElementById('userSearch').value = `${user.fullName} (${user.phone || 'No phone'})`;
+        document.getElementById('userId').value = user.id;
+    }
+
+    document.getElementById('paymentType').value = payment.paymentType;
+    document.getElementById('amount').value = payment.amount;
+    document.getElementById('description').value = payment.description;
+    document.getElementById('paymentDate').value = payment.paymentDate;
+
+    // Show/hide tithe section and populate values
+    const titheSection = document.getElementById('tithe-distribution-section');
+    if (payment.paymentType === 'TITHE') {
+      titheSection.style.display = 'block';
+      if (payment.titheDistributionSDA) {
+        for (const [key, value] of Object.entries(payment.titheDistributionSDA)) {
+          const input = document.getElementById(`tithe-${key}`);
+          if (input) input.value = value;
+        }
+      }
+    } else {
+      titheSection.style.display = 'none';
+    }
+    this.updateTitheDistributionState();
+
+    const submitBtn = document.getElementById('submit-payment-btn');
+    submitBtn.childNodes[1].nodeValue = 'Update Batch Item';
+    document.getElementById('cancel-edit-btn').style.display = 'inline-flex';
+    
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    this.showNotification('Editing item. Make changes and click "Update Batch Item".', 'info');
+  }
+
+  handleRemoveBatchItem(index) {
+    if (index < 0 || index >= this.paymentBatch.length) return;
+    this.paymentBatch.splice(index, 1);
+    this.updateBatchView();
+    this.showNotification('Item removed from batch.', 'success');
+  }
+
+  async handleProcessBatch() {
+    if (this.paymentBatch.length === 0) {
+      this.showNotification('Batch is empty. Add payments first.', 'error');
+      return;
+    }
+    if (this.isSubmitting) return;
+
+    this.isSubmitting = true;
+    const processBtn = document.getElementById('process-batch-btn');
+    const spinner = document.getElementById('batch-spinner');
+    if (processBtn && spinner) {
+        processBtn.disabled = true;
+        spinner.style.display = 'inline-block';
+    }
+
+    try {
+        await this.queueApiRequest(() =>
+            this.apiService.createPaymentBatch({ payments: this.paymentBatch })
+        );
+
+        this.successMessage = 'Payment batch processed successfully!';
+        this.paymentBatch = [];
+        this.updateBatchView();
+        this.showNotification(this.successMessage, 'success');
+
+        setTimeout(() => {
+            window.location.reload();
+        }, 1500);
+
+    } catch (error) {
+        console.error('Batch submission error:', error);
+        this.errorMessage = error.message || 'Failed to process payment batch.';
+        this.showNotification(this.errorMessage, 'error');
+    } finally {
+        this.isSubmitting = false;
+        if (processBtn && spinner) {
+            processBtn.disabled = false;
+            spinner.style.display = 'none';
+        }
+    }
+  }
+
   async handleSpecialOfferingSubmit(e) {
     e.preventDefault();
     e.stopPropagation();
@@ -2023,105 +2274,5 @@ export class AdminAddPaymentView extends BaseComponent {
         }
       }
     }
-  }
-  
-  showNotification(message, type = 'success') {
-    const existingNotifications = document.querySelectorAll('.futuristic-notification');
-    existingNotifications.forEach(notification => {
-      document.body.removeChild(notification);
-    });
-    
-    const notification = this.createElement('div', {
-      className: 'futuristic-notification',
-      style: {
-        position: 'fixed',
-        bottom: '20px',
-        right: '20px',
-        padding: '15px 20px',
-        borderRadius: '12px',
-        color: '#fff',
-        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.2)',
-        backdropFilter: 'blur(10px)',
-        zIndex: '9999',
-        maxWidth: '90%',
-        width: '350px',
-        animation: 'fadeIn 0.3s ease-out',
-        background: type === 'success' ? 'rgba(16, 185, 129, 0.9)' : 'rgba(239, 68, 68, 0.9)',
-        border: `1px solid ${type === 'success' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`,
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-        fontFamily: 'Inter, sans-serif'
-      }
-    });
-    
-    const icon = this.createElement('div', {
-      style: {
-        flexShrink: '0',
-        width: '24px',
-        height: '24px',
-        borderRadius: '50%',
-        background: 'rgba(255, 255, 255, 0.2)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: '14px'
-      }
-    }, type === 'success' ? '✓' : '!');
-    
-    const messageText = this.createElement('div', {
-      style: {
-        flex: '1',
-        fontSize: '14px',
-        fontWeight: '500'
-      }
-    }, message);
-    
-    const closeButton = this.createElement('button', {
-      style: {
-        background: 'none',
-        border: 'none',
-        color: 'rgba(255, 255, 255, 0.7)',
-        fontSize: '18px',
-        cursor: 'pointer',
-        padding: '0',
-        lineHeight: '1',
-        transition: 'color 0.15s ease',
-        marginLeft: 'auto'
-      },
-      onMouseenter: (e) => {
-        e.currentTarget.style.color = '#fff';
-      },
-      onMouseleave: (e) => {
-        e.currentTarget.style.color = 'rgba(255, 255, 255, 0.7)';
-      },
-      onClick: () => {
-        if (notification.parentNode) {
-          notification.style.animation = 'fadeOut 0.3s ease-out';
-          setTimeout(() => {
-            if (notification.parentNode) {
-              document.body.removeChild(notification);
-            }
-          }, 300);
-        }
-      }
-    }, '×');
-    
-    notification.appendChild(icon);
-    notification.appendChild(messageText);
-    notification.appendChild(closeButton);
-    
-    document.body.appendChild(notification);
-    
-    setTimeout(() => {
-      if (notification.parentNode) {
-        notification.style.animation = 'fadeOut 0.3s ease-out';
-        setTimeout(() => {
-          if (notification.parentNode) {
-            document.body.removeChild(notification);
-          }
-        }, 300);
-      }
-    }, 5000);
   }
 }
