@@ -1890,6 +1890,5 @@ window.apiService = apiServiceInstance;
 console.log('✅ Church Financial Management API Service loaded successfully');
 console.log('🔧 Service status:', apiServiceInstance.getServiceStatus());
 
-// Export both the class and the instance for flexibility
-export { ApiService };
+// Export only the default instance
 export default apiServiceInstance;
