@@ -22,6 +22,8 @@ export class AdminAddPaymentView extends BaseComponent {
     this.specialOfferings = [];
     this.filteredUsers = [];
     this.paymentBatch = [];
+    this.existingBatches = [];
+    this.currentBatchId = null;
     this.editingPaymentIndex = null;
     this.formData = {
       userId: '',
@@ -48,6 +50,8 @@ export class AdminAddPaymentView extends BaseComponent {
     this.userSearchQuery = '';
     this.showUserDropdown = false;
     this.modalVisible = false;
+    this.showBatchSelector = false;
+    this.batchProcessingStatus = null;
     
     // Rate Limiting Checker
     setInterval(() => {
@@ -79,6 +83,13 @@ export class AdminAddPaymentView extends BaseComponent {
     } catch (error) {
       console.warn("Could not load special offerings:", error);
       this.specialOfferings = [];
+    }
+
+    try {
+      await this.loadExistingBatches();
+    } catch (error) {
+      console.warn("Could not load existing batches:", error);
+      this.existingBatches = [];
     }
   }
   
@@ -189,17 +200,32 @@ export class AdminAddPaymentView extends BaseComponent {
         console.log('No special offerings found in response structure');
         this.specialOfferings = [];
       }
-      
-      this.updateSpecialOfferingsDropdown();
     } catch (error) {
       console.error('Error loading special offerings:', error);
       this.specialOfferings = [];
     }
   }
 
+  async loadExistingBatches() {
+    try {
+      const response = await this.queueApiRequest(() => 
+        this.apiService.getAllBatchPayments({ status: 'PENDING' })
+      );
+      
+      this.existingBatches = response.batchPayments || [];
+      this.updateBatchSelector();
+    } catch (error) {
+      console.error('Error loading existing batches:', error);
+      this.existingBatches = [];
+    }
+  }
+
   updateSpecialOfferingsDropdown() {
     const paymentTypeSelect = document.getElementById('paymentType');
-    if (!paymentTypeSelect) return;
+    if (!paymentTypeSelect) {
+      console.log('Payment type select not found, skipping special offerings update');
+      return;
+    }
     
     let optGroup = paymentTypeSelect.querySelector('optgroup[label="Special Offerings"]');
     if (!optGroup) {
@@ -215,8 +241,11 @@ export class AdminAddPaymentView extends BaseComponent {
       emptyOption.disabled = true;
       emptyOption.textContent = 'No special offerings available';
       optGroup.appendChild(emptyOption);
+      console.log('No special offerings to display');
       return;
     }
+    
+    console.log('Adding special offerings to dropdown:', this.specialOfferings);
     
     const sortedOfferings = [...this.specialOfferings].sort((a, b) => {
       return new Date(b.startDate) - new Date(a.startDate);
@@ -229,7 +258,6 @@ export class AdminAddPaymentView extends BaseComponent {
       }
       
       const optionElement = document.createElement('option');
-      // <-- Changed line:
       optionElement.value = `SPECIAL_OFFERING_${offering.id}`;
       optionElement.textContent = offering.name;
       optionElement.dataset.offeringCode = offering.offeringCode;
@@ -246,8 +274,34 @@ export class AdminAddPaymentView extends BaseComponent {
         optionElement.textContent += ' (Ended)';
       }
       
+      console.log('Adding special offering option:', {
+        id: offering.id,
+        name: offering.name,
+        value: optionElement.value,
+        isActive
+      });
+      
       optGroup.appendChild(optionElement);
     });
+    
+    console.log('Special offerings dropdown updated successfully');
+  }
+
+  updateBatchSelector() {
+    const batchSelect = document.getElementById('batch-selector');
+    if (!batchSelect) return;
+
+    // Clear existing options except default
+    batchSelect.innerHTML = '<option value="">Create New Batch</option>';
+
+    if (this.existingBatches && this.existingBatches.length > 0) {
+      this.existingBatches.forEach(batch => {
+        const option = document.createElement('option');
+        option.value = batch.id;
+        option.textContent = `Batch ${batch.batchReference} (${this.formatCurrency(batch.totalAmount)})`;
+        batchSelect.appendChild(option);
+      });
+    }
   }
   
   formatDate(date) {
@@ -301,12 +355,20 @@ export class AdminAddPaymentView extends BaseComponent {
           container.appendChild(this.renderAlerts());
         }
         
+        container.appendChild(this.renderBatchSelector());
         container.appendChild(this.renderPaymentForm());
         container.appendChild(this.renderBatchView());
+        container.appendChild(this.renderExistingBatchesView());
         
         document.body.appendChild(this.renderSpecialOfferingModal());
+        document.body.appendChild(this.renderKcbPaymentModal());
+        document.body.appendChild(this.renderBatchDetailsModal());
         
         this.attachEventListeners();
+        this.updateExistingBatchesView();
+        
+        // Update special offerings dropdown after DOM is ready
+        this.updateSpecialOfferingsDropdown();
       } catch (error) {
         console.error('Error initializing view:', error);
         container.innerHTML = `
@@ -400,14 +462,14 @@ export class AdminAddPaymentView extends BaseComponent {
         WebkitTextFillColor: 'transparent',
         textShadow: '0 2px 4px rgba(0, 0, 0, 0.3)'
       }
-    }, 'Add Payment');
+    }, 'Batch Payment Management');
     
     titleContainer.appendChild(pageTitle);
     
     const navItems = [
       { text: 'Dashboard', href: '/admin/dashboard', icon: '📊' },
       { text: 'Payments', href: '/admin/payments', icon: '💰' },
-      { text: 'Expenses', href: '/admin/expenses', icon: '📝' },
+      { text: 'Batch History', href: '/admin/batch-payments', icon: '📦' },
       { text: 'Users', href: '/admin/users', icon: '👥' }
     ];
     
@@ -441,6 +503,14 @@ export class AdminAddPaymentView extends BaseComponent {
     
     titleContainer.appendChild(navLinks);
     
+    const buttonsContainer = this.createElement('div', {
+      style: {
+        display: 'flex',
+        gap: '15px',
+        flexWrap: 'wrap'
+      }
+    });
+    
     const createSpecialOfferingBtn = this.createElement('button', {
       id: 'create-special-offering-btn',
       className: 'futuristic-button',
@@ -453,22 +523,129 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
-    const buttonIcon = this.createElement('span', {
+    const createButtonIcon = this.createElement('span', {
       style: {
         fontSize: '16px',
         marginRight: '8px'
       }
     }, '✨');
     
-    const buttonText = document.createTextNode('Create Special Offering');
+    const createButtonText = document.createTextNode('Create Special Offering');
     
-    createSpecialOfferingBtn.appendChild(buttonIcon);
-    createSpecialOfferingBtn.appendChild(buttonText);
+    createSpecialOfferingBtn.appendChild(createButtonIcon);
+    createSpecialOfferingBtn.appendChild(createButtonText);
+
+    const refreshOfferingsBtn = this.createElement('button', {
+      id: 'refresh-offerings-btn',
+      className: 'futuristic-button',
+      style: {
+        background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(37, 99, 235, 0.1))',
+        color: '#3b82f6'
+      },
+      onClick: async () => {
+        try {
+          await this.loadSpecialOfferings();
+          this.updateSpecialOfferingsDropdown();
+          this.showNotification('Special offerings refreshed!', 'success');
+        } catch (error) {
+          this.showNotification('Failed to refresh special offerings.', 'error');
+        }
+      }
+    });
+    
+    const refreshButtonIcon = this.createElement('span', {
+      style: {
+        fontSize: '16px',
+        marginRight: '8px'
+      }
+    }, '🔄');
+    
+    const refreshButtonText = document.createTextNode('Refresh Offerings');
+    
+    refreshOfferingsBtn.appendChild(refreshButtonIcon);
+    refreshOfferingsBtn.appendChild(refreshButtonText);
+    
+    buttonsContainer.appendChild(createSpecialOfferingBtn);
+    buttonsContainer.appendChild(refreshOfferingsBtn);
     
     headerSection.appendChild(titleContainer);
-    headerSection.appendChild(createSpecialOfferingBtn);
+    headerSection.appendChild(buttonsContainer);
     
     return headerSection;
+  }
+
+  renderBatchSelector() {
+    const selectorCard = this.createElement('div', {
+      className: 'neo-card animated-item',
+      style: {
+        padding: '25px',
+        marginBottom: '25px',
+        position: 'relative',
+        overflow: 'hidden'
+      }
+    });
+
+    const cardGlow = this.createElement('div', {
+      className: 'card-glow',
+      style: {
+        background: 'radial-gradient(circle at top left, rgba(16, 185, 129, 0.3), transparent 70%)'
+      }
+    });
+    selectorCard.appendChild(cardGlow);
+
+    const selectorTitle = this.createElement('h2', {
+      style: {
+        fontSize: '18px',
+        fontWeight: '600',
+        marginTop: '0',
+        marginBottom: '20px',
+        background: 'linear-gradient(to right, #ffffff, #e0e7ff)',
+        backgroundClip: 'text',
+        WebkitBackgroundClip: 'text',
+        color: 'transparent',
+        WebkitTextFillColor: 'transparent'
+      }
+    }, 'Batch Selection');
+
+    const selectorContainer = this.createElement('div', {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '15px',
+        flexWrap: 'wrap'
+      }
+    });
+
+    const batchSelect = this.createElement('select', {
+      id: 'batch-selector',
+      className: 'futuristic-select',
+      style: {
+        minWidth: '300px'
+      }
+    });
+
+    const defaultOption = this.createElement('option', {
+      value: ''
+    }, 'Create New Batch');
+    batchSelect.appendChild(defaultOption);
+
+    const refreshBtn = this.createElement('button', {
+      className: 'futuristic-button',
+      style: {
+        backgroundColor: 'rgba(59, 130, 246, 0.2)',
+        color: '#3b82f6',
+        padding: '10px 15px'
+      },
+      onClick: () => this.loadExistingBatches()
+    }, '🔄 Refresh');
+
+    selectorContainer.appendChild(batchSelect);
+    selectorContainer.appendChild(refreshBtn);
+
+    selectorCard.appendChild(selectorTitle);
+    selectorCard.appendChild(selectorContainer);
+
+    return selectorCard;
   }
   
   renderAlerts() {
@@ -798,8 +975,6 @@ export class AdminAddPaymentView extends BaseComponent {
     
     paymentTypeSelect.appendChild(basicOptGroup);
     
-    // Special offerings will be added dynamically via updateSpecialOfferingsDropdown()
-    
     const selectArrow = this.createElement('div', {
       className: 'select-arrow',
       style: {
@@ -1066,7 +1241,7 @@ export class AdminAddPaymentView extends BaseComponent {
         id: 'cancel-edit-btn',
         className: 'futuristic-button',
         style: {
-            display: 'none', // Hidden by default
+            display: 'none',
             backgroundColor: 'rgba(127, 29, 29, 0.2)',
             color: '#ef4444'
         },
@@ -1384,7 +1559,6 @@ export class AdminAddPaymentView extends BaseComponent {
       e.preventDefault();
       e.stopImmediatePropagation();
       
-      // Immediate submission guard
       if (this.isSubmitting) {
         return false;
       }
@@ -1404,6 +1578,174 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     });
     
+    return modal;
+  }
+
+  renderKcbPaymentModal() {
+    const modal = this.createElement('div', {
+      id: 'kcb-payment-modal',
+      className: 'modal',
+      style: {
+        display: 'none',
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        width: '100%',
+        height: '100%',
+        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+        backdropFilter: 'blur(8px)',
+        zIndex: '1500',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '15px'
+      }
+    });
+
+    const modalContent = this.createElement('div', {
+      className: 'neo-card',
+      style: {
+        width: '100%',
+        maxWidth: '500px',
+        animation: 'modalFadeIn 0.3s ease-out'
+      }
+    });
+
+    const modalHeader = this.createElement('div', {
+      style: {
+        padding: '25px',
+        textAlign: 'center',
+        borderBottom: '1px solid rgba(30, 41, 59, 0.8)'
+      }
+    });
+
+    const modalTitle = this.createElement('h2', {
+      style: {
+        margin: '0 0 10px 0',
+        fontSize: '24px',
+        fontWeight: '600',
+        background: 'linear-gradient(to right, #ffffff, #e0e7ff)',
+        backgroundClip: 'text',
+        WebkitBackgroundClip: 'text',
+        color: 'transparent',
+        WebkitTextFillColor: 'transparent'
+      }
+    }, 'KCB Payment Processing');
+
+    const modalSubtitle = this.createElement('p', {
+      style: {
+        margin: '0',
+        color: '#94a3b8',
+        fontSize: '14px'
+      }
+    }, 'Complete the payment to process the batch');
+
+    modalHeader.appendChild(modalTitle);
+    modalHeader.appendChild(modalSubtitle);
+
+    const modalBody = this.createElement('div', {
+      style: {
+        padding: '25px'
+      }
+    });
+
+    const kcbForm = this.createElement('form', {
+      id: 'kcb-payment-form'
+    });
+
+    const phoneField = this.createElement('div', {
+      style: { marginBottom: '20px' }
+    });
+
+    const phoneLabel = this.createElement('label', {
+      htmlFor: 'kcbPhoneNumber',
+      style: {
+        display: 'block',
+        marginBottom: '10px',
+        color: '#94a3b8',
+        fontSize: '14px',
+        fontWeight: '500'
+      }
+    }, 'Phone Number for KCB Payment');
+
+    const phoneInput = this.createElement('input', {
+      type: 'tel',
+      id: 'kcbPhoneNumber',
+      className: 'futuristic-input',
+      placeholder: '0712345678',
+      required: true
+    });
+
+    phoneField.appendChild(phoneLabel);
+    phoneField.appendChild(phoneInput);
+
+    const batchInfo = this.createElement('div', {
+      id: 'batch-info-display',
+      style: {
+        padding: '20px',
+        backgroundColor: 'rgba(15, 23, 42, 0.8)',
+        borderRadius: '12px',
+        marginBottom: '20px',
+        border: '1px solid rgba(59, 130, 246, 0.1)'
+      }
+    });
+
+    const formActions = this.createElement('div', {
+      style: {
+        display: 'flex',
+        gap: '15px',
+        justifyContent: 'flex-end'
+      }
+    });
+
+    const cancelBtn = this.createElement('button', {
+      type: 'button',
+      className: 'futuristic-button',
+      style: {
+        backgroundColor: 'rgba(127, 29, 29, 0.2)',
+        color: '#ef4444'
+      },
+      onClick: () => this.toggleKcbPaymentModal(false)
+    }, 'Cancel');
+
+    const processBtn = this.createElement('button', {
+      type: 'submit',
+      className: 'futuristic-button',
+      style: {
+        backgroundColor: 'rgba(16, 185, 129, 0.2)',
+        color: '#10b981'
+      }
+    });
+
+    const processSpinner = this.createElement('span', {
+      id: 'kcb-process-spinner',
+      className: 'spinner',
+      style: {
+        display: 'none',
+        width: '16px',
+        height: '16px',
+        border: '2px solid rgba(255, 255, 255, 0.3)',
+        borderTop: '2px solid #fff',
+        borderRadius: '50%',
+        marginRight: '8px',
+        animation: 'spin 0.75s linear infinite'
+      }
+    });
+
+    processBtn.appendChild(processSpinner);
+    processBtn.appendChild(document.createTextNode('Process KCB Payment'));
+
+    formActions.appendChild(cancelBtn);
+    formActions.appendChild(processBtn);
+
+    kcbForm.appendChild(phoneField);
+    kcbForm.appendChild(batchInfo);
+    kcbForm.appendChild(formActions);
+
+    modalBody.appendChild(kcbForm);
+    modalContent.appendChild(modalHeader);
+    modalContent.appendChild(modalBody);
+    modal.appendChild(modalContent);
+
     return modal;
   }
   
@@ -1430,7 +1772,7 @@ export class AdminAddPaymentView extends BaseComponent {
         color: 'transparent',
         WebkitTextFillColor: 'transparent'
       }
-    }, 'Payment Batch');
+    }, 'Current Batch');
     batchContainer.appendChild(title);
     
     const tableContainer = this.createElement('div', { style: { overflowX: 'auto' } });
@@ -1462,8 +1804,49 @@ export class AdminAddPaymentView extends BaseComponent {
     batchContainer.appendChild(tableContainer);
 
     const actionsContainer = this.createElement('div', {
-      style: { display: 'flex', justifyContent: 'flex-end', marginTop: '25px' }
+      style: { 
+        display: 'flex', 
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginTop: '25px',
+        flexWrap: 'wrap',
+        gap: '15px'
+      }
     });
+
+    const leftActions = this.createElement('div', {
+      style: { display: 'flex', gap: '15px' }
+    });
+
+    const clearBatchBtn = this.createElement('button', {
+      id: 'clear-batch-btn',
+      className: 'futuristic-button',
+      style: {
+        backgroundColor: 'rgba(127, 29, 29, 0.2)',
+        color: '#ef4444'
+      }
+    }, 'Clear Batch');
+
+    leftActions.appendChild(clearBatchBtn);
+
+    const rightActions = this.createElement('div', {
+      style: { display: 'flex', gap: '15px' }
+    });
+
+    const saveBatchBtn = this.createElement('button', {
+      id: 'save-batch-btn',
+      className: 'futuristic-button',
+      style: {
+        background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(37, 99, 235, 0.1))',
+        color: '#3b82f6'
+      }
+    });
+
+    saveBatchBtn.innerHTML = `
+      <span id="save-batch-spinner" class="spinner" style="display: none; width: 16px; height: 16px; border: 2px solid rgba(255, 255, 255, 0.3); border-top: 2px solid #fff; border-radius: 50%; animation: spin 0.75s linear infinite;"></span>
+      Save as Draft
+    `;
+
     const processBatchBtn = this.createElement('button', {
       id: 'process-batch-btn',
       className: 'futuristic-button',
@@ -1475,13 +1858,56 @@ export class AdminAddPaymentView extends BaseComponent {
 
     processBatchBtn.innerHTML = `
       <span id="batch-spinner" class="spinner" style="display: none; width: 16px; height: 16px; border: 2px solid rgba(255, 255, 255, 0.3); border-top: 2px solid #fff; border-radius: 50%; animation: spin 0.75s linear infinite;"></span>
-      Process Batch with KCB Express
+      Process with KCB
     `;
 
-    actionsContainer.appendChild(processBatchBtn);
+    rightActions.appendChild(saveBatchBtn);
+    rightActions.appendChild(processBatchBtn);
+
+    actionsContainer.appendChild(leftActions);
+    actionsContainer.appendChild(rightActions);
     batchContainer.appendChild(actionsContainer);
 
     return batchContainer;
+  }
+
+  renderExistingBatchesView() {
+    const batchesContainer = this.createElement('div', {
+      id: 'existing-batches-container',
+      className: 'neo-card animated-item',
+      style: {
+        marginTop: '30px',
+        padding: '30px'
+      }
+    });
+
+    const title = this.createElement('h2', {
+      style: {
+        fontSize: '20px',
+        fontWeight: '600',
+        marginTop: '0',
+        marginBottom: '25px',
+        background: 'linear-gradient(to right, #ffffff, #e0e7ff)',
+        backgroundClip: 'text',
+        WebkitBackgroundClip: 'text',
+        color: 'transparent',
+        WebkitTextFillColor: 'transparent'
+      }
+    }, 'Existing Batches');
+
+    const batchesGrid = this.createElement('div', {
+      id: 'batches-grid',
+      style: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+        gap: '20px'
+      }
+    });
+
+    batchesContainer.appendChild(title);
+    batchesContainer.appendChild(batchesGrid);
+
+    return batchesContainer;
   }
 
   updateBatchView() {
@@ -1519,6 +1945,162 @@ export class AdminAddPaymentView extends BaseComponent {
     });
 
     totalAmountEl.textContent = this.formatCurrency(totalAmount);
+  }
+
+  updateExistingBatchesView() {
+    const batchesGrid = document.getElementById('batches-grid');
+    if (!batchesGrid) return;
+
+    batchesGrid.innerHTML = '';
+
+    if (this.existingBatches.length === 0) {
+      const emptyMessage = this.createElement('div', {
+        style: {
+          textAlign: 'center',
+          color: '#94a3b8',
+          fontSize: '14px',
+          gridColumn: '1 / -1'
+        }
+      }, 'No pending batches found.');
+      batchesGrid.appendChild(emptyMessage);
+      return;
+    }
+
+    this.existingBatches.forEach(batch => {
+      const batchCard = this.createElement('div', {
+        className: 'batch-card',
+        style: {
+          padding: '20px',
+          backgroundColor: 'rgba(15, 23, 42, 0.5)',
+          borderRadius: '12px',
+          border: '1px solid rgba(59, 130, 246, 0.2)',
+          transition: 'all 0.2s ease'
+        }
+      });
+
+      const batchHeader = this.createElement('div', {
+        style: {
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          marginBottom: '15px'
+        }
+      });
+
+      const batchTitle = this.createElement('h3', {
+        style: {
+          margin: '0',
+          fontSize: '16px',
+          fontWeight: '600',
+          color: '#e0e7ff'
+        }
+      }, `Batch ${batch.batchReference}`);
+
+      const statusBadge = this.createElement('span', {
+        style: {
+          padding: '4px 8px',
+          borderRadius: '6px',
+          fontSize: '12px',
+          fontWeight: '500',
+          backgroundColor: this.getStatusColor(batch.status).bg,
+          color: this.getStatusColor(batch.status).text
+        }
+      }, batch.status);
+
+      batchHeader.appendChild(batchTitle);
+      batchHeader.appendChild(statusBadge);
+
+      const batchInfo = this.createElement('div', {
+        style: {
+          marginBottom: '15px',
+          fontSize: '14px',
+          color: '#94a3b8'
+        }
+      });
+
+      batchInfo.innerHTML = `
+        <div>Amount: ${this.formatCurrency(batch.totalAmount)}</div>
+        <div>Items: ${batch.totalCount}</div>
+        <div>Created: ${new Date(batch.createdAt).toLocaleDateString()}</div>
+      `;
+
+      const batchActions = this.createElement('div', {
+        style: {
+          display: 'flex',
+          gap: '10px',
+          flexWrap: 'wrap'
+        }
+      });
+
+      if (batch.status === 'PENDING') {
+        const processBtn = this.createElement('button', {
+          className: 'futuristic-button',
+          style: {
+            backgroundColor: 'rgba(16, 185, 129, 0.2)',
+            color: '#10b981',
+            fontSize: '12px',
+            padding: '8px 12px'
+          },
+          onClick: () => this.handleProcessExistingBatch(batch.id)
+        }, 'Process');
+
+        const cancelBtn = this.createElement('button', {
+          className: 'futuristic-button',
+          style: {
+            backgroundColor: 'rgba(127, 29, 29, 0.2)',
+            color: '#ef4444',
+            fontSize: '12px',
+            padding: '8px 12px'
+          },
+          onClick: () => this.handleCancelBatch(batch.id)
+        }, 'Cancel');
+
+        batchActions.appendChild(processBtn);
+        batchActions.appendChild(cancelBtn);
+      } else if (batch.status === 'DEPOSITED') {
+        const checkBtn = this.createElement('button', {
+          className: 'futuristic-button',
+          style: {
+            backgroundColor: 'rgba(59, 130, 246, 0.2)',
+            color: '#3b82f6',
+            fontSize: '12px',
+            padding: '8px 12px'
+          },
+          onClick: () => this.handleCheckBatchStatus(batch.id)
+        }, 'Check Status');
+
+        batchActions.appendChild(checkBtn);
+      }
+
+      const viewBtn = this.createElement('button', {
+        className: 'futuristic-button',
+        style: {
+          backgroundColor: 'rgba(59, 130, 246, 0.2)',
+          color: '#3b82f6',
+          fontSize: '12px',
+          padding: '8px 12px'
+        },
+        onClick: () => this.handleViewBatchDetails(batch.id)
+      }, 'View Details');
+
+      batchActions.appendChild(viewBtn);
+
+      batchCard.appendChild(batchHeader);
+      batchCard.appendChild(batchInfo);
+      batchCard.appendChild(batchActions);
+
+      batchesGrid.appendChild(batchCard);
+    });
+  }
+
+  getStatusColor(status) {
+    const colors = {
+      'PENDING': { bg: 'rgba(234, 179, 8, 0.2)', text: '#eab308' },
+      'DEPOSITED': { bg: 'rgba(59, 130, 246, 0.2)', text: '#3b82f6' },
+      'COMPLETED': { bg: 'rgba(16, 185, 129, 0.2)', text: '#10b981' },
+      'CANCELLED': { bg: 'rgba(239, 68, 68, 0.2)', text: '#ef4444' }
+    };
+    return colors[status] || colors['PENDING'];
   }
   
   addStyles() {
@@ -1676,6 +2258,12 @@ export class AdminAddPaymentView extends BaseComponent {
           box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) inset;
         }
         
+        .futuristic-button:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+          transform: none;
+        }
+        
         .custom-select-dropdown {
           max-height: 250px;
           overflow-y: auto;
@@ -1697,13 +2285,9 @@ export class AdminAddPaymentView extends BaseComponent {
           color: #3b82f6;
         }
         
-        .checkbox-item {
-          transition: all 0.2s ease;
-        }
-        
-        .checkbox-item:hover {
-          background-color: rgba(59, 130, 246, 0.1) !important;
-          border-color: rgba(59, 130, 246, 0.2) !important;
+        .batch-card:hover {
+          transform: translateY(-2px);
+          border-color: rgba(59, 130, 246, 0.4);
         }
         
         @keyframes fadeIn {
@@ -1851,6 +2435,25 @@ export class AdminAddPaymentView extends BaseComponent {
       }
     }
   }
+
+  toggleKcbPaymentModal(show, batchInfo = null) {
+    const modal = document.getElementById('kcb-payment-modal');
+    if (modal) {
+      modal.style.display = show ? 'flex' : 'none';
+      document.body.style.overflow = show ? 'hidden' : '';
+      
+      if (show && batchInfo) {
+        const batchInfoDisplay = document.getElementById('batch-info-display');
+        if (batchInfoDisplay) {
+          batchInfoDisplay.innerHTML = `
+            <div style="margin-bottom: 10px;"><strong>Batch Total:</strong> ${this.formatCurrency(batchInfo.totalAmount)}</div>
+            <div style="margin-bottom: 10px;"><strong>Payment Count:</strong> ${batchInfo.totalCount}</div>
+            <div style="color: #94a3b8; font-size: 13px;">This will initiate KCB payment for the entire batch amount</div>
+          `;
+        }
+      }
+    }
+  }
   
   attachEventListeners() {
     const form = document.getElementById('add-payment-form');
@@ -1908,12 +2511,34 @@ export class AdminAddPaymentView extends BaseComponent {
         }
       });
     }
+
+    // Batch selector event listener
+    const batchSelector = document.getElementById('batch-selector');
+    if (batchSelector) {
+      batchSelector.addEventListener('change', (e) => {
+        this.currentBatchId = e.target.value || null;
+        if (this.currentBatchId) {
+          this.loadBatchItems(this.currentBatchId);
+        } else {
+          this.paymentBatch = [];
+          this.updateBatchView();
+        }
+      });
+    }
     
     const specialOfferingForm = document.getElementById('special-offering-form');
     if (specialOfferingForm) {
       specialOfferingForm.addEventListener('submit', (e) => {
         e.preventDefault();
         this.handleSpecialOfferingSubmit(e);
+      });
+    }
+
+    const kcbPaymentForm = document.getElementById('kcb-payment-form');
+    if (kcbPaymentForm) {
+      kcbPaymentForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        this.handleKcbPaymentSubmit(e);
       });
     }
     
@@ -1929,6 +2554,24 @@ export class AdminAddPaymentView extends BaseComponent {
       modal.addEventListener('click', (e) => {
         if (e.target === modal) {
           this.toggleSpecialOfferingModal(false);
+        }
+      });
+    }
+
+    const kcbModal = document.getElementById('kcb-payment-modal');
+    if (kcbModal) {
+      kcbModal.addEventListener('click', (e) => {
+        if (e.target === kcbModal) {
+          this.toggleKcbPaymentModal(false);
+        }
+      });
+    }
+
+    const batchDetailsModal = document.getElementById('batch-details-modal');
+    if (batchDetailsModal) {
+      batchDetailsModal.addEventListener('click', (e) => {
+        if (e.target === batchDetailsModal) {
+          this.toggleBatchDetailsModal(false);
         }
       });
     }
@@ -1965,6 +2608,41 @@ export class AdminAddPaymentView extends BaseComponent {
     if (processBatchBtn) {
         processBatchBtn.addEventListener('click', () => this.handleProcessBatch());
     }
+
+    const saveBatchBtn = document.getElementById('save-batch-btn');
+    if (saveBatchBtn) {
+        saveBatchBtn.addEventListener('click', () => this.handleSaveBatch());
+    }
+
+    const clearBatchBtn = document.getElementById('clear-batch-btn');
+    if (clearBatchBtn) {
+        clearBatchBtn.addEventListener('click', () => this.handleClearBatch());
+    }
+  }
+
+  updateTitheDistributionState() {
+    const amountInput = document.getElementById('amount');
+    const amountInfo = document.getElementById('tithe-amount-info');
+    
+    if (!amountInput || !amountInfo) return;
+    
+    const totalAmount = parseFloat(amountInput.value) || 0;
+    const titheInputs = document.querySelectorAll('.tithe-distribution-input');
+    let distributedTotal = 0;
+    
+    titheInputs.forEach(input => {
+        const value = parseFloat(input.value) || 0;
+        distributedTotal += value;
+    });
+    
+    const remaining = totalAmount - distributedTotal;
+    
+    amountInfo.innerHTML = `
+        <div><strong>Total Tithe Amount:</strong> ${this.formatCurrency(totalAmount)}</div>
+        <div><strong>Distributed:</strong> ${this.formatCurrency(distributedTotal)}</div>
+        <div><strong>Remaining:</strong> ${this.formatCurrency(remaining)}</div>
+        ${remaining < 0 ? '<div style="color: #ef4444;">⚠️ Distribution exceeds total amount</div>' : ''}
+    `;
   }
   
   async handleSubmit(e) {
@@ -1992,18 +2670,22 @@ export class AdminAddPaymentView extends BaseComponent {
       if (!paymentType) throw new Error('Please select a payment type');
       if (isNaN(amount) || amount <= 0) throw new Error('Please enter a valid amount');
       
+      // Base payment data
       let paymentData = {
         userId: parseInt(userId),
         amount: amount,
-        paymentType: paymentType,
         description: description,
         paymentDate: paymentDate,
         paymentMethod: 'MANUAL',
-        isExpense: paymentType === 'EXPENSE',
         paymentTypeDisplay: paymentTypeSelect.options[paymentTypeSelect.selectedIndex].text
       };
       
+      // Handle different payment types
       if (paymentType === 'TITHE') {
+        paymentData.paymentType = 'TITHE';
+        paymentData.isExpense = false;
+        
+        // Process tithe distribution
         const titheDistributionSDA = {};
         const titheInputs = form.querySelectorAll('.tithe-distribution-input');
         let distributedTotal = 0;
@@ -2038,26 +2720,48 @@ export class AdminAddPaymentView extends BaseComponent {
         }
         
         paymentData.titheDistributionSDA = titheDistributionSDA;
+        
       } else if (paymentType.startsWith('SPECIAL_OFFERING_')) {
+        // Extract the numeric ID from SPECIAL_OFFERING_5 format
         const offeringId = parseInt(paymentType.replace('SPECIAL_OFFERING_', ''), 10);
+        
+        if (isNaN(offeringId)) {
+          throw new Error('Invalid special offering selection');
+        }
+        
+        paymentData.paymentType = offeringId.toString(); // Backend expects string numeric ID
+        paymentData.specialOfferingId = offeringId;
+        paymentData.isExpense = false;
+        
+        // Update description with offering name
         const offering = this.specialOfferings.find(o => o.id === offeringId);
         if (offering) {
-            paymentData.specialOfferingId = offeringId;
             if (description && !description.includes(offering.name)) {
                 paymentData.description = `${offering.name} - ${description}`;
             } else if (!description) {
                 paymentData.description = offering.name;
             }
         }
+        
       } else if (paymentType === 'EXPENSE') {
+        paymentData.paymentType = 'EXPENSE';
+        paymentData.isExpense = true;
         paymentData.department = 'General';
+        
+      } else {
+        // Standard payment types: OFFERING, DONATION
+        paymentData.paymentType = paymentType;
+        paymentData.isExpense = false;
       }
       
+      // Clean the payment data - remove undefined/null fields that backend doesn't expect
+      const cleanedPaymentData = this.cleanPaymentData(paymentData);
+      
       if (this.editingPaymentIndex !== null) {
-        this.paymentBatch[this.editingPaymentIndex] = paymentData;
+        this.paymentBatch[this.editingPaymentIndex] = cleanedPaymentData;
         this.showNotification('Batch item updated successfully!', 'success');
       } else {
-        this.paymentBatch.push(paymentData);
+        this.paymentBatch.push(cleanedPaymentData);
         this.showNotification('Payment added to batch successfully!', 'success');
       }
       
@@ -2073,6 +2777,39 @@ export class AdminAddPaymentView extends BaseComponent {
         spinner.style.display = 'none';
       }
     }
+  }
+
+  cleanPaymentData(paymentData) {
+    // Create a clean copy with only the necessary fields
+    const cleaned = {
+      userId: paymentData.userId,
+      amount: paymentData.amount,
+      paymentType: paymentData.paymentType,
+      description: paymentData.description,
+      paymentDate: paymentData.paymentDate,
+      paymentMethod: paymentData.paymentMethod,
+      isExpense: paymentData.isExpense
+    };
+
+    // Only add optional fields if they have valid values
+    if (paymentData.titheDistributionSDA && Object.keys(paymentData.titheDistributionSDA).length > 0) {
+      cleaned.titheDistributionSDA = paymentData.titheDistributionSDA;
+    }
+
+    if (paymentData.specialOfferingId && paymentData.specialOfferingId > 0) {
+      cleaned.specialOfferingId = paymentData.specialOfferingId;
+    }
+
+    if (paymentData.department) {
+      cleaned.department = paymentData.department;
+    }
+
+    // Keep display field for UI purposes
+    if (paymentData.paymentTypeDisplay) {
+      cleaned.paymentTypeDisplay = paymentData.paymentTypeDisplay;
+    }
+
+    return cleaned;
   }
   
   resetForm() {
@@ -2115,24 +2852,37 @@ export class AdminAddPaymentView extends BaseComponent {
         document.getElementById('userId').value = user.id;
     }
 
-    document.getElementById('paymentType').value = payment.paymentType;
+    // Handle payment type selection
+    let paymentTypeValue = payment.paymentType;
+    
+    // Convert numeric special offering IDs back to dropdown format
+    if (!isNaN(parseInt(payment.paymentType)) && parseInt(payment.paymentType) > 0 && payment.specialOfferingId) {
+      paymentTypeValue = `SPECIAL_OFFERING_${payment.specialOfferingId}`;
+    }
+
+    document.getElementById('paymentType').value = paymentTypeValue;
     document.getElementById('amount').value = payment.amount;
     document.getElementById('description').value = payment.description;
     document.getElementById('paymentDate').value = payment.paymentDate;
 
     // Show/hide tithe section and populate values
     const titheSection = document.getElementById('tithe-distribution-section');
-    if (payment.paymentType === 'TITHE') {
+    if (payment.paymentType === 'TITHE' && payment.titheDistributionSDA) {
       titheSection.style.display = 'block';
-      if (payment.titheDistributionSDA) {
-        for (const [key, value] of Object.entries(payment.titheDistributionSDA)) {
-          const input = document.getElementById(`tithe-${key}`);
-          if (input) input.value = value;
-        }
+      
+      // Clear all inputs first
+      const titheInputs = document.querySelectorAll('.tithe-distribution-input');
+      titheInputs.forEach(input => input.value = '');
+      
+      // Set values from payment data
+      for (const [key, value] of Object.entries(payment.titheDistributionSDA)) {
+        const input = document.getElementById(`tithe-${key}`);
+        if (input) input.value = value;
       }
     } else {
       titheSection.style.display = 'none';
     }
+    
     this.updateTitheDistributionState();
 
     const submitBtn = document.getElementById('submit-payment-btn');
@@ -2150,7 +2900,7 @@ export class AdminAddPaymentView extends BaseComponent {
     this.showNotification('Item removed from batch.', 'success');
   }
 
-  async handleProcessBatch() {
+  async handleSaveBatch() {
     if (this.paymentBatch.length === 0) {
       this.showNotification('Batch is empty. Add payments first.', 'error');
       return;
@@ -2158,37 +2908,767 @@ export class AdminAddPaymentView extends BaseComponent {
     if (this.isSubmitting) return;
 
     this.isSubmitting = true;
-    const processBtn = document.getElementById('process-batch-btn');
-    const spinner = document.getElementById('batch-spinner');
+    const saveBtn = document.getElementById('save-batch-btn');
+    const spinner = document.getElementById('save-batch-spinner');
+    if (saveBtn && spinner) {
+        saveBtn.disabled = true;
+        spinner.style.display = 'inline-block';
+    }
+
+    try {
+        const batchData = {
+            payments: this.paymentBatch,
+            description: `Draft batch - ${new Date().toLocaleDateString()}`
+        };
+
+        const response = await this.queueApiRequest(() =>
+            this.apiService.createBatchPayment(batchData)
+        );
+
+        this.successMessage = 'Batch saved as draft successfully!';
+        this.paymentBatch = [];
+        this.updateBatchView();
+        await this.loadExistingBatches();
+        this.updateExistingBatchesView();
+        this.showNotification(this.successMessage, 'success');
+
+      // Reload special offerings and update dropdown
+      await this.loadSpecialOfferings();
+      this.updateSpecialOfferingsDropdown();
+
+    } catch (error) {
+        console.error('Save batch error:', error);
+        this.errorMessage = error.message || 'Failed to save batch as draft.';
+        this.showNotification(this.errorMessage, 'error');
+    } finally {
+        this.isSubmitting = false;
+        if (saveBtn && spinner) {
+            saveBtn.disabled = false;
+            spinner.style.display = 'none';
+        }
+    }
+  }
+
+  async handleProcessBatch() {
+    if (this.paymentBatch.length === 0) {
+      this.showNotification('Batch is empty. Add payments first.', 'error');
+      return;
+    }
+
+    try {
+      // First save the batch if it's new
+      if (!this.currentBatchId) {
+        await this.handleSaveBatch();
+        await this.loadExistingBatches();
+        
+        // Find the newly created batch
+        const newBatch = this.existingBatches.find(b => b.status === 'PENDING');
+        if (!newBatch) {
+          throw new Error('Failed to create batch for processing');
+        }
+        this.currentBatchId = newBatch.id;
+      }
+
+      // Show KCB payment modal
+      const totalAmount = this.paymentBatch.reduce((sum, payment) => sum + payment.amount, 0);
+      const batchInfo = {
+        totalAmount: totalAmount,
+        totalCount: this.paymentBatch.length
+      };
+      
+      this.toggleKcbPaymentModal(true, batchInfo);
+
+    } catch (error) {
+      console.error('Process batch error:', error);
+      this.showNotification(error.message || 'Failed to process batch.', 'error');
+    }
+  }
+
+  async handleKcbPaymentSubmit(e) {
+    e.preventDefault();
+    if (this.isSubmitting) return;
+
+    this.isSubmitting = true;
+    const processBtn = e.target.querySelector('button[type="submit"]');
+    const spinner = document.getElementById('kcb-process-spinner');
+    
     if (processBtn && spinner) {
         processBtn.disabled = true;
         spinner.style.display = 'inline-block';
     }
 
     try {
-        await this.queueApiRequest(() =>
-            this.apiService.createPaymentBatch({ payments: this.paymentBatch })
+        const phoneNumber = document.getElementById('kcbPhoneNumber').value;
+        if (!phoneNumber) {
+            throw new Error('Please enter a phone number');
+        }
+
+        const batchId = this.currentBatchId;
+        if (!batchId) {
+            throw new Error('No batch selected for processing');
+        }
+
+        const depositData = {
+            phoneNumber: phoneNumber,
+            depositDescription: `Batch payment processing - ${new Date().toLocaleDateString()}`
+        };
+
+        const response = await this.queueApiRequest(() =>
+            this.apiService.processBatchDeposit(batchId, depositData)
         );
 
-        this.successMessage = 'Payment batch processed successfully!';
+        this.toggleKcbPaymentModal(false);
+        this.showNotification('KCB payment initiated! Please complete the payment on your phone.', 'success');
+        
+        // Clear current batch and reload existing batches
         this.paymentBatch = [];
+        this.currentBatchId = null;
         this.updateBatchView();
-        this.showNotification(this.successMessage, 'success');
+        await this.loadExistingBatches();
+        this.updateExistingBatchesView();
 
-        setTimeout(() => {
-            window.location.reload();
-        }, 1500);
+        // Reset batch selector
+        const batchSelector = document.getElementById('batch-selector');
+        if (batchSelector) {
+            batchSelector.value = '';
+        }
 
     } catch (error) {
-        console.error('Batch submission error:', error);
-        this.errorMessage = error.message || 'Failed to process payment batch.';
-        this.showNotification(this.errorMessage, 'error');
+        console.error('KCB payment error:', error);
+        this.showNotification(error.message || 'Failed to initiate KCB payment.', 'error');
     } finally {
         this.isSubmitting = false;
         if (processBtn && spinner) {
             processBtn.disabled = false;
             spinner.style.display = 'none';
         }
+    }
+  }
+
+  handleClearBatch() {
+    if (this.paymentBatch.length === 0) return;
+    
+    if (confirm('Are you sure you want to clear the current batch? This will remove all items.')) {
+      this.paymentBatch = [];
+      this.currentBatchId = null;
+      this.updateBatchView();
+      
+      const batchSelector = document.getElementById('batch-selector');
+      if (batchSelector) {
+          batchSelector.value = '';
+      }
+      
+      this.showNotification('Batch cleared successfully.', 'success');
+    }
+  }
+
+  async loadBatchItems(batchId) {
+    try {
+      const response = await this.queueApiRequest(() =>
+        this.apiService.getBatchPaymentDetails(batchId)
+      );
+      
+      const batchPayment = response.batchPayment;
+      if (batchPayment && batchPayment.payments) {
+        this.paymentBatch = batchPayment.payments.map(payment => {
+          const cleanedPayment = {
+            userId: payment.userId,
+            amount: payment.amount,
+            paymentType: payment.paymentType,
+            description: payment.description,
+            paymentDate: payment.paymentDate,
+            paymentMethod: payment.paymentMethod || 'MANUAL',
+            isExpense: payment.isExpense || false,
+            paymentTypeDisplay: this.getPaymentTypeDisplay(payment.paymentType)
+          };
+
+          // Only add optional fields if they exist and have values
+          if (payment.titheDistributionSDA && Object.keys(payment.titheDistributionSDA).length > 0) {
+            cleanedPayment.titheDistributionSDA = payment.titheDistributionSDA;
+          }
+
+          if (payment.specialOfferingId && payment.specialOfferingId > 0) {
+            cleanedPayment.specialOfferingId = payment.specialOfferingId;
+          }
+
+          if (payment.department) {
+            cleanedPayment.department = payment.department;
+          }
+
+          return cleanedPayment;
+        });
+        
+        this.updateBatchView();
+        this.showNotification(`Loaded batch with ${this.paymentBatch.length} items.`, 'success');
+      }
+    } catch (error) {
+      console.error('Error loading batch items:', error);
+      this.showNotification('Failed to load batch items.', 'error');
+    }
+  }
+
+  getPaymentTypeDisplay(paymentType) {
+    // Handle numeric special offering IDs
+    if (!isNaN(parseInt(paymentType)) && parseInt(paymentType) > 0) {
+      const offeringId = parseInt(paymentType);
+      const offering = this.specialOfferings.find(o => o.id === offeringId);
+      return offering ? offering.name : `Special Offering (ID: ${offeringId})`;
+    }
+    
+    // Handle SPECIAL_OFFERING_ prefixed format (legacy)
+    if (paymentType && paymentType.startsWith('SPECIAL_OFFERING_')) {
+      const offeringId = parseInt(paymentType.replace('SPECIAL_OFFERING_', ''));
+      const offering = this.specialOfferings.find(o => o.id === offeringId);
+      return offering ? offering.name : 'Special Offering';
+    }
+    
+    const typeMap = {
+      'TITHE': 'Tithe',
+      'OFFERING': 'Offering', 
+      'DONATION': 'Donation',
+      'EXPENSE': 'Expense'
+    };
+    
+    return typeMap[paymentType] || paymentType;
+  }
+
+  async handleProcessExistingBatch(batchId) {
+    try {
+      const batchDetails = await this.queueApiRequest(() =>
+        this.apiService.getBatchPaymentDetails(batchId)
+      );
+      
+      const batch = batchDetails.batchPayment;
+      const batchInfo = {
+        totalAmount: batch.totalAmount,
+        totalCount: batch.totalCount
+      };
+      
+      this.currentBatchId = batchId;
+      this.toggleKcbPaymentModal(true, batchInfo);
+      
+    } catch (error) {
+      console.error('Error processing existing batch:', error);
+      this.showNotification('Failed to process batch.', 'error');
+    }
+  }
+
+  async handleCancelBatch(batchId) {
+    if (!confirm('Are you sure you want to cancel this batch? This action cannot be undone.')) {
+      return;
+    }
+
+    try {
+      await this.queueApiRequest(() =>
+        this.apiService.cancelBatchPayment(batchId, 'Cancelled by admin')
+      );
+      
+      this.showNotification('Batch cancelled successfully.', 'success');
+      await this.loadExistingBatches();
+      this.updateExistingBatchesView();
+      
+    } catch (error) {
+      console.error('Error cancelling batch:', error);
+      this.showNotification('Failed to cancel batch.', 'error');
+    }
+  }
+
+  async handleCheckBatchStatus(batchId) {
+    try {
+      const response = await this.queueApiRequest(() =>
+        this.apiService.getBatchPaymentDetails(batchId)
+      );
+      
+      const batch = response.batchPayment;
+      let statusMessage = `Batch Status: ${batch.status}`;
+      
+      if (batch.status === 'DEPOSITED') {
+        statusMessage += '\nKCB payment has been initiated. ';
+        if (batch.kcbTransactionId) {
+          statusMessage += `Transaction ID: ${batch.kcbTransactionId}`;
+        }
+        statusMessage += '\n\nIf payment was completed, you can try to complete the batch.';
+        
+        if (confirm(statusMessage + '\n\nWould you like to try completing this batch?')) {
+          await this.handleCompleteBatch(batchId);
+        }
+      } else {
+        alert(statusMessage);
+      }
+      
+    } catch (error) {
+      console.error('Error checking batch status:', error);
+      this.showNotification('Failed to check batch status.', 'error');
+    }
+  }
+
+  async handleCompleteBatch(batchId) {
+    try {
+      await this.queueApiRequest(() =>
+        this.apiService.completeBatchPayment(batchId)
+      );
+      
+      this.showNotification('Batch completed successfully! All payments processed.', 'success');
+      await this.loadExistingBatches();
+      this.updateExistingBatchesView();
+      
+    } catch (error) {
+      console.error('Error completing batch:', error);
+      this.showNotification('Failed to complete batch. Payment may still be pending.', 'error');
+    }
+  }
+
+  renderBatchDetailsModal() {
+    const modal = this.createElement('div', {
+      id: 'batch-details-modal',
+      className: 'modal',
+      style: {
+        display: 'none',
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        width: '100%',
+        height: '100%',
+        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+        backdropFilter: 'blur(8px)',
+        zIndex: '2000',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '15px'
+      }
+    });
+
+    const modalContent = this.createElement('div', {
+      className: 'neo-card',
+      style: {
+        width: '100%',
+        maxWidth: '900px',
+        maxHeight: '90vh',
+        overflowY: 'auto',
+        animation: 'modalFadeIn 0.3s ease-out'
+      }
+    });
+
+    const modalHeader = this.createElement('div', {
+      style: {
+        padding: '25px',
+        borderBottom: '1px solid rgba(30, 41, 59, 0.8)',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center'
+      }
+    });
+
+    const modalTitle = this.createElement('h2', {
+      id: 'batch-details-title',
+      style: {
+        margin: '0',
+        fontSize: '24px',
+        fontWeight: '600',
+        background: 'linear-gradient(to right, #ffffff, #e0e7ff)',
+        backgroundClip: 'text',
+        WebkitBackgroundClip: 'text',
+        color: 'transparent',
+        WebkitTextFillColor: 'transparent'
+      }
+    }, 'Batch Details');
+
+    const closeButton = this.createElement('button', {
+      className: 'close-modal',
+      style: {
+        background: 'none',
+        border: 'none',
+        color: '#94a3b8',
+        fontSize: '24px',
+        cursor: 'pointer',
+        padding: '0',
+        lineHeight: '1',
+        transition: 'color 0.15s ease'
+      },
+      onMouseenter: (e) => {
+        e.currentTarget.style.color = '#e0e7ff';
+      },
+      onMouseleave: (e) => {
+        e.currentTarget.style.color = '#94a3b8';
+      },
+      onClick: () => {
+        this.toggleBatchDetailsModal(false);
+      }
+    }, '×');
+
+    modalHeader.appendChild(modalTitle);
+    modalHeader.appendChild(closeButton);
+
+    const modalBody = this.createElement('div', {
+      id: 'batch-details-content',
+      style: {
+        padding: '25px'
+      }
+    });
+
+    modalContent.appendChild(modalHeader);
+    modalContent.appendChild(modalBody);
+    modal.appendChild(modalContent);
+
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        this.toggleBatchDetailsModal(false);
+      }
+    });
+
+    return modal;
+  }
+
+  toggleBatchDetailsModal(show, batchData = null) {
+    const modal = document.getElementById('batch-details-modal');
+    if (modal) {
+      modal.style.display = show ? 'flex' : 'none';
+      document.body.style.overflow = show ? 'hidden' : '';
+      
+      if (show && batchData) {
+        this.renderBatchDetailsContent(batchData);
+      }
+    }
+  }
+
+  renderBatchDetailsContent(batchData) {
+    const content = document.getElementById('batch-details-content');
+    const title = document.getElementById('batch-details-title');
+    
+    if (!content || !title) return;
+
+    title.textContent = `Batch ${batchData.batchReference}`;
+
+    content.innerHTML = '';
+
+    // Batch Summary Card
+    const summaryCard = this.createElement('div', {
+      className: 'neo-card',
+      style: {
+        padding: '20px',
+        marginBottom: '25px',
+        backgroundColor: 'rgba(15, 23, 42, 0.5)'
+      }
+    });
+
+    const summaryTitle = this.createElement('h3', {
+      style: {
+        margin: '0 0 20px 0',
+        fontSize: '18px',
+        fontWeight: '600',
+        color: '#e0e7ff'
+      }
+    }, 'Batch Summary');
+
+    const summaryGrid = this.createElement('div', {
+      style: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+        gap: '20px'
+      }
+    });
+
+    const summaryItems = [
+      { label: 'Reference', value: batchData.batchReference },
+      { label: 'Status', value: batchData.status, isStatus: true },
+      { label: 'Total Amount', value: this.formatCurrency(batchData.totalAmount) },
+      { label: 'Payment Count', value: batchData.totalCount },
+      { label: 'Created', value: new Date(batchData.createdAt).toLocaleDateString() },
+      { label: 'Creator', value: batchData.creator?.fullName || 'Unknown' }
+    ];
+
+    if (batchData.depositedAt) {
+      summaryItems.push({ label: 'Deposited', value: new Date(batchData.depositedAt).toLocaleDateString() });
+    }
+
+    if (batchData.kcbTransactionId) {
+      summaryItems.push({ label: 'KCB Transaction', value: batchData.kcbTransactionId });
+    }
+
+    summaryItems.forEach(item => {
+      const itemDiv = this.createElement('div');
+      
+      const label = this.createElement('div', {
+        style: {
+          fontSize: '12px',
+          color: '#94a3b8',
+          marginBottom: '5px',
+          textTransform: 'uppercase',
+          letterSpacing: '0.5px'
+        }
+      }, item.label);
+
+      const value = this.createElement('div', {
+        style: {
+          fontSize: '14px',
+          fontWeight: '600',
+          color: item.isStatus ? this.getStatusColor(item.value).text : '#e0e7ff'
+        }
+      }, item.value);
+
+      if (item.isStatus) {
+        value.style.backgroundColor = this.getStatusColor(item.value).bg;
+        value.style.padding = '4px 8px';
+        value.style.borderRadius = '6px';
+        value.style.textAlign = 'center';
+      }
+
+      itemDiv.appendChild(label);
+      itemDiv.appendChild(value);
+      summaryGrid.appendChild(itemDiv);
+    });
+
+    summaryCard.appendChild(summaryTitle);
+    summaryCard.appendChild(summaryGrid);
+    content.appendChild(summaryCard);
+
+    // Payments Table
+    if (batchData.payments && batchData.payments.length > 0) {
+      const paymentsCard = this.createElement('div', {
+        className: 'neo-card',
+        style: {
+          padding: '20px',
+          marginBottom: '25px',
+          backgroundColor: 'rgba(15, 23, 42, 0.5)'
+        }
+      });
+
+      const paymentsTitle = this.createElement('h3', {
+        style: {
+          margin: '0 0 20px 0',
+          fontSize: '18px',
+          fontWeight: '600',
+          color: '#e0e7ff'
+        }
+      }, 'Individual Payments');
+
+      const tableContainer = this.createElement('div', {
+        style: { overflowX: 'auto' }
+      });
+
+      const table = this.createElement('table', {
+        style: {
+          width: '100%',
+          borderCollapse: 'collapse',
+          fontSize: '14px'
+        }
+      });
+
+      table.innerHTML = `
+        <thead>
+          <tr style="border-bottom: 1px solid rgba(59, 130, 246, 0.2);">
+            <th style="padding: 12px 15px; text-align: left; color: #94a3b8; font-weight: 500;">Member</th>
+            <th style="padding: 12px 15px; text-align: left; color: #94a3b8; font-weight: 500;">Type</th>
+            <th style="padding: 12px 15px; text-align: right; color: #94a3b8; font-weight: 500;">Amount</th>
+            <th style="padding: 12px 15px; text-align: left; color: #94a3b8; font-weight: 500;">Description</th>
+            <th style="padding: 12px 15px; text-align: center; color: #94a3b8; font-weight: 500;">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${batchData.payments.map(payment => `
+            <tr style="border-bottom: 1px solid rgba(148, 163, 184, 0.1);">
+              <td style="padding: 12px 15px;">${payment.user?.fullName || 'Unknown'}</td>
+              <td style="padding: 12px 15px;">${this.getPaymentTypeDisplay(payment.paymentType)}</td>
+              <td style="padding: 12px 15px; text-align: right;">${this.formatCurrency(payment.amount)}</td>
+              <td style="padding: 12px 15px; max-width: 250px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${payment.description}">${payment.description}</td>
+              <td style="padding: 12px 15px; text-align: center;">
+                <span style="padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 500; background-color: ${this.getStatusColor(payment.status).bg}; color: ${this.getStatusColor(payment.status).text};">
+                  ${payment.status}
+                </span>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      `;
+
+      tableContainer.appendChild(table);
+      paymentsCard.appendChild(paymentsTitle);
+      paymentsCard.appendChild(tableContainer);
+      content.appendChild(paymentsCard);
+    }
+
+    // Action Buttons
+    const actionsCard = this.createElement('div', {
+      style: {
+        display: 'flex',
+        justifyContent: 'flex-end',
+        gap: '15px',
+        flexWrap: 'wrap',
+        padding: '20px 0'
+      }
+    });
+
+    // Add actions based on batch status
+    if (batchData.status === 'PENDING') {
+      const processBtn = this.createElement('button', {
+        className: 'futuristic-button',
+        style: {
+          backgroundColor: 'rgba(16, 185, 129, 0.2)',
+          color: '#10b981'
+        },
+        onClick: () => {
+          this.toggleBatchDetailsModal(false);
+          this.handleProcessExistingBatch(batchData.id);
+        }
+      }, '🏦 Process with KCB');
+
+      const editBtn = this.createElement('button', {
+        className: 'futuristic-button',
+        style: {
+          backgroundColor: 'rgba(59, 130, 246, 0.2)',
+          color: '#3b82f6'
+        },
+        onClick: () => {
+          this.toggleBatchDetailsModal(false);
+          this.loadBatchForEditing(batchData.id);
+        }
+      }, '✏️ Edit Batch');
+
+      const cancelBtn = this.createElement('button', {
+        className: 'futuristic-button',
+        style: {
+          backgroundColor: 'rgba(239, 68, 68, 0.2)',
+          color: '#ef4444'
+        },
+        onClick: () => {
+          this.toggleBatchDetailsModal(false);
+          this.handleCancelBatch(batchData.id);
+        }
+      }, '❌ Cancel Batch');
+
+      actionsCard.appendChild(processBtn);
+      actionsCard.appendChild(editBtn);
+      actionsCard.appendChild(cancelBtn);
+
+    } else if (batchData.status === 'DEPOSITED') {
+      const checkStatusBtn = this.createElement('button', {
+        className: 'futuristic-button',
+        style: {
+          backgroundColor: 'rgba(59, 130, 246, 0.2)',
+          color: '#3b82f6'
+        },
+        onClick: () => {
+          this.toggleBatchDetailsModal(false);
+          this.handleCheckBatchStatus(batchData.id);
+        }
+      }, '🔄 Check Status');
+
+      const completeBtn = this.createElement('button', {
+        className: 'futuristic-button',
+        style: {
+          backgroundColor: 'rgba(16, 185, 129, 0.2)',
+          color: '#10b981'
+        },
+        onClick: () => {
+          this.toggleBatchDetailsModal(false);
+          this.handleCompleteBatch(batchData.id);
+        }
+      }, '✅ Complete Batch');
+
+      actionsCard.appendChild(checkStatusBtn);
+      actionsCard.appendChild(completeBtn);
+
+    } else if (batchData.status === 'COMPLETED') {
+      const viewReceiptsBtn = this.createElement('button', {
+        className: 'futuristic-button',
+        style: {
+          backgroundColor: 'rgba(16, 185, 129, 0.2)',
+          color: '#10b981'
+        },
+        onClick: () => {
+          this.toggleBatchDetailsModal(false);
+          this.handleViewBatchReceipts(batchData.id);
+        }
+      }, '📄 View Receipts');
+
+      actionsCard.appendChild(viewReceiptsBtn);
+    }
+
+    content.appendChild(actionsCard);
+  }
+
+  async handleViewBatchDetails(batchId) {
+    try {
+      // Show loading state
+      this.toggleBatchDetailsModal(true, { 
+        batchReference: 'Loading...', 
+        status: 'LOADING',
+        totalAmount: 0,
+        totalCount: 0,
+        createdAt: new Date().toISOString(),
+        payments: []
+      });
+
+      const response = await this.queueApiRequest(() =>
+        this.apiService.getBatchPaymentDetails(batchId)
+      );
+      
+      const batchData = response.batchPayment;
+      this.renderBatchDetailsContent(batchData);
+      
+    } catch (error) {
+      console.error('Error fetching batch details:', error);
+      this.toggleBatchDetailsModal(false);
+      this.showNotification('Failed to load batch details.', 'error');
+    }
+  }
+
+  async loadBatchForEditing(batchId) {
+    try {
+      // Set the batch selector to this batch
+      const batchSelector = document.getElementById('batch-selector');
+      if (batchSelector) {
+        batchSelector.value = batchId;
+        this.currentBatchId = batchId;
+      }
+
+      // Load the batch items
+      await this.loadBatchItems(batchId);
+      
+      // Scroll to the form
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      
+    } catch (error) {
+      console.error('Error loading batch for editing:', error);
+      this.showNotification('Failed to load batch for editing.', 'error');
+    }
+  }
+
+  async handleViewBatchReceipts(batchId) {
+    try {
+      const response = await this.queueApiRequest(() =>
+        this.apiService.getBatchPaymentDetails(batchId)
+      );
+      
+      const batch = response.batchPayment;
+      if (batch.payments && batch.payments.length > 0) {
+        // Download receipts for each payment that has one
+        let receiptCount = 0;
+        for (const payment of batch.payments) {
+          if (payment.receiptNumber) {
+            try {
+              await this.apiService.downloadReceipt(payment.id);
+              receiptCount++;
+              // Add small delay between downloads
+              await new Promise(resolve => setTimeout(resolve, 500));
+            } catch (error) {
+              console.warn(`Failed to download receipt for payment ${payment.id}:`, error);
+            }
+          }
+        }
+        
+        if (receiptCount > 0) {
+          this.showNotification(`Downloaded ${receiptCount} receipts.`, 'success');
+        } else {
+          this.showNotification('No receipts available for this batch.', 'warning');
+        }
+      } else {
+        this.showNotification('No payments found in this batch.', 'warning');
+      }
+      
+    } catch (error) {
+      console.error('Error downloading receipts:', error);
+      this.showNotification('Failed to download receipts.', 'error');
     }
   }
 
@@ -2202,7 +3682,6 @@ export class AdminAddPaymentView extends BaseComponent {
       
       const form = e.target;
       
-      // Disable submit button immediately
       const submitBtn = form.querySelector('button[type="submit"]');
       if (submitBtn) {
         submitBtn.disabled = true;
@@ -2252,7 +3731,6 @@ export class AdminAddPaymentView extends BaseComponent {
       this.toggleSpecialOfferingModal(false);
       this.showNotification(this.successMessage, 'success');
 
-      // Force complete reload to show new offering
       setTimeout(() => {
         window.location.reload();
       }, 1000);
@@ -2261,11 +3739,9 @@ export class AdminAddPaymentView extends BaseComponent {
       console.error('Error creating special offering:', error);
       this.errorMessage = error.message || 'Failed to create special offering';
       this.showNotification(this.errorMessage, 'error');
-      await this.loadSpecialOfferings();
     } finally {
       this.isSubmitting = false;
       
-      // Re-enable submit button
       const form = document.getElementById('special-offering-form');
       if (form) {
         const submitBtn = form.querySelector('button[type="submit"]');
@@ -2273,6 +3749,74 @@ export class AdminAddPaymentView extends BaseComponent {
           submitBtn.disabled = false;
         }
       }
+    }
+  }
+
+  showNotification(message, type = 'info') {
+    // Create notification element
+    const notification = this.createElement('div', {
+      className: 'notification',
+      style: {
+        position: 'fixed',
+        top: '20px',
+        right: '20px',
+        padding: '15px 20px',
+        borderRadius: '12px',
+        color: '#ffffff',
+        fontWeight: '500',
+        fontSize: '14px',
+        zIndex: '10000',
+        maxWidth: '400px',
+        boxShadow: '0 10px 25px rgba(0, 0, 0, 0.3)',
+        backdropFilter: 'blur(10px)',
+        animation: 'slideInRight 0.3s ease-out',
+        cursor: 'pointer'
+      }
+    });
+
+    // Set background color based on type
+    const colors = {
+      'success': 'rgba(16, 185, 129, 0.9)',
+      'error': 'rgba(239, 68, 68, 0.9)',
+      'warning': 'rgba(245, 158, 11, 0.9)',
+      'info': 'rgba(59, 130, 246, 0.9)'
+    };
+
+    notification.style.background = colors[type] || colors['info'];
+    notification.textContent = message;
+
+    // Add click to dismiss
+    notification.addEventListener('click', () => {
+      notification.remove();
+    });
+
+    document.body.appendChild(notification);
+
+    // Auto remove after 5 seconds
+    setTimeout(() => {
+      if (notification.parentNode) {
+        notification.style.animation = 'slideOutRight 0.3s ease-in';
+        setTimeout(() => {
+          notification.remove();
+        }, 300);
+      }
+    }, 5000);
+
+    // Add animation styles if not already present
+    if (!document.getElementById('notification-styles')) {
+      const style = document.createElement('style');
+      style.id = 'notification-styles';
+      style.textContent = `
+        @keyframes slideInRight {
+          from { transform: translateX(100%); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes slideOutRight {
+          from { transform: translateX(0); opacity: 1; }
+          to { transform: translateX(100%); opacity: 0; }
+        }
+      `;
+      document.head.appendChild(style);
     }
   }
 }
