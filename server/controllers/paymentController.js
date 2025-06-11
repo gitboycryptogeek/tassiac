@@ -351,7 +351,7 @@ exports.getPaymentStats = async (req, res) => {
   }
 };
 
-// Initiate a payment (M-Pesa or KCB)
+// Initiate a payment (KCB or M-Pesa) - Updated with KCB preference
 exports.initiatePayment = async (req, res) => {
   debugLog('Initiate Payment attempt started');
   const validationErrors = validationResult(req);
@@ -370,7 +370,7 @@ exports.initiatePayment = async (req, res) => {
     titheDistributionSDA, 
     specialOfferingId, 
     phoneNumber,
-    paymentMethod = 'MPESA' // Default to M-Pesa, can be 'MPESA' or 'KCB'
+    paymentMethod = 'KCB' // Default to KCB instead of M-Pesa
   } = req.body;
   
   const userId = req.user.id;
@@ -385,15 +385,18 @@ exports.initiatePayment = async (req, res) => {
     return sendResponse(res, 400, false, null, 'Invalid payment amount.', { code: 'INVALID_AMOUNT' });
   }
 
-  // Validate payment method
-  const supportedMethods = ['MPESA', 'KCB'];
+  // Validate payment method - prioritize KCB
+  const supportedMethods = ['KCB', 'MPESA'];
   if (!supportedMethods.includes(paymentMethod.toUpperCase())) {
-    return sendResponse(res, 400, false, null, 'Unsupported payment method. Supported methods: MPESA, KCB', { code: 'INVALID_PAYMENT_METHOD' });
+    return sendResponse(res, 400, false, null, 'Unsupported payment method. Supported methods: KCB (recommended), MPESA', { code: 'INVALID_PAYMENT_METHOD' });
   }
 
-  let platformFee = 5.00; 
-  if (paymentAmount > 500) { 
-    platformFee = Math.max(5.00, parseFloat((paymentAmount * 0.01).toFixed(2)));
+  let platformFee = 0; // KCB has no platform fee
+  if (paymentMethod.toUpperCase() === 'MPESA') {
+    platformFee = 5.00; 
+    if (paymentAmount > 500) { 
+      platformFee = Math.max(5.00, parseFloat((paymentAmount * 0.01).toFixed(2)));
+    }
   }
 
   try {
@@ -420,7 +423,8 @@ exports.initiatePayment = async (req, res) => {
         isExpense: false,
         platformFee: platformFee,
         isTemplate: false,
-        reference: null // Will be set after payment gateway response
+        reference: null, // Will be set after payment gateway response
+        bankDepositStatus: 'PENDING'
       };
 
       // Handle special offering validation
@@ -477,8 +481,17 @@ exports.initiatePayment = async (req, res) => {
 
       let gatewayResponse;
       
-      // Initiate payment based on method
-      if (paymentMethod.toUpperCase() === 'MPESA') {
+      // Initiate payment based on method - prioritize KCB
+      if (paymentMethod.toUpperCase() === 'KCB') {
+        const { initiateKcbMpesaStkPush } = require('../utils/kcbPaymentUtils.js');
+        gatewayResponse = await initiateKcbMpesaStkPush(
+          payment.id.toString(),
+          paymentAmount,
+          userPhoneForPayment,
+          paymentData.description
+        );
+        debugLog(`KCB STK push initiated for payment ${payment.id}. Ref: ${gatewayResponse.reference}`);
+      } else if (paymentMethod.toUpperCase() === 'MPESA') {
         gatewayResponse = await initiateMpesaPayment(
           payment.id.toString(),
           paymentAmount,
@@ -486,14 +499,6 @@ exports.initiatePayment = async (req, res) => {
           paymentData.description
         );
         debugLog(`M-Pesa STK push initiated for payment ${payment.id}. Ref: ${gatewayResponse.reference}`);
-      } else if (paymentMethod.toUpperCase() === 'KCB') {
-        gatewayResponse = await initiateKcbPayment(
-          payment.id.toString(),
-          paymentAmount,
-          userPhoneForPayment,
-          paymentData.description
-        );
-        debugLog(`KCB payment initiated for payment ${payment.id}. Ref: ${gatewayResponse.reference}`);
       }
 
       await tx.payment.update({
@@ -501,6 +506,7 @@ exports.initiatePayment = async (req, res) => {
         data: {
           reference: gatewayResponse.reference,
           transactionId: gatewayResponse.transactionId,
+          kcbReference: paymentMethod.toUpperCase() === 'KCB' ? gatewayResponse.reference : null,
         },
       });
       

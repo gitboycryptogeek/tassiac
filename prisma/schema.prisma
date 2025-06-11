@@ -12,7 +12,6 @@ datasource db {
 
 // --------------- User and Auth Models ---------------
 model User {
-  // ... no changes needed in User model for these errors
   id                      Int                     @id @default(autoincrement())
   username                String                  @unique
   password                String
@@ -37,6 +36,12 @@ model User {
   generatedReceipts       Receipt[]               @relation("ReceiptGenerator")
   submittedContactInquiries ContactInquiry[]      @relation("SubmittedByUser")
   handledContactInquiries ContactInquiry[]        @relation("HandledByAdmin")
+  
+  // New wallet and batch payment relations
+  batchPaymentsCreated    BatchPayment[]          @relation("BatchPaymentCreator")
+  batchPaymentsProcessed  BatchPayment[]          @relation("BatchPaymentProcessor")
+  withdrawalRequests      WithdrawalRequest[]     @relation("WithdrawalRequester")
+  withdrawalApprovals     WithdrawalApproval[]    @relation("WithdrawalApprover")
 
   @@map("Users")
 }
@@ -63,7 +68,7 @@ model AdminActionApproval {
   adminId       Int          @map("adminId")
   admin         User         @relation("AdminApprover", fields: [adminId], references: [id])
   approved      Boolean
-  comment       String?      // Remove @db.Text for SQLite (Line 70)
+  comment       String?
   createdAt     DateTime     @default(now()) @map("createdAt")
   updatedAt     DateTime     @updatedAt @map("updatedAt")
 
@@ -75,8 +80,8 @@ model SpecialOffering {
   id            Int       @id @default(autoincrement())
   offeringCode  String    @unique @map("offeringCode")
   name          String
-  description   String?   // Remove @db.Text for SQLite (Line 83)
-  targetAmount  Float?    @map("targetAmount") // Change Decimal to Float (Line 84)
+  description   String?
+  targetAmount  Float?    @map("targetAmount")
   startDate     DateTime  @default(now()) @map("startDate")
   endDate       DateTime? @map("endDate")
   isActive      Boolean   @default(true) @map("isActive")
@@ -94,17 +99,17 @@ model Payment {
   id                   Int               @id @default(autoincrement())
   userId               Int               @map("userId")
   user                 User              @relation("UserPayments", fields: [userId], references: [id])
-  amount               Float             @map("amount") // Change Decimal to Float (Line 106)
+  amount               Float             @map("amount")
   paymentType          String            @map("paymentType")
   paymentMethod        String            @map("paymentMethod")
-  description          String?           // Remove @db.Text for SQLite (Line 109)
+  description          String?
   reference            String?
   transactionId        String?           @unique @map("transactionId")
   status               String            @default("COMPLETED")
   receiptNumber        String?           @unique @map("receiptNumber")
   paymentDate          DateTime          @default(now()) @map("paymentDate")
-  platformFee          Float             @default(0.00) @map("platformFee") // Change Decimal to Float (Line 115)
-  titheDistributionSDA Json?             @map("titheDistributionSDA")
+  platformFee          Float             @default(0.00) @map("platformFee")
+  titheDistributionSDA Json?             @map("titheDistributionSDA") // Now stores amounts instead of booleans: {"campMeetingExpenses": 200, "welfare": 300, ...}
   isExpense            Boolean           @default(false) @map("isExpense")
   department           String?
   expenseReceiptUrl    String?           @map("expenseReceiptUrl")
@@ -113,12 +118,144 @@ model Payment {
   specialOfferingId    Int?              @map("specialOfferingId")
   specialOffering      SpecialOffering?  @relation("SpecialOfferingContributions", fields: [specialOfferingId], references: [id])
   isTemplate           Boolean?          @default(false) @map("isTemplate")
-  targetGoal           Float?            @map("targetGoal") // Change Decimal to Float (Line 137)
+  targetGoal           Float?            @map("targetGoal")
+  
+  // New batch payment fields
+  batchPaymentId       Int?              @map("batchPaymentId")
+  batchPayment         BatchPayment?     @relation(fields: [batchPaymentId], references: [id])
+  isBatchProcessed     Boolean           @default(false) @map("isBatchProcessed")
+  
+  // New KCB integration fields
+  kcbTransactionId     String?           @map("kcbTransactionId")
+  kcbReference         String?           @map("kcbReference")
+  bankDepositStatus    String?           @default("PENDING") @map("bankDepositStatus") // PENDING, DEPOSITED, FAILED
+  
   createdAt            DateTime          @default(now()) @map("createdAt")
   updatedAt            DateTime          @updatedAt @map("updatedAt")
   receipt              Receipt?
 
   @@map("Payments")
+}
+
+// New Batch Payment Model
+model BatchPayment {
+  id                Int       @id @default(autoincrement())
+  batchReference    String    @unique @map("batchReference")
+  totalAmount       Float     @map("totalAmount")
+  totalCount        Int       @map("totalCount")
+  status            String    @default("PENDING") @map("status") // PENDING, DEPOSITED, COMPLETED, FAILED
+  description       String?
+  createdById       Int       @map("createdById")
+  creator           User      @relation("BatchPaymentCreator", fields: [createdById], references: [id])
+  processedById     Int?      @map("processedById")
+  processor         User?     @relation("BatchPaymentProcessor", fields: [processedById], references: [id])
+  kcbTransactionId  String?   @map("kcbTransactionId")
+  kcbReference      String?   @map("kcbReference")
+  depositedAt       DateTime? @map("depositedAt")
+  createdAt         DateTime  @default(now()) @map("createdAt")
+  updatedAt         DateTime  @updatedAt @map("updatedAt")
+  
+  payments          Payment[]
+
+  @@map("BatchPayments")
+}
+
+// New Wallet Model
+model Wallet {
+  id              Int     @id @default(autoincrement())
+  walletType      String  @map("walletType") // TITHE, OFFERING, DONATION, SPECIAL_OFFERING
+  subType         String? @map("subType") // For tithe: campMeetingExpenses, welfare, etc. For special offerings: offering code
+  balance         Float   @default(0) @map("balance")
+  totalDeposits   Float   @default(0) @map("totalDeposits")
+  totalWithdrawals Float  @default(0) @map("totalWithdrawals")
+  lastUpdated     DateTime @default(now()) @map("lastUpdated")
+  isActive        Boolean @default(true) @map("isActive")
+  
+  // Metadata for special offerings
+  specialOfferingId Int? @map("specialOfferingId")
+  
+  createdAt       DateTime @default(now()) @map("createdAt")
+  updatedAt       DateTime @updatedAt @map("updatedAt")
+  
+  withdrawalRequests WithdrawalRequest[]
+
+  @@unique([walletType, subType])
+  @@map("Wallets")
+}
+
+// New Withdrawal Request Model
+model WithdrawalRequest {
+  id                Int       @id @default(autoincrement())
+  withdrawalReference String  @unique @map("withdrawalReference")
+  walletId          Int       @map("walletId")
+  wallet            Wallet    @relation(fields: [walletId], references: [id])
+  amount            Float
+  purpose           String
+  description       String?
+  requestedById     Int       @map("requestedById")
+  requester         User      @relation("WithdrawalRequester", fields: [requestedById], references: [id])
+  status            String    @default("PENDING") @map("status") // PENDING, APPROVED, REJECTED, COMPLETED
+  
+  // Withdrawal destination
+  withdrawalMethod  String    @map("withdrawalMethod") // BANK_TRANSFER, MPESA, CASH
+  destinationAccount String? @map("destinationAccount")
+  destinationPhone  String?  @map("destinationPhone")
+  
+  // KCB transaction details
+  kcbTransactionId  String?  @map("kcbTransactionId")
+  kcbReference      String?  @map("kcbReference")
+  
+  // Approval tracking
+  requiredApprovals Int      @default(3) @map("requiredApprovals")
+  currentApprovals  Int      @default(0) @map("currentApprovals")
+  
+  processedAt       DateTime? @map("processedAt")
+  createdAt         DateTime  @default(now()) @map("createdAt")
+  updatedAt         DateTime  @updatedAt @map("updatedAt")
+  
+  approvals         WithdrawalApproval[]
+
+  @@map("WithdrawalRequests")
+}
+
+// New Withdrawal Approval Model
+model WithdrawalApproval {
+  id                  Int               @id @default(autoincrement())
+  withdrawalRequestId Int               @map("withdrawalRequestId")
+  withdrawalRequest   WithdrawalRequest @relation(fields: [withdrawalRequestId], references: [id])
+  approvedById        Int               @map("approvedById")
+  approver            User              @relation("WithdrawalApprover", fields: [approvedById], references: [id])
+  approved            Boolean
+  password            String?           // For password-based approval
+  approvalMethod      String            @map("approvalMethod") // PASSWORD, EMAIL, GOOGLE_AUTH
+  comment             String?
+  createdAt           DateTime          @default(now()) @map("createdAt")
+
+  @@unique([withdrawalRequestId, approvedById])
+  @@map("WithdrawalApprovals")
+}
+
+// New KCB Transaction Sync Model
+model KcbTransactionSync {
+  id                Int      @id @default(autoincrement())
+  kcbTransactionId  String   @unique @map("kcbTransactionId")
+  kcbReference      String?  @map("kcbReference")
+  amount            Float
+  transactionDate   DateTime @map("transactionDate")
+  description       String?
+  transactionType   String   @map("transactionType") // CREDIT, DEBIT
+  
+  // Sync status
+  syncStatus        String   @default("UNLINKED") @map("syncStatus") // UNLINKED, LINKED, IGNORED
+  linkedPaymentId   Int?     @map("linkedPaymentId")
+  
+  // Raw KCB data
+  rawData           Json?    @map("rawData")
+  
+  createdAt         DateTime @default(now()) @map("createdAt")
+  updatedAt         DateTime @updatedAt @map("updatedAt")
+
+  @@map("KcbTransactionSyncs")
 }
 
 model Receipt {
@@ -146,7 +283,7 @@ model Notification {
   userId           Int      @map("userId")
   user             User     @relation("UserNotifications", fields: [userId], references: [id])
   notificationType String   @map("notificationType")
-  message          String   // Remove @db.Text for SQLite (Line 174)
+  message          String
   reference        String?
   isRead           Boolean  @default(false) @map("isRead")
   status           String   @default("PENDING")
@@ -163,13 +300,13 @@ model ContactInquiry {
   email             String
   phone             String?
   subject           String
-  message           String    // Remove @db.Text for SQLite (Line 192)
+  message           String
   status            String    @default("PENDING")
   submittedById     Int?
   submittedBy       User?     @relation("SubmittedByUser", fields: [submittedById], references: [id])
   handledById       Int?
   handledBy         User?     @relation("HandledByAdmin", fields: [handledById], references: [id])
-  resolutionNotes   String?   // Remove @db.Text for SQLite (Line 200)
+  resolutionNotes   String?
   createdAt         DateTime  @default(now()) @map("createdAt")
   updatedAt         DateTime  @updatedAt @map("updatedAt")
 

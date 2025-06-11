@@ -5,7 +5,7 @@ import { FuturisticStyles } from '../utils/futuristicStyles.js';
 export class HomeView extends BaseComponent {
   constructor() {
     super();
-    this.title = 'Tassia Central SEVENTH DAY ADVENTIST Church - Financial Management';
+    this.title = 'Seventh-Day Adventist Church Tassia Central  - Financial Management';
     this.user = this.authService ? this.authService.getUser() : null;
     this.isAuthenticated = this.authService ? this.authService.isAuthenticated() : false;
     this.isAdmin = this.authService ? this.authService.isAdmin() : false;
@@ -184,7 +184,7 @@ export class HomeView extends BaseComponent {
     greeting.style.display = 'inline-block';
 
     const churchName = document.createElement('h2');
-    churchName.textContent = 'Tassia Central SEVENTH DAY ADVENTIST Church';
+    churchName.textContent = 'Seventh-Day Adventist Church Tassia Central';
     churchName.style.fontSize = '36px';
     churchName.style.fontWeight = '700';
     churchName.style.marginBottom = '25px';

@@ -193,7 +193,12 @@ export class ApiService {
 
   // Unified payment initiation method
   async initiatePayment(paymentData) {
-    return this.post('/payment/initiate', paymentData);
+    // Set KCB as default payment method if not specified
+    const enhancedPaymentData = {
+      paymentMethod: 'KCB',
+      ...paymentData
+    };
+    return this.post('/payment/initiate', this.preparePaymentData(enhancedPaymentData));
   }
 
   // Specific payment method initiators
@@ -202,9 +207,30 @@ export class ApiService {
   }
 
   async initiateKcbPayment(paymentData) {
-    return this.post('/payment/initiate-kcb', paymentData);
+    const kcbPaymentData = {
+      ...paymentData,
+      paymentMethod: 'KCB'
+    };
+    return this.post('/payment/initiate-kcb', this.preparePaymentData(kcbPaymentData));
   }
 
+  // Enhanced manual payment with batch support
+  async addManualPaymentToBatch(paymentData, batchId = null) {
+    const enhancedData = {
+      ...paymentData,
+      batchPaymentId: batchId,
+      isBatchProcessed: !!batchId
+    };
+    return this.post('/payment/manual', enhancedData);
+  }
+
+// Bulk payment creation for batch processing
+async createBulkPayments(paymentsArray, description = null) {
+  return this.createBatchPayment({
+    payments: paymentsArray,
+    description
+  });
+}
   // Admin payment methods
   async getAllAdminPayments(params = {}) { 
     return this.get('/payment/all', params); 
@@ -424,6 +450,85 @@ export class ApiService {
       throw error;
     }
   }
+
+    // --- Wallet Management ---
+    async initializeWallets() { 
+      return this.post('/wallets/initialize'); 
+    }
+  
+    async getAllWallets() { 
+      return this.get('/wallets'); 
+    }
+  
+    async updateWalletBalances(paymentIds) { 
+      return this.post('/wallets/update-balances', { paymentIds }); 
+    }
+  
+    async createWithdrawalRequest(withdrawalData) { 
+      return this.post('/wallets/withdraw', withdrawalData); 
+    }
+  
+    async getWithdrawalRequests(params = {}) { 
+      return this.get('/wallets/withdrawals', params); 
+    }
+  
+    async approveWithdrawalRequest(withdrawalId, approvalData) { 
+      return this.post(`/wallets/withdrawals/${withdrawalId}/approve`, approvalData); 
+    }
+  
+    // --- Batch Payment Management ---
+    async createBatchPayment(batchData) { 
+      return this.post('/batch-payments', batchData); 
+    }
+  
+    async getAllBatchPayments(params = {}) { 
+      return this.get('/batch-payments', params); 
+    }
+  
+    async getBatchPaymentDetails(batchId) { 
+      return this.get(`/batch-payments/${batchId}`); 
+    }
+  
+    async processBatchDeposit(batchId, depositData) { 
+      return this.post(`/batch-payments/${batchId}/deposit`, depositData); 
+    }
+  
+    async completeBatchPayment(batchId, completionData = {}) { 
+      return this.post(`/batch-payments/${batchId}/complete`, completionData); 
+    }
+  
+    async cancelBatchPayment(batchId, reason = null) { 
+      return this.delete(`/batch-payments/${batchId}`, { reason }); 
+    }
+  
+    // --- KCB Sync and Balance Management ---
+    async getKcbAccountBalance() { 
+      return this.get('/kcb-sync/balance'); 
+    }
+  
+    async getKcbTransactionHistory(params = {}) { 
+      return this.get('/kcb-sync/transactions', params); 
+    }
+  
+    async syncKcbTransactions(syncData = {}) { 
+      return this.post('/kcb-sync/sync', syncData); 
+    }
+  
+    async getUnlinkedKcbTransactions(params = {}) { 
+      return this.get('/kcb-sync/unlinked', params); 
+    }
+  
+    async linkKcbTransaction(kcbSyncId, paymentId) { 
+      return this.post('/kcb-sync/link', { kcbSyncId, paymentId }); 
+    }
+  
+    async ignoreKcbTransaction(kcbSyncId, reason = null) { 
+      return this.put(`/kcb-sync/ignore/${kcbSyncId}`, { reason }); 
+    }
+  
+    async getKcbSyncStatistics() { 
+      return this.get('/kcb-sync/statistics'); 
+    }
 
   /**
    * Handle file upload with progress tracking

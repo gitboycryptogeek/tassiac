@@ -13,6 +13,8 @@ export class DashboardView {
     };
     this.specialOfferings = [];
     this.userPayments = [];
+    this.userContributionsByOffering = new Map(); // Track user contributions per offering
+    this.showingAllOfferings = false; // Track if showing all or limited offerings
     
     // Loading states
     this.isLoadingStats = true;
@@ -62,7 +64,7 @@ export class DashboardView {
       if (specialGrid) specialGrid.style.gridTemplateColumns = 'repeat(2, 1fr)';
     } else {
       if (statsGrid) statsGrid.style.gridTemplateColumns = 'repeat(3, 1fr)';
-      if (actionsGrid) statsGrid.style.gridTemplateColumns = 'repeat(3, 1fr)';
+      if (actionsGrid) actionsGrid.style.gridTemplateColumns = 'repeat(3, 1fr)';
       if (specialGrid) specialGrid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(300px, 1fr))';
     }
   }
@@ -164,16 +166,17 @@ export class DashboardView {
       // Quick Actions section with holographic icons
       container.appendChild(this.renderActionsSection());
       
-      // Special Offerings section
+      // Special Offerings section (limited to 3)
       container.appendChild(this.renderSpecialOfferingsSection());
       
       // User Payments History section
       container.appendChild(this.renderPaymentsHistorySection());
       
-      // Initialize data fetching with throttling
+      // Initialize data fetching with improved parallel loading
       setTimeout(() => {
         this.fetchDashboardData();
       }, 100);
+      
       setTimeout(() => {
         const animatedItems = document.querySelectorAll('.animated-item');
         animatedItems.forEach(item => {
@@ -206,163 +209,139 @@ export class DashboardView {
     container.appendChild(errorMessage);
   }
   
+  // IMPROVED: Parallel data fetching for better performance
   async fetchDashboardData() {
     try {
-      // Fetch user payments first, then use them for stats calculation
-      await this.fetchUserPayments();
-      
-      // Calculate stats directly from payments
-      this.calculatePaymentStats(this.userPayments);
-      
-      // Fetch special offerings last
-      await this.fetchSpecialOfferings();
-      
-      // Update UI with the data
-      this.updateStatsUI();
-      this.updateSpecialOfferingsUI();
-    } catch (error) {
-      this.showNotification('Failed to load some dashboard data', 'error');
-    }
-  }
-  
-  async fetchUserStats() {
-    this.isLoadingStats = true;
-    
-    try {
-      // Get current user ID
       const userId = this.user?.id;
-      
       if (!userId) {
         throw new Error('User ID not available');
       }
-      
-      // Always calculate stats from payment history
-      
-      // If we already have payments, use them
-      if (this.userPayments && this.userPayments.length > 0) {
+
+      // Fetch all data in parallel for better performance
+      const dataFetches = [
+        this.queueApiRequest(() => this.apiService.getUserPayments(userId, { limit: 1000 })),
+        this.queueApiRequest(() => this.apiService.getSpecialOfferings({ activeOnly: true }))
+      ];
+
+      const [paymentsResponse, offeringsResponse] = await Promise.allSettled(dataFetches);
+
+      // Handle payments data
+      if (paymentsResponse.status === 'fulfilled' && paymentsResponse.value?.payments) {
+        this.userPayments = paymentsResponse.value.payments;
         this.calculatePaymentStats(this.userPayments);
+        this.isLoadingStats = false;
+        this.isLoadingPayments = false;
+        this.updateStatsUI();
+        this.updatePaymentsUI();
       } else {
-        // Fetch all user payments without filtering by type
-        const paymentsResponse = await this.queueApiRequest(() => 
-          this.apiService.get(`/payment/user/${userId}`, { limit: 1000 })
-        );
+        console.error('Failed to fetch payments:', paymentsResponse.reason);
+        this.isLoadingStats = false;
+        this.isLoadingPayments = false;
+        this.updateStatsUI();
+        this.updatePaymentsUI();
+      }
+
+      // Handle special offerings data
+      if (offeringsResponse.status === 'fulfilled' && offeringsResponse.value?.specialOfferings) {
+        // Store ALL offerings but initially show only 3
+        const allOfferings = this.sortByNewestFirst(offeringsResponse.value.specialOfferings);
+        this.allSpecialOfferings = allOfferings; // Store all offerings
+        this.specialOfferings = allOfferings.slice(0, 3); // Initially show only 3
         
-        if (paymentsResponse && paymentsResponse.payments) {
-          this.userPayments = paymentsResponse.payments;
-          this.calculatePaymentStats(paymentsResponse.payments);
-        }
-      }
-    } catch (error) {
-      this.error = 'Failed to load contribution statistics.';
-      
-      // Initialize with zeros to avoid undefined values
-      this.paymentStats = {
-        totalContributed: 0,
-        thisMonthContributed: 0,
-        lastPaymentDate: null
-      };
-    } finally {
-      this.isLoadingStats = false;
-      this.updateStatsUI();
-    }
-  }
-  
-  async fetchSpecialOfferings() {
-    this.isLoadingSpecial = true;
-    
-    try {
-      // Get special offerings
-      const response = await this.queueApiRequest(() => 
-        this.apiService.getSpecialOfferings(true) // true = activeOnly
-      );
-      
-      if (response && response.specialOfferings) {
-        // Sort by creation date, most recent first
-        this.specialOfferings = this.sortByNewestFirst(response.specialOfferings);
-      }
-      
-      // For each offering, fetch progress
-      if (this.specialOfferings && this.specialOfferings.length > 0) {
+        // Calculate user contributions for ALL offerings
+        this.calculateUserContributionsPerOffering();
+        
+        // Enrich with progress data for all offerings
         await this.enrichSpecialOfferingsWithProgress();
+        this.isLoadingSpecial = false;
+        this.updateSpecialOfferingsUI();
+      } else {
+        console.error('Failed to fetch special offerings:', offeringsResponse.reason);
+        this.specialOfferings = [];
+        this.allSpecialOfferings = [];
+        this.isLoadingSpecial = false;
+        this.updateSpecialOfferingsUI();
       }
+
     } catch (error) {
-      this.error = 'Failed to load special offerings data.';
-      this.specialOfferings = [];
-    } finally {
+      console.error('Dashboard data fetch error:', error);
+      this.showNotification('Failed to load some dashboard data', 'error');
+      
+      // Set loading states to false
+      this.isLoadingStats = false;
       this.isLoadingSpecial = false;
+      this.isLoadingPayments = false;
+      
+      // Update UI with error states
+      this.updateStatsUI();
       this.updateSpecialOfferingsUI();
+      this.updatePaymentsUI();
     }
   }
-  
-  async enrichSpecialOfferingsWithProgress() {
-    const offeringsWithProgress = await Promise.allSettled(
-      this.specialOfferings.map(async (offering) => {
-        if (offering.targetGoal && offering.targetGoal > 0) {
-          try {
-            const progress = await this.queueApiRequest(() => 
-              this.apiService.getSpecialOfferingProgress(offering.offeringType)
-            );
-            
-            return {
-              ...offering,
-              percentage: progress.percentage || 0,
-              totalContributed: progress.totalContributed || 0,
-              remainingAmount: progress.remainingAmount || 0
-            };
-          } catch (err) {
-            return {
-              ...offering,
-              percentage: 0,
-              totalContributed: 0,
-              remainingAmount: offering.targetGoal || 0
-            };
-          }
-        }
-        return offering;
-      })
-    );
+
+  // NEW: Calculate user's contributions per offering
+  calculateUserContributionsPerOffering() {
+    this.userContributionsByOffering.clear();
     
-    // Process results, handling rejections
-    this.specialOfferings = offeringsWithProgress.map((result, index) => {
-      if (result.status === 'fulfilled') {
-        return result.value;
-      } else {
-        return this.specialOfferings[index];
-      }
+    if (!this.userPayments || !this.allSpecialOfferings) return;
+
+    this.allSpecialOfferings.forEach(offering => {
+      const userContributions = this.userPayments.filter(payment => 
+        payment.status === 'COMPLETED' && 
+        payment.paymentType === `SPECIAL_${offering.offeringType}` &&
+        !payment.isExpense && 
+        !payment.isTemplate
+      );
+
+      const totalUserContribution = userContributions.reduce(
+        (sum, payment) => sum + parseFloat(payment.amount || 0), 
+        0
+      );
+
+      this.userContributionsByOffering.set(offering.offeringType, {
+        amount: totalUserContribution,
+        count: userContributions.length,
+        payments: userContributions
+      });
     });
   }
   
-  async fetchUserPayments() {
-    this.isLoadingPayments = true;
-    
-    try {
-      const userId = this.user?.id;
-      
-      if (!userId) {
-        throw new Error('User ID not available');
-      }
-      
-      // Get ALL user payments - no filters
-      const response = await this.queueApiRequest(() => 
-        this.apiService.get(`/payment/user/${userId}`, { 
-          limit: 1000 // Increased limit to ensure we get all payments
-        })
-      );
-      
-      if (response && response.payments) {
-        this.userPayments = response.payments;
-        
-        // If stats aren't calculated yet, calculate them now
-        if (this.paymentStats.totalContributed === 0) {
-          this.calculatePaymentStats(this.userPayments);
+  async enrichSpecialOfferingsWithProgress() {
+    if (!this.allSpecialOfferings?.length) return;
+
+    const progressFetches = this.allSpecialOfferings.map(async (offering) => {
+      if (offering.targetGoal && offering.targetGoal > 0) {
+        try {
+          const progress = await this.queueApiRequest(() => 
+            this.apiService.getSpecialOfferingProgress(offering.offeringType)
+          );
+          
+          return {
+            ...offering,
+            percentage: progress.percentage || 0,
+            totalContributed: progress.totalContributed || 0,
+            remainingAmount: progress.remainingAmount || offering.targetGoal
+          };
+        } catch (err) {
+          console.error(`Failed to fetch progress for ${offering.offeringType}:`, err);
+          return {
+            ...offering,
+            percentage: 0,
+            totalContributed: 0,
+            remainingAmount: offering.targetGoal || 0
+          };
         }
       }
-    } catch (error) {
-      this.error = 'Failed to load payment history.';
-      this.userPayments = []; // Initialize with empty array
-    } finally {
-      this.isLoadingPayments = false;
-      this.updatePaymentsUI();
+      return offering;
+    });
+    
+    this.allSpecialOfferings = await Promise.all(progressFetches);
+    
+    // Update the displayed offerings based on current view
+    if (this.showingAllOfferings) {
+      this.specialOfferings = [...this.allSpecialOfferings];
+    } else {
+      this.specialOfferings = this.allSpecialOfferings.slice(0, 3);
     }
   }
   
@@ -403,6 +382,30 @@ export class DashboardView {
     // Update last payment date
     if (completedPayments.length) {
       this.paymentStats.lastPaymentDate = this.sortByNewestFirst(completedPayments)[0].paymentDate;
+    }
+  }
+  
+  // NEW: Toggle between showing 3 and all offerings
+  toggleOfferingsView() {
+    this.showingAllOfferings = !this.showingAllOfferings;
+    
+    if (this.showingAllOfferings) {
+      this.specialOfferings = [...this.allSpecialOfferings];
+    } else {
+      this.specialOfferings = this.allSpecialOfferings.slice(0, 3);
+    }
+    
+    // Update the UI
+    this.updateSpecialOfferingsUI();
+    
+    // Update button text and icon
+    const toggleBtn = document.getElementById('toggle-offerings-btn');
+    if (toggleBtn) {
+      const arrowIcon = toggleBtn.querySelector('span');
+      toggleBtn.childNodes[0].textContent = this.showingAllOfferings ? 'Show Less' : `See All (${this.allSpecialOfferings?.length || 0})`;
+      if (arrowIcon) {
+        arrowIcon.textContent = this.showingAllOfferings ? '↑' : '↓';
+      }
     }
   }
   
@@ -760,14 +763,14 @@ export class DashboardView {
     
     // Add export as PDF button
     const exportButton = document.createElement('button');
-    exportButton.textContent = 'Export as PDF';
+    exportButton.textContent = 'Export Report';
     exportButton.className = 'futuristic-button';
     exportButton.style.marginBottom = '20px';
     exportButton.style.alignSelf = 'center';
     exportButton.style.background = 'linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(59, 130, 246, 0.1))';
     
     exportButton.addEventListener('click', () => {
-      this.generateContributionsPDF(completedPayments, 'Total Contributions');
+      this.generateContributionsReport(completedPayments, 'Total Contributions');
     });
     
     breakdownContent.appendChild(exportButton);
@@ -982,14 +985,14 @@ export class DashboardView {
     
     // Add export button
     const exportButton = document.createElement('button');
-    exportButton.textContent = 'Export as PDF';
+    exportButton.textContent = 'Export Report';
     exportButton.className = 'futuristic-button';
     exportButton.style.marginBottom = '20px';
     exportButton.style.display = 'block';
     exportButton.style.margin = '0 auto 20px';
     
     exportButton.addEventListener('click', () => {
-      this.generateContributionsPDF(
+      this.generateContributionsReport(
         thisMonthPayments, 
         `Contributions for ${now.toLocaleString('default', { month: 'long' })} ${thisYear}`
       );
@@ -1092,165 +1095,190 @@ export class DashboardView {
     // Show payment details
     this.showPaymentDetails(lastPayment);
   }
-  
-  generateContributionsPDF(payments, title) {
-    // Client-side PDF generation
+
+  // IMPROVED: Simple HTML/CSS report generation (no external dependencies)
+  generateContributionsReport(payments, title) {
     try {
-      const { jsPDF } = window.jspdf;
+      // Create a simple HTML report that can be printed or saved
+      const reportContent = this.createHTMLReport(payments, title);
       
-      if (!jsPDF) {
-        this.loadJsPDF().then(() => this.generateContributionsPDF(payments, title));
-        return;
-      }
+      // Open in new window for printing
+      const printWindow = window.open('', '_blank');
+      printWindow.document.write(reportContent);
+      printWindow.document.close();
       
-      // Create PDF document
-      const doc = new window.jspdf.jsPDF();
+      // Auto-focus and prompt for print
+      setTimeout(() => {
+        printWindow.focus();
+        printWindow.print();
+      }, 500);
       
-      // Add title
-      doc.setFontSize(18);
-      doc.text(title, 105, 20, { align: 'center' });
-      
-      // Add user info
-      doc.setFontSize(12);
-      doc.text(`User: ${this.user?.fullName}`, 20, 35);
-      doc.text(`Generated on: ${new Date().toLocaleString()}`, 20, 42);
-      
-      // Calculate total amount
-      const totalAmount = payments.reduce((sum, payment) => sum + parseFloat(payment.amount || 0), 0);
-      
-      // Add total amount
-      doc.setFontSize(14);
-      doc.text(`Total: ${this.formatCurrency(totalAmount)}`, 20, 52);
-      
-      // Add table header
-      doc.setFontSize(10);
-      doc.setTextColor(100, 100, 100);
-      
-      // Table headers
-      const headers = ['Date', 'Payment Type', 'Method', 'Amount', 'Status'];
-      const columnWidths = [30, 40, 30, 30, 30];
-      let y = 65;
-      
-      // Draw table header
-      let x = 20;
-      headers.forEach((header, i) => {
-        doc.text(header, x, y);
-        x += columnWidths[i];
-      });
-      
-      doc.line(20, y + 2, 190, y + 2);
-      
-      // Add table rows
-      doc.setTextColor(0, 0, 0);
-      y += 10;
-      
-      payments.forEach((payment, index) => {
-        // Check if we need a new page
-        if (y > 280) {
-          doc.addPage();
-          y = 20;
-          
-          // Re-add headers on new page
-          x = 20;
-          doc.setTextColor(100, 100, 100);
-          headers.forEach((header, i) => {
-            doc.text(header, x, y);
-            x += columnWidths[i];
-          });
-          
-          doc.line(20, y + 2, 190, y + 2);
-          doc.setTextColor(0, 0, 0);
-          y += 10;
-        }
-        
-        x = 20;
-        
-        // Date
-        doc.text(new Date(payment.paymentDate).toLocaleDateString(), x, y);
-        x += columnWidths[0];
-        
-        // Payment Type
-        doc.text(this.formatPaymentType(payment.paymentType), x, y);
-        x += columnWidths[1];
-        
-        // Method
-        doc.text(payment.paymentMethod || '-', x, y);
-        x += columnWidths[2];
-        
-        // Amount
-        const amountStr = this.formatCurrency(payment.amount).replace('KES ', '');
-        doc.text(amountStr, x, y);
-        x += columnWidths[3];
-        
-        // Status
-        doc.text(payment.status, x, y);
-        
-        // Add divider line (for all except last row)
-        if (index < payments.length - 1) {
-          doc.setDrawColor(200, 200, 200);
-          doc.line(20, y + 2, 190, y + 2);
-          doc.setDrawColor(0, 0, 0);
-        }
-        
-        y += 8;
-      });
-      
-      // Add footer
-      const pageCount = doc.internal.getNumberOfPages();
-      
-      for (let i = 1; i <= pageCount; i++) {
-        doc.setPage(i);
-        
-        // Footer with church info and page numbers
-        doc.setFontSize(8);
-        doc.text('TASSIAC CHURCH', 105, 285, { align: 'center' });
-        doc.text(`Page ${i} of ${pageCount}`, 190, 285, { align: 'right' });
-        
-        // Add safe border lines around content
-        doc.setDrawColor(220, 220, 220);
-        doc.rect(10, 10, 190, 280); // Safe area border
-      }
-      
-      // Save PDF with file name
-      const fileName = `${title.replace(/\s/g, '_')}_${new Date().toISOString().slice(0, 10)}.pdf`;
-      doc.save(fileName);
-      
-      this.showNotification('PDF generated successfully!', 'success');
+      this.showNotification('Report generated successfully! Use your browser to save as PDF.', 'success');
     } catch (error) {
-      this.showNotification('Failed to generate PDF. Please try again.', 'error');
-      
-      // Try to load jsPDF if it failed
-      if (!window.jspdf) {
-        this.loadJsPDF();
-      }
+      console.error('Report generation error:', error);
+      this.showNotification('Failed to generate report. Please try again.', 'error');
     }
   }
-  
-  loadJsPDF() {
-    return new Promise((resolve, reject) => {
-      if (window.jspdf) {
-        resolve(window.jspdf);
-        return;
-      }
-      
-      this.showNotification('Loading PDF generator...', 'info');
-      
-      const script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-      script.integrity = 'sha512-qZvrmS2ekKPF2mSznTQsxqPgnpkI4DNTlrdUmTzrDgektczlKNRRhy5X5AAOnx5S09ydFYWWNSfcEqDTTHgtNA==';
-      script.crossOrigin = 'anonymous';
-      script.referrerPolicy = 'no-referrer';
-      script.onload = () => {
-        this.showNotification('PDF generator loaded!', 'success');
-        resolve(window.jspdf);
-      };
-      script.onerror = (e) => {
-        this.showNotification('Failed to load PDF generator', 'error');
-        reject(e);
-      };
-      
-      document.head.appendChild(script);
-    });
+
+  createHTMLReport(payments, title) {
+    const totalAmount = payments.reduce((sum, payment) => sum + parseFloat(payment.amount || 0), 0);
+    
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <title>${title}</title>
+          <style>
+              body { 
+                  font-family: Arial, sans-serif; 
+                  margin: 20px; 
+                  color: #333;
+                  background: #fff;
+              }
+              .header { 
+                  text-align: center; 
+                  margin-bottom: 30px; 
+                  border-bottom: 2px solid #333;
+                  padding-bottom: 20px;
+              }
+              .header h1 { 
+                  color: #1a365d; 
+                  margin: 0;
+                  font-size: 24px;
+              }
+              .header h2 { 
+                  color: #2d3748; 
+                  margin: 5px 0;
+                  font-size: 18px;
+              }
+              .info { 
+                  margin: 20px 0; 
+                  display: grid;
+                  grid-template-columns: 1fr 1fr;
+                  gap: 20px;
+              }
+              .info-item {
+                  background: #f7fafc;
+                  padding: 10px;
+                  border-radius: 5px;
+              }
+              .total { 
+                  font-size: 18px; 
+                  font-weight: bold; 
+                  color: #1a365d;
+                  text-align: center;
+                  margin: 20px 0;
+                  padding: 15px;
+                  background: #e6fffa;
+                  border-radius: 8px;
+              }
+              table { 
+                  width: 100%; 
+                  border-collapse: collapse; 
+                  margin: 20px 0;
+              }
+              th, td { 
+                  border: 1px solid #ddd; 
+                  padding: 12px; 
+                  text-align: left; 
+              }
+              th { 
+                  background: #1a365d; 
+                  color: white;
+                  font-weight: bold;
+              }
+              tr:nth-child(even) { 
+                  background: #f8f9fa; 
+              }
+              .amount { 
+                  text-align: right; 
+                  font-weight: bold;
+              }
+              .footer {
+                  margin-top: 40px;
+                  text-align: center;
+                  color: #666;
+                  font-size: 12px;
+                  border-top: 1px solid #ddd;
+                  padding-top: 20px;
+              }
+              @media print {
+                  body { margin: 0; }
+                  .no-print { display: none; }
+              }
+          </style>
+      </head>
+      <body>
+          <div class="header">
+              <h1>TASSIAC CHURCH</h1>
+              <h2>${title}</h2>
+          </div>
+          
+          <div class="info">
+              <div class="info-item">
+                  <strong>Contributor:</strong> ${this.user?.fullName || 'Unknown'}
+              </div>
+              <div class="info-item">
+                  <strong>Generated:</strong> ${new Date().toLocaleString()}
+              </div>
+              <div class="info-item">
+                  <strong>Number of Payments:</strong> ${payments.length}
+              </div>
+              <div class="info-item">
+                  <strong>Period:</strong> ${this.getDateRange(payments)}
+              </div>
+          </div>
+          
+          <div class="total">
+              Total Amount: ${this.formatCurrency(totalAmount)}
+          </div>
+          
+          <table>
+              <thead>
+                  <tr>
+                      <th>Date</th>
+                      <th>Payment Type</th>
+                      <th>Method</th>
+                      <th>Description</th>
+                      <th>Amount</th>
+                      <th>Status</th>
+                  </tr>
+              </thead>
+              <tbody>
+                  ${payments.map(payment => `
+                      <tr>
+                          <td>${new Date(payment.paymentDate).toLocaleDateString()}</td>
+                          <td>${this.formatPaymentType(payment.paymentType)}</td>
+                          <td>${payment.paymentMethod || '-'}</td>
+                          <td>${payment.description || '-'}</td>
+                          <td class="amount">${this.formatCurrency(payment.amount)}</td>
+                          <td>${payment.status}</td>
+                      </tr>
+                  `).join('')}
+              </tbody>
+          </table>
+          
+          <div class="footer">
+              <p>TASSIAC CHURCH - Official Report</p>
+              <p>This is an automatically generated report. Please keep for your records.</p>
+          </div>
+      </body>
+      </html>
+    `;
+  }
+
+  getDateRange(payments) {
+    if (!payments.length) return 'No data';
+    
+    const dates = payments.map(p => new Date(p.paymentDate)).sort();
+    const earliest = dates[0];
+    const latest = dates[dates.length - 1];
+    
+    if (earliest.toDateString() === latest.toDateString()) {
+      return earliest.toLocaleDateString();
+    }
+    
+    return `${earliest.toLocaleDateString()} - ${latest.toLocaleDateString()}`;
   }
   
   renderActionsSection() {
@@ -1431,6 +1459,7 @@ export class DashboardView {
     return actionsSection;
   }
   
+  // UPDATED: Limit to 3 offerings with "See All" button
   renderSpecialOfferingsSection() {
     const specialSection = document.createElement('div');
     specialSection.className = 'animated-item';
@@ -1438,12 +1467,21 @@ export class DashboardView {
     specialSection.style.marginBottom = '40px';
     specialSection.style.animationDelay = '0.6s';
     
+    // Section header with title and "See All" button
+    const sectionHeader = document.createElement('div');
+    sectionHeader.style.display = 'flex';
+    sectionHeader.style.justifyContent = 'space-between';
+    sectionHeader.style.alignItems = 'center';
+    sectionHeader.style.marginBottom = '20px';
+    sectionHeader.style.flexWrap = 'wrap';
+    sectionHeader.style.gap = '15px';
+    
     // Improved section title visibility
     const specialTitle = document.createElement('h2');
     specialTitle.style.fontSize = '20px';
     specialTitle.style.fontWeight = '600';
     specialTitle.style.color = '#ffffff';
-    specialTitle.style.marginBottom = '20px';
+    specialTitle.style.margin = '0';
     specialTitle.style.position = 'relative';
     specialTitle.style.marginLeft = '15px';
     specialTitle.style.textShadow = '0 2px 4px rgba(0, 0, 0, 0.3)';
@@ -1462,6 +1500,32 @@ export class DashboardView {
     
     specialTitle.appendChild(titleAccent);
     
+    // NEW: Toggle button for showing all offerings
+    const seeAllButton = document.createElement('button');
+    seeAllButton.id = 'toggle-offerings-btn';
+    seeAllButton.textContent = this.showingAllOfferings ? 'Show Less' : `See All (${this.allSpecialOfferings?.length || 0})`;
+    seeAllButton.className = 'futuristic-button';
+    seeAllButton.style.background = 'linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(245, 158, 11, 0.1))';
+    seeAllButton.style.color = '#ffffff';
+    seeAllButton.style.padding = '10px 20px';
+    seeAllButton.style.fontSize = '14px';
+    seeAllButton.style.display = 'flex';
+    seeAllButton.style.alignItems = 'center';
+    seeAllButton.style.gap = '8px';
+    
+    // Add arrow icon
+    const arrowIcon = document.createElement('span');
+    arrowIcon.textContent = this.showingAllOfferings ? '↑' : '↓';
+    arrowIcon.style.fontSize = '16px';
+    seeAllButton.appendChild(arrowIcon);
+    
+    seeAllButton.addEventListener('click', () => {
+      this.toggleOfferingsView();
+    });
+    
+    sectionHeader.appendChild(specialTitle);
+    sectionHeader.appendChild(seeAllButton);
+    
     const specialGrid = document.createElement('div');
     specialGrid.id = 'special-offerings-grid';
     specialGrid.style.display = 'grid';
@@ -1469,7 +1533,7 @@ export class DashboardView {
       ? 'repeat(1, 1fr)' 
       : this.isTablet 
         ? 'repeat(2, 1fr)' 
-        : 'repeat(auto-fill, minmax(300px, 1fr))';
+        : 'repeat(auto-fill, minmax(320px, 1fr))';
     specialGrid.style.gap = '20px';
     
     // Loading state for special offerings
@@ -1493,14 +1557,14 @@ export class DashboardView {
       );
       specialGrid.appendChild(emptyState);
     } else {
-      // Render special offerings
+      // Render special offerings (limited to 3)
       this.specialOfferings.forEach((offering, index) => {
         const offeringCard = this.createOfferingCard(offering, index);
         specialGrid.appendChild(offeringCard);
       });
     }
     
-    specialSection.appendChild(specialTitle);
+    specialSection.appendChild(sectionHeader);
     specialSection.appendChild(specialGrid);
     
     return specialSection;
@@ -1538,11 +1602,14 @@ export class DashboardView {
     return emptyState;
   }
   
+  // UPDATED: Enhanced offering card with user contribution tracking
   createOfferingCard(offering, index) {
     const offeringCard = document.createElement('div');
     offeringCard.className = 'neo-card animated-item';
     offeringCard.style.overflow = 'hidden';
     offeringCard.style.animationDelay = `${0.7 + (index * 0.1)}s`;
+    offeringCard.style.display = 'flex';
+    offeringCard.style.flexDirection = 'column';
     
     // Use name from description if no specific name
     const offeringName = offering.name || offering.description || this.formatSpecialOfferingName(offering.offeringType);
@@ -1595,6 +1662,7 @@ export class DashboardView {
     offeringType.style.fontWeight = '600';
     offeringType.style.color = '#ffffff';
     offeringType.style.textShadow = '0 1px 3px rgba(0, 0, 0, 0.3)';
+    offeringType.style.flex = '1';
     
     const endDateDisplay = offering.endDate ? new Date(offering.endDate).toLocaleDateString() : 'Ongoing';
     const endDateBadge = document.createElement('span');
@@ -1604,6 +1672,7 @@ export class DashboardView {
     endDateBadge.style.padding = '4px 8px';
     endDateBadge.style.borderRadius = '20px';
     endDateBadge.style.color = statusColor;
+    endDateBadge.style.whiteSpace = 'nowrap';
     
     offeringHeader.appendChild(offeringType);
     offeringHeader.appendChild(endDateBadge);
@@ -1611,6 +1680,9 @@ export class DashboardView {
     // Card body with details and progress
     const offeringBody = document.createElement('div');
     offeringBody.style.padding = '20px';
+    offeringBody.style.flex = '1';
+    offeringBody.style.display = 'flex';
+    offeringBody.style.flexDirection = 'column';
     
     // If there's a description and it's different from the name
     if (offering.description && offering.description !== offeringName) {
@@ -1619,6 +1691,7 @@ export class DashboardView {
       description.style.fontSize = '14px';
       description.style.color = '#e2e8f0';
       description.style.margin = '0 0 16px';
+      description.style.lineHeight = '1.5';
       offeringBody.appendChild(description);
     }
     
@@ -1632,62 +1705,258 @@ export class DashboardView {
     statusBadge.style.fontSize = '12px';
     statusBadge.style.fontWeight = '600';
     statusBadge.style.marginBottom = '12px';
+    statusBadge.style.alignSelf = 'flex-start';
     statusBadge.textContent = statusText;
     offeringBody.appendChild(statusBadge);
     
-    // If there's a target goal
+    // NEW: Enhanced target goal and progress section
     if (offering.targetGoal && offering.targetGoal > 0) {
-      // Progress bar container
-      const progressContainer = document.createElement('div');
-      progressContainer.style.marginBottom = '12px';
-      progressContainer.style.marginTop = '12px';
+      const progressSection = document.createElement('div');
+      progressSection.style.marginBottom = '16px';
+      progressSection.style.marginTop = '12px';
+      progressSection.style.background = 'rgba(30, 41, 59, 0.3)';
+      progressSection.style.borderRadius = '12px';
+      progressSection.style.padding = '16px';
+      progressSection.style.border = '1px solid rgba(255, 255, 255, 0.1)';
       
-      // Calculate progress percentage
+      // Target goal header
+      const goalHeader = document.createElement('div');
+      goalHeader.style.display = 'flex';
+      goalHeader.style.justifyContent = 'space-between';
+      goalHeader.style.alignItems = 'center';
+      goalHeader.style.marginBottom = '12px';
+      
+      const goalLabel = document.createElement('span');
+      goalLabel.style.fontSize = '14px';
+      goalLabel.style.color = '#e2e8f0';
+      goalLabel.style.fontWeight = '600';
+      goalLabel.textContent = 'Funding Goal';
+      
+      const goalAmount = document.createElement('span');
+      goalAmount.style.fontSize = '16px';
+      goalAmount.style.color = '#ffffff';
+      goalAmount.style.fontWeight = '700';
+      goalAmount.textContent = this.formatCurrency(offering.targetGoal);
+      
+      goalHeader.appendChild(goalLabel);
+      goalHeader.appendChild(goalAmount);
+      progressSection.appendChild(goalHeader);
+      
+      // Calculate progress values
       const totalContributed = offering.totalContributed || 0;
+      const remainingAmount = Math.max(0, offering.targetGoal - totalContributed);
       const percentage = Math.min(100, Math.round((totalContributed / offering.targetGoal) * 100));
       
-      // Progress bar track
+      // Progress bar
       const progressTrack = document.createElement('div');
-      progressTrack.style.height = '8px';
+      progressTrack.style.height = '10px';
       progressTrack.style.backgroundColor = '#1e293b';
-      progressTrack.style.borderRadius = '4px';
+      progressTrack.style.borderRadius = '5px';
       progressTrack.style.overflow = 'hidden';
+      progressTrack.style.marginBottom = '12px';
+      progressTrack.style.border = '1px solid rgba(255, 255, 255, 0.1)';
       
-      // Progress bar fill
       const progressFill = document.createElement('div');
       progressFill.style.height = '100%';
       progressFill.style.width = `${percentage}%`;
-      progressFill.style.background = `linear-gradient(to right, ${statusColor}80, ${statusColor})`;
-      progressFill.style.boxShadow = `0 0 10px ${statusColor}80`;
-      progressFill.style.borderRadius = '4px';
-      progressFill.style.transition = 'width 1s ease-in-out';
+      progressFill.style.background = `linear-gradient(to right, ${statusColor}90, ${statusColor})`;
+      progressFill.style.boxShadow = `0 0 15px ${statusColor}60`;
+      progressFill.style.borderRadius = '5px';
+      progressFill.style.transition = 'width 1.5s ease-in-out';
       
       progressTrack.appendChild(progressFill);
-      progressContainer.appendChild(progressTrack);
+      progressSection.appendChild(progressTrack);
       
-      // Progress stats
-      const progressStats = document.createElement('div');
-      progressStats.style.display = 'flex';
-      progressStats.style.justifyContent = 'space-between';
-      progressStats.style.alignItems = 'center';
-      progressStats.style.fontSize = '12px';
-      progressStats.style.color = '#94a3b8';
-      progressStats.style.marginTop = '8px';
+      // Progress details grid
+      const progressGrid = document.createElement('div');
+      progressGrid.style.display = 'grid';
+      progressGrid.style.gridTemplateColumns = 'repeat(3, 1fr)';
+      progressGrid.style.gap = '12px';
+      progressGrid.style.textAlign = 'center';
       
-      const progressText = document.createElement('span');
-      progressText.textContent = `${percentage}% Complete`;
-      progressText.style.color = statusColor;
-      progressText.style.fontWeight = '600';
+      // Total contributed
+      const totalContributedBox = document.createElement('div');
+      totalContributedBox.style.background = 'rgba(16, 185, 129, 0.1)';
+      totalContributedBox.style.padding = '8px';
+      totalContributedBox.style.borderRadius = '8px';
+      totalContributedBox.style.border = '1px solid rgba(16, 185, 129, 0.3)';
       
-      const amountText = document.createElement('span');
-      amountText.innerHTML = `<span style="color: #e2e8f0;">KES ${totalContributed.toLocaleString()} / </span><span style="color: #ffffff; font-weight: 500;">${offering.targetGoal.toLocaleString()}</span>`;
+      const totalLabel = document.createElement('div');
+      totalLabel.style.fontSize = '11px';
+      totalLabel.style.color = '#10b981';
+      totalLabel.style.fontWeight = '600';
+      totalLabel.style.marginBottom = '4px';
+      totalLabel.textContent = 'RAISED';
       
-      progressStats.appendChild(progressText);
-      progressStats.appendChild(amountText);
+      const totalValue = document.createElement('div');
+      totalValue.style.fontSize = '14px';
+      totalValue.style.color = '#ffffff';
+      totalValue.style.fontWeight = '700';
+      totalValue.textContent = this.formatCurrency(totalContributed);
       
-      progressContainer.appendChild(progressStats);
-      offeringBody.appendChild(progressContainer);
+      totalContributedBox.appendChild(totalLabel);
+      totalContributedBox.appendChild(totalValue);
+      
+      // Remaining amount
+      const remainingBox = document.createElement('div');
+      remainingBox.style.background = 'rgba(245, 158, 11, 0.1)';
+      remainingBox.style.padding = '8px';
+      remainingBox.style.borderRadius = '8px';
+      remainingBox.style.border = '1px solid rgba(245, 158, 11, 0.3)';
+      
+      const remainingLabel = document.createElement('div');
+      remainingLabel.style.fontSize = '11px';
+      remainingLabel.style.color = '#f59e0b';
+      remainingLabel.style.fontWeight = '600';
+      remainingLabel.style.marginBottom = '4px';
+      remainingLabel.textContent = 'REMAINING';
+      
+      const remainingValue = document.createElement('div');
+      remainingValue.style.fontSize = '14px';
+      remainingValue.style.color = '#ffffff';
+      remainingValue.style.fontWeight = '700';
+      remainingValue.textContent = this.formatCurrency(remainingAmount);
+      
+      remainingBox.appendChild(remainingLabel);
+      remainingBox.appendChild(remainingValue);
+      
+      // Progress percentage
+      const percentageBox = document.createElement('div');
+      percentageBox.style.background = `rgba(${this.hexToRgb(statusColor)}, 0.1)`;
+      percentageBox.style.padding = '8px';
+      percentageBox.style.borderRadius = '8px';
+      percentageBox.style.border = `1px solid rgba(${this.hexToRgb(statusColor)}, 0.3)`;
+      
+      const percentageLabel = document.createElement('div');
+      percentageLabel.style.fontSize = '11px';
+      percentageLabel.style.color = statusColor;
+      percentageLabel.style.fontWeight = '600';
+      percentageLabel.style.marginBottom = '4px';
+      percentageLabel.textContent = 'PROGRESS';
+      
+      const percentageValue = document.createElement('div');
+      percentageValue.style.fontSize = '14px';
+      percentageValue.style.color = '#ffffff';
+      percentageValue.style.fontWeight = '700';
+      percentageValue.textContent = `${percentage}%`;
+      
+      percentageBox.appendChild(percentageLabel);
+      percentageBox.appendChild(percentageValue);
+      
+      progressGrid.appendChild(totalContributedBox);
+      progressGrid.appendChild(remainingBox);
+      progressGrid.appendChild(percentageBox);
+      
+      progressSection.appendChild(progressGrid);
+      offeringBody.appendChild(progressSection);
     }
+    
+    // NEW: Enhanced user's personal contribution section
+    const userContribution = this.userContributionsByOffering.get(offering.offeringType);
+    const userContributionSection = document.createElement('div');
+    userContributionSection.style.background = 'rgba(59, 130, 246, 0.1)';
+    userContributionSection.style.borderRadius = '12px';
+    userContributionSection.style.padding = '16px';
+    userContributionSection.style.marginTop = '16px';
+    userContributionSection.style.border = '1px solid rgba(59, 130, 246, 0.3)';
+    userContributionSection.style.position = 'relative';
+    userContributionSection.style.overflow = 'hidden';
+    
+    // Add subtle glow effect
+    const userGlow = document.createElement('div');
+    userGlow.style.position = 'absolute';
+    userGlow.style.top = '0';
+    userGlow.style.left = '0';
+    userGlow.style.right = '0';
+    userGlow.style.bottom = '0';
+    userGlow.style.background = 'radial-gradient(circle at top left, rgba(59, 130, 246, 0.2), transparent 60%)';
+    userGlow.style.pointerEvents = 'none';
+    userContributionSection.appendChild(userGlow);
+    
+    const userHeader = document.createElement('div');
+    userHeader.style.display = 'flex';
+    userHeader.style.alignItems = 'center';
+    userHeader.style.marginBottom = '12px';
+    userHeader.style.position = 'relative';
+    userHeader.style.zIndex = '2';
+    
+    const userIcon = document.createElement('span');
+    userIcon.textContent = '👤';
+    userIcon.style.fontSize = '18px';
+    userIcon.style.marginRight = '8px';
+    
+    const userContributionTitle = document.createElement('h4');
+    userContributionTitle.textContent = 'Your Contribution';
+    userContributionTitle.style.fontSize = '16px';
+    userContributionTitle.style.fontWeight = '700';
+    userContributionTitle.style.color = '#ffffff';
+    userContributionTitle.style.margin = '0';
+    userContributionTitle.style.textShadow = '0 1px 3px rgba(0, 0, 0, 0.3)';
+    
+    userHeader.appendChild(userIcon);
+    userHeader.appendChild(userContributionTitle);
+    
+    const userContent = document.createElement('div');
+    userContent.style.position = 'relative';
+    userContent.style.zIndex = '2';
+    
+    if (userContribution && userContribution.amount > 0) {
+      // User has contributed
+      const userAmount = document.createElement('div');
+      userAmount.style.fontSize = '20px';
+      userAmount.style.fontWeight = '800';
+      userAmount.style.color = '#3b82f6';
+      userAmount.style.marginBottom = '8px';
+      userAmount.style.textShadow = '0 2px 4px rgba(59, 130, 246, 0.3)';
+      userAmount.textContent = this.formatCurrency(userContribution.amount);
+      
+      const userStats = document.createElement('div');
+      userStats.style.display = 'flex';
+      userStats.style.justifyContent = 'space-between';
+      userStats.style.alignItems = 'center';
+      
+      const paymentCount = document.createElement('span');
+      paymentCount.style.fontSize = '13px';
+      paymentCount.style.color = '#cbd5e1';
+      paymentCount.textContent = `${userContribution.count} payment${userContribution.count !== 1 ? 's' : ''}`;
+      
+      // Calculate user's percentage of total if goal exists
+      let userPercentage = '';
+      if (offering.targetGoal && offering.targetGoal > 0) {
+        const userPercent = (userContribution.amount / offering.targetGoal) * 100;
+        userPercentage = `${userPercent.toFixed(1)}% of goal`;
+      }
+      
+      const userPercentageSpan = document.createElement('span');
+      userPercentageSpan.style.fontSize = '13px';
+      userPercentageSpan.style.color = '#3b82f6';
+      userPercentageSpan.style.fontWeight = '600';
+      userPercentageSpan.textContent = userPercentage;
+      
+      userStats.appendChild(paymentCount);
+      if (userPercentage) {
+        userStats.appendChild(userPercentageSpan);
+      }
+      
+      userContent.appendChild(userAmount);
+      userContent.appendChild(userStats);
+    } else {
+      // User hasn't contributed yet
+      const noContributionText = document.createElement('div');
+      noContributionText.style.textAlign = 'center';
+      noContributionText.style.color = '#94a3b8';
+      noContributionText.style.fontSize = '14px';
+      noContributionText.style.fontStyle = 'italic';
+      noContributionText.style.padding = '8px 0';
+      noContributionText.textContent = 'You haven\'t contributed to this offering yet';
+      
+      userContent.appendChild(noContributionText);
+    }
+    
+    userContributionSection.appendChild(userHeader);
+    userContributionSection.appendChild(userContent);
+    
+    offeringBody.appendChild(userContributionSection);
     
     // Custom fields if available
     if (offering.customFields) {
@@ -1753,7 +2022,11 @@ export class DashboardView {
       }
     }
     
-    // Action button
+    // Action button (moved to bottom)
+    const actionContainer = document.createElement('div');
+    actionContainer.style.marginTop = 'auto';
+    actionContainer.style.paddingTop = '16px';
+    
     const actionButton = document.createElement('a');
     actionButton.href = `/make-payment?type=${offering.offeringType}`;
     actionButton.textContent = 'Contribute Now';
@@ -1763,10 +2036,11 @@ export class DashboardView {
     actionButton.style.padding = '12px 16px';
     actionButton.style.background = `linear-gradient(135deg, ${statusColor}30, ${statusColor}15)`;
     actionButton.style.color = '#ffffff';
-    actionButton.style.marginTop = '16px';
     actionButton.style.textAlign = 'center';
+    actionButton.style.textDecoration = 'none';
     
-    offeringBody.appendChild(actionButton);
+    actionContainer.appendChild(actionButton);
+    offeringBody.appendChild(actionContainer);
     
     // Assemble the card
     offeringCard.appendChild(offeringHeader);
@@ -1911,7 +2185,7 @@ export class DashboardView {
     
     // Export button
     const exportButton = document.createElement('button');
-    exportButton.textContent = 'Export PDF';
+    exportButton.textContent = 'Export Report';
     exportButton.className = 'futuristic-button';
     exportButton.style.padding = '8px 16px';
     exportButton.style.background = 'linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(59, 130, 246, 0.1))';
@@ -1932,7 +2206,7 @@ export class DashboardView {
       }
       
       if (displayedPayments && displayedPayments.length > 0) {
-        this.generateContributionsPDF(displayedPayments, `${tabText} Payment History`);
+        this.generateContributionsReport(displayedPayments, `${tabText} Payment History`);
       } else {
         this.showNotification('No payments to export', 'warning');
       }
@@ -2207,7 +2481,7 @@ export class DashboardView {
         amountCell.style.fontWeight = '500';
         amountCell.style.textAlign = 'right';
         
-        amountCell.textContent = `KES ${parseFloat(payment.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        amountCell.textContent = this.formatCurrency(payment.amount);
         
         // Status cell
         const statusCell = document.createElement('td');
@@ -2261,7 +2535,7 @@ export class DashboardView {
           
           // Download button
           const downloadButton = document.createElement('button');
-          downloadButton.textContent = 'PDF';
+          downloadButton.textContent = 'Receipt';
           downloadButton.className = 'action-button';
           downloadButton.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
           downloadButton.style.color = '#10b981';
@@ -2270,20 +2544,8 @@ export class DashboardView {
             this.downloadReceipt(payment);
           });
           
-          // SMS button
-          const smsButton = document.createElement('button');
-          smsButton.textContent = 'SMS';
-          smsButton.className = 'action-button';
-          smsButton.style.backgroundColor = 'rgba(139, 92, 246, 0.2)';
-          smsButton.style.color = '#8b5cf6';
-          
-          smsButton.addEventListener('click', () => {
-            this.requestReceiptSMS(payment.id);
-          });
-          
           actionsContainer.appendChild(viewButton);
           actionsContainer.appendChild(downloadButton);
-          actionsContainer.appendChild(smsButton);
         } else {
           // Just view details for non-completed payments
           const viewButton = document.createElement('button');
@@ -2480,7 +2742,7 @@ export class DashboardView {
         
         // Download button
         const downloadButton = document.createElement('button');
-        downloadButton.textContent = 'PDF';
+        downloadButton.textContent = 'Receipt';
         downloadButton.className = 'action-button';
         downloadButton.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
         downloadButton.style.color = '#10b981';
@@ -2489,20 +2751,8 @@ export class DashboardView {
           this.downloadReceipt(payment);
         });
         
-        // SMS button
-        const smsButton = document.createElement('button');
-        smsButton.textContent = 'SMS';
-        smsButton.className = 'action-button';
-        smsButton.style.backgroundColor = 'rgba(139, 92, 246, 0.2)';
-        smsButton.style.color = '#8b5cf6';
-        
-        smsButton.addEventListener('click', () => {
-          this.requestReceiptSMS(payment.id);
-        });
-        
         cardActions.appendChild(viewButton);
         cardActions.appendChild(downloadButton);
-        cardActions.appendChild(smsButton);
       } else {
         // Just view details for non-completed payments
         const viewButton = document.createElement('button');
@@ -2618,11 +2868,11 @@ export class DashboardView {
     if (payment.id && !payment.receiptData) {
       try {
         const receiptInfo = await this.queueApiRequest(() => 
-          this.apiService.get(`/receipt/${payment.id}`)
+          this.apiService.getReceiptById(payment.id)
         );
         
-        if (receiptInfo && receiptInfo.receipt) {
-          payment.receiptData = receiptInfo.receipt.receiptData;
+        if (receiptInfo && receiptInfo.receiptData) {
+          payment.receiptData = receiptInfo.receiptData;
         }
       } catch (error) {
         // Continue with available data
@@ -2903,9 +3153,9 @@ export class DashboardView {
     modalFooter.style.gap = '10px';
     
     if (payment.status === 'COMPLETED') {
-      // Download PDF button
+      // Download Receipt button
       const downloadButton = document.createElement('button');
-      downloadButton.textContent = 'Download PDF';
+      downloadButton.textContent = 'Download Receipt';
       downloadButton.className = 'futuristic-button';
       downloadButton.style.background = 'linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(16, 185, 129, 0.1))';
       
@@ -2913,18 +3163,7 @@ export class DashboardView {
         this.downloadReceipt(payment);
       });
       
-      // Request SMS button
-      const smsButton = document.createElement('button');
-      smsButton.textContent = 'Request SMS Receipt';
-      smsButton.className = 'futuristic-button';
-      smsButton.style.background = 'linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(139, 92, 246, 0.1))';
-      
-      smsButton.addEventListener('click', () => {
-        this.requestReceiptSMS(payment.id);
-      });
-      
       modalFooter.appendChild(downloadButton);
-      modalFooter.appendChild(smsButton);
     }
     
     // Close button
@@ -2977,32 +3216,284 @@ export class DashboardView {
           return;
         } catch (serverError) {
           // Continue with client-side generation
+          console.log('Server download failed, generating client-side receipt');
         }
       }
       
-      // Client-side PDF generation fallback
-      await this.generatePaymentPDF(payment);
+      // Client-side HTML report generation
+      this.generatePaymentReport(payment);
       
     } catch (error) {
+      console.error('Receipt download error:', error);
       this.showNotification('Failed to download receipt', 'error');
     }
   }
-  
-  async requestReceiptSMS(paymentId) {
+
+  generatePaymentReport(payment) {
     try {
-      this.showNotification('Requesting SMS receipt...', 'info');
+      const reportContent = this.createPaymentReceiptHTML(payment);
       
-      const response = await this.queueApiRequest(() =>
-        this.apiService.post(`/receipt/${paymentId}/sms`)
-      );
+      // Open in new window for printing/saving
+      const printWindow = window.open('', '_blank');
+      printWindow.document.write(reportContent);
+      printWindow.document.close();
       
-      if (response && response.success) {
-        this.showNotification('SMS receipt sent successfully', 'success');
-      } else {
-        throw new Error('Failed to send SMS receipt');
-      }
+      // Auto-focus and prompt for print
+      setTimeout(() => {
+        printWindow.focus();
+        printWindow.print();
+      }, 500);
+      
+      this.showNotification('Receipt generated successfully! Use your browser to save as PDF.', 'success');
     } catch (error) {
-      this.showNotification('Failed to send SMS receipt', 'error');
+      console.error('Receipt generation error:', error);
+      this.showNotification('Failed to generate receipt. Please try again.', 'error');
+    }
+  }
+
+  createPaymentReceiptHTML(payment) {
+    const paymentType = payment.paymentType && payment.paymentType.startsWith('SPECIAL_') 
+      ? this.formatSpecialOfferingName(payment.paymentType)
+      : this.formatPaymentType(payment.paymentType || 'Unknown');
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <title>Payment Receipt - ${payment.receiptNumber || payment.id}</title>
+          <style>
+              body { 
+                  font-family: Arial, sans-serif; 
+                  margin: 20px; 
+                  color: #333;
+                  background: #fff;
+                  line-height: 1.6;
+              }
+              .header { 
+                  text-align: center; 
+                  margin-bottom: 30px; 
+                  border-bottom: 3px solid #1a365d;
+                  padding-bottom: 20px;
+              }
+              .header h1 { 
+                  color: #1a365d; 
+                  margin: 0;
+                  font-size: 28px;
+              }
+              .header h2 { 
+                  color: #2d3748; 
+                  margin: 5px 0;
+                  font-size: 20px;
+              }
+              .receipt-info {
+                  background: #f7fafc;
+                  padding: 15px;
+                  border-radius: 8px;
+                  margin: 20px 0;
+                  display: grid;
+                  grid-template-columns: 1fr 1fr;
+                  gap: 10px;
+              }
+              .amount-highlight { 
+                  font-size: 24px; 
+                  font-weight: bold; 
+                  color: #1a365d;
+                  text-align: center;
+                  margin: 20px 0;
+                  padding: 20px;
+                  background: #e6fffa;
+                  border-radius: 8px;
+                  border: 2px solid #38b2ac;
+              }
+              .details-section {
+                  margin: 20px 0;
+              }
+              .details-section h3 {
+                  color: #1a365d;
+                  border-bottom: 2px solid #e2e8f0;
+                  padding-bottom: 5px;
+              }
+              .detail-row {
+                  display: flex;
+                  justify-content: space-between;
+                  padding: 8px 0;
+                  border-bottom: 1px solid #e2e8f0;
+              }
+              .detail-label {
+                  font-weight: bold;
+                  color: #4a5568;
+              }
+              .detail-value {
+                  color: #1a202c;
+              }
+              .status-badge {
+                  display: inline-block;
+                  padding: 5px 15px;
+                  border-radius: 20px;
+                  font-weight: bold;
+                  font-size: 14px;
+              }
+              .status-completed {
+                  background: #c6f6d5;
+                  color: #22543d;
+              }
+              .status-pending {
+                  background: #fefcbf;
+                  color: #744210;
+              }
+              .status-failed {
+                  background: #fed7d7;
+                  color: #742a2a;
+              }
+              .footer {
+                  margin-top: 40px;
+                  text-align: center;
+                  color: #666;
+                  font-size: 12px;
+                  border-top: 2px solid #e2e8f0;
+                  padding-top: 20px;
+              }
+              .signature-area {
+                  margin-top: 40px;
+                  display: flex;
+                  justify-content: space-between;
+              }
+              .signature-box {
+                  text-align: center;
+                  width: 200px;
+              }
+              .signature-line {
+                  border-top: 1px solid #333;
+                  margin-top: 30px;
+                  padding-top: 5px;
+                  font-size: 12px;
+              }
+              @media print {
+                  body { margin: 0; }
+                  .no-print { display: none; }
+              }
+          </style>
+      </head>
+      <body>
+          <div class="header">
+              <h1>TASSIAC CHURCH</h1>
+              <h2>OFFICIAL PAYMENT RECEIPT</h2>
+          </div>
+          
+          <div class="receipt-info">
+              <div><strong>Receipt Number:</strong> ${payment.receiptNumber || payment.id || 'N/A'}</div>
+              <div><strong>Date:</strong> ${new Date(payment.paymentDate).toLocaleDateString()}</div>
+              <div><strong>Time:</strong> ${new Date(payment.paymentDate).toLocaleTimeString()}</div>
+              <div><strong>Status:</strong> 
+                  <span class="status-badge status-${payment.status?.toLowerCase() || 'unknown'}">
+                      ${payment.status || 'Unknown'}
+                  </span>
+              </div>
+          </div>
+          
+          <div class="amount-highlight">
+              Amount: ${this.formatCurrency(payment.amount)}
+          </div>
+          
+          <div class="details-section">
+              <h3>Contributor Information</h3>
+              <div class="detail-row">
+                  <span class="detail-label">Name:</span>
+                  <span class="detail-value">${this.user?.fullName || 'Unknown'}</span>
+              </div>
+              <div class="detail-row">
+                  <span class="detail-label">Phone:</span>
+                  <span class="detail-value">${this.user?.phone || 'N/A'}</span>
+              </div>
+              ${this.user?.email ? `
+              <div class="detail-row">
+                  <span class="detail-label">Email:</span>
+                  <span class="detail-value">${this.user.email}</span>
+              </div>` : ''}
+          </div>
+          
+          <div class="details-section">
+              <h3>Payment Information</h3>
+              <div class="detail-row">
+                  <span class="detail-label">Payment Type:</span>
+                  <span class="detail-value">${paymentType}</span>
+              </div>
+              <div class="detail-row">
+                  <span class="detail-label">Payment Method:</span>
+                  <span class="detail-value">${payment.paymentMethod || 'N/A'}</span>
+              </div>
+              ${payment.transactionReference || payment.reference ? `
+              <div class="detail-row">
+                  <span class="detail-label">Transaction Reference:</span>
+                  <span class="detail-value">${payment.transactionReference || payment.reference}</span>
+              </div>` : ''}
+              ${payment.description ? `
+              <div class="detail-row">
+                  <span class="detail-label">Description:</span>
+                  <span class="detail-value">${payment.description}</span>
+              </div>` : ''}
+          </div>
+          
+          ${payment.paymentType === 'TITHE' && payment.titheDistribution ? this.createTitheDistributionHTML(payment.titheDistribution) : ''}
+          
+          <div class="signature-area">
+              <div class="signature-box">
+                  <div class="signature-line">Authorized Signature</div>
+              </div>
+              <div class="signature-box">
+                  <div class="signature-line">Date</div>
+              </div>
+          </div>
+          
+          <div class="footer">
+              <p><strong>TASSIAC CHURCH</strong></p>
+              <p>Thank you for your contribution. This is an official receipt.</p>
+              <p>Please keep this receipt for your records.</p>
+              <p>Generated on: ${new Date().toLocaleString()}</p>
+          </div>
+      </body>
+      </html>
+    `;
+  }
+
+  createTitheDistributionHTML(titheDistribution) {
+    try {
+      const distribution = typeof titheDistribution === 'string'
+        ? JSON.parse(titheDistribution)
+        : titheDistribution;
+
+      if (!distribution) return '';
+
+      let html = `
+        <div class="details-section">
+            <h3>Tithe Distribution</h3>
+      `;
+
+      Object.keys(distribution).forEach(key => {
+        if (key !== 'otherSpecification' && distribution[key] > 0) {
+          html += `
+            <div class="detail-row">
+                <span class="detail-label">${this.formatTitheCategory(key)}:</span>
+                <span class="detail-value">${this.formatCurrency(distribution[key])}</span>
+            </div>
+          `;
+        }
+      });
+
+      // Add other specification if applicable
+      if (distribution.other > 0 && distribution.otherSpecification) {
+        html += `
+          <div class="detail-row">
+              <span class="detail-label">Other (${distribution.otherSpecification}):</span>
+              <span class="detail-value">${this.formatCurrency(distribution.other)}</span>
+          </div>
+        `;
+      }
+
+      html += '</div>';
+      return html;
+    } catch (error) {
+      return '';
     }
   }
   
@@ -3047,6 +3538,23 @@ export class DashboardView {
           const offeringCard = this.createOfferingCard(offering, index);
           specialOfferingsGrid.appendChild(offeringCard);
         });
+      }
+      
+      // Update toggle button visibility and text
+      const toggleBtn = document.getElementById('toggle-offerings-btn');
+      if (toggleBtn && this.allSpecialOfferings) {
+        if (this.allSpecialOfferings.length <= 3) {
+          // Hide button if 3 or fewer offerings
+          toggleBtn.style.display = 'none';
+        } else {
+          // Show button and update text
+          toggleBtn.style.display = 'flex';
+          const arrowIcon = toggleBtn.querySelector('span');
+          toggleBtn.childNodes[0].textContent = this.showingAllOfferings ? 'Show Less' : `See All (${this.allSpecialOfferings.length})`;
+          if (arrowIcon) {
+            arrowIcon.textContent = this.showingAllOfferings ? '↑' : '↓';
+          }
+        }
       }
     }
   }
@@ -3450,6 +3958,7 @@ export class DashboardView {
            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
            .join(' ');
   }
+  
   getSpecialOfferingLabel(name) {
     const labels = {
       'BUILDING': 'Building Fund',
@@ -3508,6 +4017,7 @@ export class DashboardView {
 
     return `${r}, ${g}, ${b}`;
   }
+  
   validatePaymentType(type) {
     if (!type) return false;
     
@@ -3537,6 +4047,7 @@ export class DashboardView {
     
     return validTypes.includes(type);
   }
+  
   // Add global styles
   addGlobalStyles() {
     if (!document.getElementById('dashboard-global-styles')) {
@@ -3921,128 +4432,6 @@ export class DashboardView {
         document.body.appendChild(lensFlare);
       }
     });
-  }
-  
-  generatePaymentPDF(payment) {
-    // Client-side PDF generation
-    try {
-      const { jsPDF } = window.jspdf;
-      
-      if (!jsPDF) {
-        throw new Error('jsPDF not loaded');
-      }
-      
-      // Create PDF document
-      const doc = new window.jspdf.jsPDF();
-      
-      // Add title
-      doc.setFontSize(22);
-      doc.setTextColor(0, 0, 0);
-      doc.text('TASSIAC CHURCH', 105, 20, { align: 'center' });
-      
-      doc.setFontSize(16);
-      doc.text('OFFICIAL RECEIPT', 105, 30, { align: 'center' });
-      
-      // Add receipt number
-      doc.setFontSize(12);
-      doc.text(`Receipt Number: ${payment.receiptNumber || 'N/A'}`, 20, 45);
-      doc.text(`Date: ${new Date(payment.paymentDate).toLocaleDateString()}`, 20, 52);
-      
-      // Add line
-      doc.setDrawColor(200, 200, 200);
-      doc.line(20, 57, 190, 57);
-      
-      // User information
-      doc.setFontSize(14);
-      doc.text('Contributor Information', 20, 67);
-      
-      doc.setFontSize(12);
-      doc.text(`Name: ${this.user.fullName}`, 20, 77);
-      doc.text(`Phone: ${this.user.phone}`, 20, 84);
-      if (this.user.email) {
-        doc.text(`Email: ${this.user.email}`, 20, 91);
-      }
-      
-      // Payment details
-      doc.setFontSize(14);
-      doc.text('Payment Details', 20, 105);
-      
-      doc.setFontSize(12);
-      doc.text(`Amount: ${this.formatCurrency(payment.amount)}`, 20, 115);
-      
-      const paymentType = payment.paymentType && payment.paymentType.startsWith('SPECIAL_') 
-        ? this.formatSpecialOfferingName(payment.paymentType)
-        : this.formatPaymentType(payment.paymentType || 'Unknown');
-      
-      doc.text(`Payment Type: ${paymentType}`, 20, 122);
-      doc.text(`Payment Method: ${payment.paymentMethod || 'N/A'}`, 20, 129);
-      doc.text(`Status: ${payment.status || 'N/A'}`, 20, 136);
-      
-      if (payment.description) {
-        doc.text(`Description: ${payment.description}`, 20, 143);
-      }
-      
-      // Add transaction reference if available
-      if (payment.transactionReference || payment.reference) {
-        doc.text(`Transaction Reference: ${payment.transactionReference || payment.reference}`, 20, 150);
-      }
-      
-      // Add tithe distribution if applicable
-      if (payment.paymentType === 'TITHE' && payment.titheDistribution) {
-        try {
-          const distribution = typeof payment.titheDistribution === 'string'
-            ? JSON.parse(payment.titheDistribution)
-            : payment.titheDistribution;
-            
-          if (distribution) {
-            doc.setFontSize(14);
-            doc.text('Tithe Distribution', 20, 165);
-            
-            doc.setFontSize(12);
-            let yPos = 175;
-            
-            Object.keys(distribution).forEach(key => {
-              if (key !== 'otherSpecification' && distribution[key] > 0) {
-                doc.text(`${this.formatTitheCategory(key)}: ${this.formatCurrency(distribution[key])}`, 20, yPos);
-                yPos += 7;
-              }
-            });
-            
-            // Add other specification if applicable
-            if (distribution.other > 0 && distribution.otherSpecification) {
-              doc.text(`Other (${distribution.otherSpecification}): ${this.formatCurrency(distribution.other)}`, 20, yPos);
-            }
-          }
-        } catch (error) {
-          // Silently continue on error
-        }
-      }
-      
-      // Add footer
-      doc.setFontSize(10);
-      doc.text('Thank you for your contribution to TASSIAC Church.', 105, 270, { align: 'center' });
-      doc.text('This is an official receipt. Please keep it for your records.', 105, 275, { align: 'center' });
-      
-      // Add signature line
-      doc.line(20, 240, 70, 240);
-      doc.text('Authorized Signature', 45, 245, { align: 'center' });
-      
-      // Save the PDF
-      const fileName = `receipt_${payment.receiptNumber || 'payment'}_${new Date().toISOString().slice(0, 10)}.pdf`;
-      doc.save(fileName);
-      
-      this.showNotification('Receipt generated successfully', 'success');
-      return true;
-    } catch (error) {
-      // Try to load jsPDF if it failed
-      if (!window.jspdf) {
-        this.loadJsPDF().then(() => this.generatePaymentPDF(payment));
-      } else {
-        this.showNotification('Failed to generate receipt', 'error');
-      }
-      
-      return false;
-    }
   }
   
   // Destroy method for cleanup
