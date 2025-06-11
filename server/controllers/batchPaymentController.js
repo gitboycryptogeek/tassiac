@@ -45,7 +45,7 @@ const sendResponse = (res, statusCode, success, data, message, errorDetails = nu
 
 const isViewOnlyAdmin = (user) => {
   if (!user || !user.isAdmin) return false;
-  const viewOnlyUsernames = ['admin3', 'admin4', 'admin5'];
+  const viewOnlyUsernames = (process.env.VIEW_ONLY_ADMIN_USERNAMES || 'admin3,admin4,admin5').split(',');
   return viewOnlyUsernames.includes(user.username);
 };
 
@@ -89,6 +89,19 @@ exports.createBatchPayment = async (req, res) => {
       return sendResponse(res, 400, false, null, 'Payments array is required and must not be empty.', { code: 'MISSING_PAYMENTS' });
     }
 
+    // Validate all payments before processing
+    for (let i = 0; i < payments.length; i++) {
+      const payment = payments[i];
+      
+      if (!payment.userId || !payment.amount || !payment.paymentType) {
+        return sendResponse(res, 400, false, null, `Payment ${i + 1}: Missing required fields (userId, amount, paymentType).`, { code: 'INVALID_PAYMENT_DATA' });
+      }
+
+      if (parseFloat(payment.amount) <= 0) {
+        return sendResponse(res, 400, false, null, `Payment ${i + 1}: Amount must be positive.`, { code: 'INVALID_AMOUNT' });
+      }
+    }
+
     // Generate unique batch reference
     const batchReference = `BATCH-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
@@ -123,14 +136,29 @@ exports.createBatchPayment = async (req, res) => {
         let processedSpecialOfferingId = paymentData.specialOfferingId;
         
         if (!['TITHE', 'OFFERING', 'DONATION', 'EXPENSE'].includes(paymentData.paymentType)) {
-          processedSpecialOfferingId = parseInt(paymentData.paymentType);
-          processedPaymentType = 'SPECIAL_OFFERING_CONTRIBUTION';
+          if (/^\d+$/.test(paymentData.paymentType)) {
+            processedSpecialOfferingId = parseInt(paymentData.paymentType);
+            processedPaymentType = 'SPECIAL_OFFERING_CONTRIBUTION';
+          }
         }
 
         if (processedPaymentType === 'SPECIAL_OFFERING_CONTRIBUTION' && processedSpecialOfferingId) {
           const offering = await tx.specialOffering.findUnique({ where: { id: processedSpecialOfferingId } });
           if (!offering || !offering.isActive) {
             throw new Error(`Special offering with ID ${processedSpecialOfferingId} not found or not active`);
+          }
+        }
+
+        // Validate tithe distribution if provided
+        let validatedTitheDistribution = null;
+        if (processedPaymentType === 'TITHE' && paymentData.titheDistributionSDA) {
+          const sdaCategories = ['campMeetingExpenses', 'welfare', 'thanksgiving', 'stationFund', 'mediaMinistry'];
+          validatedTitheDistribution = {};
+          
+          for (const key of sdaCategories) {
+            if (paymentData.titheDistributionSDA.hasOwnProperty(key)) {
+              validatedTitheDistribution[key] = Boolean(paymentData.titheDistributionSDA[key]);
+            }
           }
         }
 
@@ -147,7 +175,7 @@ exports.createBatchPayment = async (req, res) => {
             isExpense: !!paymentData.isExpense,
             department: paymentData.department || null,
             specialOfferingId: processedSpecialOfferingId || null,
-            titheDistributionSDA: paymentData.titheDistributionSDA || null,
+            titheDistributionSDA: validatedTitheDistribution,
             batchPaymentId: batchPayment.id,
             isBatchProcessed: false,
             bankDepositStatus: 'PENDING',
@@ -162,6 +190,9 @@ exports.createBatchPayment = async (req, res) => {
       }
 
       return { batchPayment, payments: createdPayments };
+    }, {
+      maxWait: 20000,
+      timeout: 60000,
     });
 
     await logAdminActivity('CREATE_BATCH_PAYMENT', result.batchPayment.id, req.user.id, { 
@@ -172,7 +203,10 @@ exports.createBatchPayment = async (req, res) => {
 
     debugLog(`Batch payment created: ${batchReference} with ${result.payments.length} payments`);
     return sendResponse(res, 201, true, {
-      batchPayment: result.batchPayment,
+      batchPayment: {
+        ...result.batchPayment,
+        totalAmount: parseFloat(result.batchPayment.totalAmount.toString())
+      },
       paymentsCreated: result.payments.length,
       batchReference,
     }, `Batch payment created successfully with ${result.payments.length} payments. Ready for KCB deposit.`);
@@ -228,7 +262,7 @@ exports.processBatchDeposit = async (req, res) => {
     try {
       const kcbResponse = await initiateKcbPayment(
         batchPayment.batchReference,
-        batchPayment.totalAmount,
+        parseFloat(batchPayment.totalAmount.toString()),
         userPhoneForPayment,
         description
       );
@@ -247,13 +281,16 @@ exports.processBatchDeposit = async (req, res) => {
 
       await logAdminActivity('PROCESS_BATCH_DEPOSIT', batchPayment.id, req.user.id, { 
         batchReference: batchPayment.batchReference,
-        totalAmount: batchPayment.totalAmount,
+        totalAmount: parseFloat(batchPayment.totalAmount.toString()),
         kcbReference: kcbResponse.reference
       });
 
       debugLog(`Batch deposit initiated: ${batchPayment.batchReference}, KCB Reference: ${kcbResponse.reference}`);
       return sendResponse(res, 200, true, {
-        batchPayment: updatedBatch,
+        batchPayment: {
+          ...updatedBatch,
+          totalAmount: parseFloat(updatedBatch.totalAmount.toString())
+        },
         kcbResponse: {
           reference: kcbResponse.reference,
           message: kcbResponse.message,
@@ -329,7 +366,7 @@ exports.completeBatchPayment = async (req, res) => {
             receiptDate: new Date(),
             receiptData: {
               paymentId: payment.id,
-              amount: payment.amount,
+              amount: parseFloat(payment.amount.toString()),
               paymentType: payment.paymentType,
               userName: payment.user.fullName,
               paymentDate: payment.paymentDate,
@@ -341,7 +378,10 @@ exports.completeBatchPayment = async (req, res) => {
           },
         });
 
-        completedPayments.push(updatedPayment);
+        completedPayments.push({
+          ...updatedPayment,
+          amount: parseFloat(updatedPayment.amount.toString())
+        });
       }
 
       // Update batch payment status
@@ -354,7 +394,16 @@ exports.completeBatchPayment = async (req, res) => {
         },
       });
 
-      return { batchPayment: finalBatchPayment, completedPayments };
+      return { 
+        batchPayment: {
+          ...finalBatchPayment,
+          totalAmount: parseFloat(finalBatchPayment.totalAmount.toString())
+        }, 
+        completedPayments 
+      };
+    }, {
+      maxWait: 30000,
+      timeout: 120000,
     });
 
     await logAdminActivity('COMPLETE_BATCH_PAYMENT', result.batchPayment.id, req.user.id, { 
@@ -499,8 +548,8 @@ exports.cancelBatchPayment = async (req, res) => {
         where: { batchPaymentId: parseInt(batchId) },
         data: {
           status: 'CANCELLED',
-          description: { 
-            set: sql`CONCAT(description, ' - CANCELLED: ', ${reason || 'Batch cancelled by admin'})` 
+          description: {
+            set: `${req.body.description || ''} - CANCELLED: ${reason || 'Batch cancelled by admin'}`.substring(0, 191)
           },
         },
       });
@@ -514,7 +563,13 @@ exports.cancelBatchPayment = async (req, res) => {
         },
       });
 
-      return { batchPayment: cancelledBatch, cancelledPayments: batchPayment.payments.length };
+      return { 
+        batchPayment: {
+          ...cancelledBatch,
+          totalAmount: parseFloat(cancelledBatch.totalAmount.toString())
+        }, 
+        cancelledPayments: batchPayment.payments.length 
+      };
     });
 
     await logAdminActivity('CANCEL_BATCH_PAYMENT', result.batchPayment.id, req.user.id, { 

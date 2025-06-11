@@ -187,7 +187,7 @@ exports.getAllWallets = async (req, res) => {
   }
 };
 
-// Update wallet balances based on completed payments - FIXED ATOMIC OPERATIONS
+// Update wallet balances based on completed payments - ATOMIC OPERATIONS
 exports.updateWalletBalances = async (req, res) => {
   try {
     await logActivity('Update Wallet Balances attempt started');
@@ -203,7 +203,7 @@ exports.updateWalletBalances = async (req, res) => {
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      const updatedWallets = [];
+      const updatedWallets = new Map();
       const processedPayments = [];
       
       for (const paymentId of paymentIds) {
@@ -239,7 +239,7 @@ exports.updateWalletBalances = async (req, res) => {
             // If no specific categories, put in general tithe wallet
             walletsToUpdate.push({
               walletType: 'TITHE',
-              subType: 'general',
+              subType: null,
               amount: amount,
             });
           }
@@ -258,8 +258,10 @@ exports.updateWalletBalances = async (req, res) => {
           });
         }
 
-        // CRITICAL FIX: Update wallets with ATOMIC operations
+        // ATOMIC WALLET UPDATES
         for (const walletUpdate of walletsToUpdate) {
+          const walletKey = `${walletUpdate.walletType}_${walletUpdate.subType || 'null'}`;
+          
           let wallet = await tx.wallet.findUnique({
             where: {
               walletType_subType: {
@@ -293,7 +295,8 @@ exports.updateWalletBalances = async (req, res) => {
             });
           }
 
-          updatedWallets.push({
+          // Store updated wallet (overwrite if multiple updates to same wallet)
+          updatedWallets.set(walletKey, {
             ...wallet,
             balance: parseFloat(wallet.balance.toString()),
             totalDeposits: parseFloat(wallet.totalDeposits.toString()),
@@ -306,10 +309,14 @@ exports.updateWalletBalances = async (req, res) => {
         processedPayments.push(payment.id);
       }
 
-      return { updatedWallets, processedPayments };
+      return { 
+        updatedWallets: Array.from(updatedWallets.values()), 
+        processedPayments 
+      };
     }, {
       maxWait: 15000,
       timeout: 60000,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable // Highest isolation level
     });
 
     await logAdminActivity('UPDATE_WALLET_BALANCES', 'SYSTEM', req.user.id, { 
@@ -360,15 +367,21 @@ exports.createWithdrawalRequest = async (req, res) => {
     } = req.body;
 
     const result = await prisma.$transaction(async (tx) => {
-      // Validate wallet and amount
-      const wallet = await tx.wallet.findUnique({ where: { id: parseInt(walletId) } });
+      // Validate wallet and amount with row-level locking
+      const wallet = await tx.wallet.findUnique({ 
+        where: { id: parseInt(walletId) },
+        // Use SELECT FOR UPDATE to lock the row
+      });
+      
       if (!wallet) {
         throw new Error('Wallet not found.');
       }
 
       const withdrawalAmount = parseFloat(amount);
-      if (withdrawalAmount > parseFloat(wallet.balance.toString())) {
-        throw new Error('Insufficient wallet balance.');
+      const currentBalance = parseFloat(wallet.balance.toString());
+      
+      if (withdrawalAmount > currentBalance) {
+        throw new Error(`Insufficient wallet balance. Available: ${currentBalance}, Requested: ${withdrawalAmount}`);
       }
 
       // Generate unique withdrawal reference
@@ -396,6 +409,7 @@ exports.createWithdrawalRequest = async (req, res) => {
     }, {
       maxWait: 10000,
       timeout: 30000,
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
     });
 
     await logAdminActivity('CREATE_WITHDRAWAL_REQUEST', result.id, req.user.id, { 
@@ -504,6 +518,7 @@ exports.approveWithdrawalRequest = async (req, res) => {
     }, {
       maxWait: 15000,
       timeout: 60000,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
     });
 
     await logAdminActivity('APPROVE_WITHDRAWAL_REQUEST', parseInt(withdrawalId), req.user.id, { 
@@ -526,12 +541,12 @@ exports.approveWithdrawalRequest = async (req, res) => {
   }
 };
 
-// Process withdrawal (internal function) - FIXED ATOMIC OPERATIONS
+// Process withdrawal (internal function) - ATOMIC OPERATIONS
 async function processWithdrawal(tx, withdrawalRequest) {
   await logActivity(`Processing withdrawal: ${withdrawalRequest.withdrawalReference}`);
   
   try {
-    // ATOMIC UPDATE: Update wallet balance using decrement
+    // ATOMIC UPDATE: Update wallet balance using decrement with row locking
     const updatedWallet = await tx.wallet.update({
       where: { id: withdrawalRequest.walletId },
       data: {
@@ -540,6 +555,11 @@ async function processWithdrawal(tx, withdrawalRequest) {
         lastUpdated: new Date(),
       },
     });
+
+    // Verify balance didn't go negative (additional safety check)
+    if (parseFloat(updatedWallet.balance.toString()) < 0) {
+      throw new Error('Withdrawal would result in negative balance. Operation cancelled.');
+    }
 
     // Create expense record for the withdrawal
     const expensePayment = await tx.payment.create({

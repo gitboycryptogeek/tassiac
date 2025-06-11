@@ -284,35 +284,50 @@ exports.getPaymentStats = async (req, res) => {
     const totalPlatformFees = platformFeesResult._sum.platformFee || new Prisma.Decimal(0);
     const netBalanceDecimal = totalRevenue.sub(totalExpenses);
 
-    // Safe monthly data query
-    const isPostgres = process.env.DATABASE_URL_PRISMA?.includes('postgres');
-    let monthlyData;
+    // Safe monthly data query using JavaScript processing
+    const elevenMonthsAgo = new Date();
+    elevenMonthsAgo.setMonth(elevenMonthsAgo.getMonth() - 11);
+    elevenMonthsAgo.setDate(1);
+    elevenMonthsAgo.setHours(0, 0, 0, 0);
 
-    if (isPostgres) {
-      monthlyData = await prisma.$queryRaw`
-        SELECT
-          TO_CHAR("paymentDate", 'YYYY-MM') as month,
-          SUM(CASE WHEN "isExpense" = FALSE THEN amount ELSE 0 END) as revenue,
-          SUM(CASE WHEN "isExpense" = TRUE THEN amount ELSE 0 END) as expenses
-        FROM "Payments"
-        WHERE status = 'COMPLETED' AND "isTemplate" = FALSE
-          AND "paymentDate" >= date_trunc('month', NOW() - INTERVAL '11 months')
-        GROUP BY month
-        ORDER BY month ASC;
-      `;
-    } else {
-      monthlyData = await prisma.$queryRaw`
-        SELECT
-          strftime('%Y-%m', "paymentDate") as month,
-          SUM(CASE WHEN "isExpense" = 0 THEN amount ELSE 0 END) as revenue,
-          SUM(CASE WHEN "isExpense" = 1 THEN amount ELSE 0 END) as expenses
-        FROM "Payments"
-        WHERE status = 'COMPLETED' AND "isTemplate" = 0
-          AND "paymentDate" >= date('now', '-12 months')
-        GROUP BY month
-        ORDER BY month ASC;
-      `;
-    }
+    const monthlyPayments = await prisma.payment.findMany({
+      where: {
+        status: 'COMPLETED',
+        isTemplate: false,
+        paymentDate: { gte: elevenMonthsAgo }
+      },
+      select: {
+        paymentDate: true,
+        amount: true,
+        isExpense: true
+      }
+    });
+
+    // Process monthly data in JavaScript
+    const monthlyDataMap = new Map();
+    
+    monthlyPayments.forEach(payment => {
+      const monthKey = payment.paymentDate.toISOString().substring(0, 7); // YYYY-MM
+      if (!monthlyDataMap.has(monthKey)) {
+        monthlyDataMap.set(monthKey, { month: monthKey, revenue: 0, expenses: 0 });
+      }
+      
+      const monthData = monthlyDataMap.get(monthKey);
+      const amount = parseFloat(payment.amount.toString());
+      
+      if (payment.isExpense) {
+        monthData.expenses += amount;
+      } else {
+        monthData.revenue += amount;
+      }
+    });
+
+    const monthlyData = Array.from(monthlyDataMap.values())
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .map(m => ({
+        ...m,
+        net: m.revenue - m.expenses
+      }));
     
     const [paymentsByType, expensesByDepartment, pendingInquiries] = await Promise.all([
       prisma.payment.groupBy({
@@ -335,12 +350,7 @@ exports.getPaymentStats = async (req, res) => {
       expenses: parseFloat(totalExpenses.toString()),
       netBalance: parseFloat(netBalanceDecimal.toString()),
       platformFees: parseFloat(totalPlatformFees.toString()),
-      monthlyData: monthlyData.map(m => ({
-        ...m, 
-        revenue: Number(m.revenue || 0), 
-        expenses: Number(m.expenses || 0), 
-        net: Number(m.revenue || 0) - Number(m.expenses || 0) 
-      })),
+      monthlyData,
       paymentsByType: paymentsByType.map(p => ({ 
         type: p.paymentType, 
         total: parseFloat((p._sum.amount || 0).toString()) 
@@ -362,7 +372,7 @@ exports.getPaymentStats = async (req, res) => {
   }
 };
 
-// Initiate a payment (KCB or M-Pesa) - FIXED RACE CONDITION
+// Initiate a payment (KCB or M-Pesa) - ENHANCED WITH ATOMIC OPERATIONS
 exports.initiatePayment = async (req, res) => {
   try {
     await logActivity('Initiate Payment attempt started');
@@ -383,7 +393,7 @@ exports.initiatePayment = async (req, res) => {
       titheDistributionSDA, 
       specialOfferingId, 
       phoneNumber,
-      paymentMethod = 'KCB'
+      paymentMethod = 'KCB' // Default to KCB as it's preferred
     } = req.body;
     
     const userId = req.user.id;
@@ -411,7 +421,7 @@ exports.initiatePayment = async (req, res) => {
       }
     }
 
-    // FIXED: Execute gateway transaction FIRST, then create payment record
+    // ATOMIC TRANSACTION: Gateway first, then database
     const result = await prisma.$transaction(async (tx) => {
       // Process special offering ID conversion
       let processedPaymentType = paymentType;
@@ -439,15 +449,22 @@ exports.initiatePayment = async (req, res) => {
         if (!offering.isActive) {
           throw new Error(`Special offering "${offering.name}" is not currently active.`);
         }
+
+        if (offering.endDate && new Date(offering.endDate) < new Date()) {
+          throw new Error(`Special offering "${offering.name}" has ended.`);
+        }
       }
 
-      // CRITICAL FIX: Initiate payment gateway FIRST
+      // Generate temporary payment reference
+      const tempReference = `TEMP_${paymentMethod}_${Date.now()}_${userId}`;
+      
+      // CRITICAL: Initiate payment gateway FIRST
       let gatewayResponse;
       const paymentDescription = description || `${processedPaymentType} payment via ${paymentMethod}`;
       
       if (paymentMethod.toUpperCase() === 'KCB') {
         gatewayResponse = await initiateKcbMpesaStkPush(
-          `TEMP_${Date.now()}`, // Temporary reference, will be updated
+          tempReference,
           paymentAmount,
           userPhoneForPayment,
           paymentDescription
@@ -455,12 +472,25 @@ exports.initiatePayment = async (req, res) => {
         await logActivity(`KCB STK push initiated. Ref: ${gatewayResponse.reference}`);
       } else if (paymentMethod.toUpperCase() === 'MPESA') {
         gatewayResponse = await initiateMpesaPayment(
-          `TEMP_${Date.now()}`,
+          tempReference,
           paymentAmount,
           userPhoneForPayment,
           paymentDescription
         );
         await logActivity(`M-Pesa STK push initiated. Ref: ${gatewayResponse.reference}`);
+      }
+
+      // Validate tithe distribution if provided
+      let validatedTitheDistribution = null;
+      if (processedPaymentType === 'TITHE' && titheDistributionSDA) {
+        const sdaCategories = ['campMeetingExpenses', 'welfare', 'thanksgiving', 'stationFund', 'mediaMinistry'];
+        validatedTitheDistribution = {};
+        
+        for (const key of sdaCategories) {
+          if (titheDistributionSDA.hasOwnProperty(key)) {
+            validatedTitheDistribution[key] = Boolean(titheDistributionSDA[key]);
+          }
+        }
       }
 
       // Only create payment record AFTER successful gateway response
@@ -480,27 +510,18 @@ exports.initiatePayment = async (req, res) => {
         transactionId: gatewayResponse.transactionId,
         kcbReference: paymentMethod.toUpperCase() === 'KCB' ? gatewayResponse.reference : null,
         bankDepositStatus: 'PENDING',
-        specialOfferingId: processedSpecialOfferingId || null
+        specialOfferingId: processedSpecialOfferingId || null,
+        titheDistributionSDA: validatedTitheDistribution
       };
-
-      // Handle tithe distribution
-      if (processedPaymentType === 'TITHE' && titheDistributionSDA) {
-        const sdaCategories = ['campMeetingExpenses', 'welfare', 'thanksgiving', 'stationFund', 'mediaMinistry'];
-        const validatedTitheDistribution = {};
-        
-        for (const key of sdaCategories) {
-          validatedTitheDistribution[key] = Boolean(titheDistributionSDA[key]);
-        }
-        paymentData.titheDistributionSDA = validatedTitheDistribution;
-      }
 
       const payment = await tx.payment.create({ data: paymentData });
       await logActivity('Payment record created after successful gateway response:', payment.id);
       
       return { payment, gatewayResponse };
     }, {
-      maxWait: 10000, // 10 seconds
-      timeout: 30000, // 30 seconds
+      maxWait: 15000, // 15 seconds
+      timeout: 45000, // 45 seconds
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
     });
 
     return sendResponse(res, 200, true,
@@ -710,6 +731,9 @@ exports.addManualPayment = async (req, res) => {
       }
 
       return createdPayment;
+    }, {
+      maxWait: 10000,
+      timeout: 30000,
     });
 
     await logAdminActivity(isExpense ? 'ADMIN_ADD_EXPENSE' : 'ADMIN_ADD_MANUAL_PAYMENT', result.id, req.user.id, { 
@@ -736,7 +760,130 @@ exports.addManualPayment = async (req, res) => {
   }
 };
 
-// M-Pesa Callback - FIXED TRANSACTION HANDLING
+// KCB Callback - ENHANCED WITH PROPER ERROR HANDLING
+exports.kcbCallback = async (req, res) => {
+  await logActivity('KCB Callback received:', JSON.stringify(req.body, null, 2));
+  
+  const callbackData = req.body;
+
+  if (!callbackData || !callbackData.transactionReference) {
+    await logActivity('Invalid KCB callback structure.');
+    return res.status(400).json({ status: 'error', message: 'Invalid callback data' });
+  }
+
+  const { transactionReference, resultCode, resultDescription, transactionId, transactionDate } = callbackData;
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.findFirst({
+        where: {
+          OR: [
+            { reference: transactionReference },
+            { transactionId: transactionId }
+          ],
+          status: 'PENDING',
+          paymentMethod: 'KCB'
+        },
+        include: { user: true }
+      });
+
+      if (!payment) {
+        await logActivity(`No matching PENDING KCB payment found for reference: ${transactionReference} or transactionId: ${transactionId}.`);
+        return { alreadyProcessedOrNotFound: true };
+      }
+
+      await logActivity(`Processing KCB callback for payment ID: ${payment.id}`);
+
+      if (String(resultCode) === "0" || String(resultCode) === "00") {
+        // Successful payment
+        const internalReceiptNumber = generateReceiptNumber(payment.paymentType);
+        const parsedTransactionDate = transactionDate ? new Date(transactionDate) : payment.paymentDate;
+        
+        // ATOMIC UPDATE: Update payment status
+        const updatedPayment = await tx.payment.update({ 
+          where: { id: payment.id }, 
+          data: {
+            status: 'COMPLETED',
+            transactionId: transactionId || payment.transactionId,
+            receiptNumber: internalReceiptNumber,
+            paymentDate: parsedTransactionDate,
+            kcbTransactionId: transactionId,
+            kcbReference: transactionReference,
+            bankDepositStatus: 'DEPOSITED',
+          }
+        });
+
+        // Create receipt atomically
+        if (payment.user) {
+          await tx.receipt.create({
+            data: {
+              receiptNumber: internalReceiptNumber,
+              paymentId: payment.id,
+              userId: payment.userId,
+              generatedById: null,
+              receiptDate: new Date(),
+              receiptData: {
+                paymentId: payment.id, 
+                amount: payment.amount, 
+                paymentType: payment.paymentType,
+                userName: payment.user.fullName, 
+                paymentDate: parsedTransactionDate,
+                description: payment.description, 
+                kcbTransactionId: transactionId,
+                titheDesignations: payment.paymentType === 'TITHE' ? payment.titheDistributionSDA : null 
+              },
+            },
+          });
+          
+          await logActivity(`Payment ${payment.id} COMPLETED. KCB Transaction: ${transactionId}. Internal Receipt: ${internalReceiptNumber}`);
+
+          // Send SMS notification (non-blocking)
+          if (payment.user.phone) {
+            setImmediate(async () => {
+              try {
+                await sendSmsNotification(
+                  payment.user.phone,
+                  `Dear ${payment.user.fullName}, your KCB payment of KES ${parseFloat(payment.amount.toString()).toFixed(2)} for ${payment.paymentType} was successful. Receipt No: ${internalReceiptNumber}. Thank you.`
+                );
+                await logActivity(`SMS notification sent for payment ${payment.id}`);
+              } catch (smsError) {
+                await logActivity(`SMS notification failed for payment ${payment.id}:`, smsError.message);
+              }
+            });
+          }
+        }
+        
+        return { success: true, paymentId: payment.id };
+      } else {
+        // Failed payment
+        await tx.payment.update({ 
+          where: { id: payment.id }, 
+          data: {
+            status: 'FAILED',
+            description: `${payment.description || ''} (KCB Callback Failed: ${resultDescription})`.substring(0, 191),
+            kcbTransactionId: transactionId,
+            kcbReference: transactionReference,
+          }
+        });
+        
+        await logActivity(`Payment ${payment.id} FAILED. Reason: ${resultDescription}`);
+        return { success: false, reason: resultDescription, paymentId: payment.id };
+      }
+    }, {
+      maxWait: 10000,
+      timeout: 30000,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+    });
+    
+  } catch (error) {
+    await logActivity('Critical error in KCB callback processing:', error.message);
+    console.error(error);
+  }
+  
+  return res.status(200).json({ status: 'success', message: 'Callback received and processed.' });
+};
+
+// M-Pesa Callback - ENHANCED WITH PROPER ERROR HANDLING
 exports.mpesaCallback = async (req, res) => {
   await logActivity('M-Pesa Callback received:', JSON.stringify(req.body, null, 2));
   
@@ -837,7 +984,7 @@ exports.mpesaCallback = async (req, res) => {
               try {
                 await sendSmsNotification(
                   payment.user.phone,
-                  `Dear ${payment.user.fullName}, your M-Pesa payment of KES ${payment.amount.toFixed(2)} for ${payment.paymentType} was successful. Receipt No: ${internalReceiptNumber}. Thank you.`
+                  `Dear ${payment.user.fullName}, your M-Pesa payment of KES ${parseFloat(payment.amount.toString()).toFixed(2)} for ${payment.paymentType} was successful. Receipt No: ${internalReceiptNumber}. Thank you.`
                 );
                 await logActivity(`SMS notification sent for payment ${payment.id}`);
               } catch (smsError) {
@@ -864,6 +1011,7 @@ exports.mpesaCallback = async (req, res) => {
     }, {
       maxWait: 10000,
       timeout: 30000,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
     });
     
   } catch (error) {
@@ -872,123 +1020,6 @@ exports.mpesaCallback = async (req, res) => {
   }
   
   return res.status(200).json({ ResultCode: 0, ResultDesc: 'Callback received and processed.' });
-};
-
-// KCB Callback - FIXED TRANSACTION HANDLING
-exports.kcbCallback = async (req, res) => {
-  await logActivity('KCB Callback received:', JSON.stringify(req.body, null, 2));
-  
-  const callbackData = req.body;
-
-  if (!callbackData || !callbackData.transactionReference) {
-    await logActivity('Invalid KCB callback structure.');
-    return res.status(400).json({ status: 'error', message: 'Invalid callback data' });
-  }
-
-  const { transactionReference, resultCode, resultDescription, transactionId, transactionDate } = callbackData;
-
-  try {
-    const result = await prisma.$transaction(async (tx) => {
-      const payment = await tx.payment.findFirst({
-        where: {
-          OR: [
-            { reference: transactionReference },
-            { transactionId: transactionId }
-          ],
-          status: 'PENDING',
-          paymentMethod: 'KCB'
-        },
-        include: { user: true }
-      });
-
-      if (!payment) {
-        await logActivity(`No matching PENDING KCB payment found for reference: ${transactionReference} or transactionId: ${transactionId}.`);
-        return { alreadyProcessedOrNotFound: true };
-      }
-
-      await logActivity(`Processing KCB callback for payment ID: ${payment.id}`);
-
-      if (String(resultCode) === "0" || String(resultCode) === "00") {
-        // Successful payment
-        const internalReceiptNumber = generateReceiptNumber(payment.paymentType);
-        const parsedTransactionDate = transactionDate ? new Date(transactionDate) : payment.paymentDate;
-        
-        // ATOMIC UPDATE: Update payment status
-        const updatedPayment = await tx.payment.update({ 
-          where: { id: payment.id }, 
-          data: {
-            status: 'COMPLETED',
-            transactionId: transactionId || payment.transactionId,
-            receiptNumber: internalReceiptNumber,
-            paymentDate: parsedTransactionDate,
-          }
-        });
-
-        // Create receipt atomically
-        if (payment.user) {
-          await tx.receipt.create({
-            data: {
-              receiptNumber: internalReceiptNumber,
-              paymentId: payment.id,
-              userId: payment.userId,
-              generatedById: null,
-              receiptDate: new Date(),
-              receiptData: {
-                paymentId: payment.id, 
-                amount: payment.amount, 
-                paymentType: payment.paymentType,
-                userName: payment.user.fullName, 
-                paymentDate: parsedTransactionDate,
-                description: payment.description, 
-                kcbTransactionId: transactionId,
-                titheDesignations: payment.paymentType === 'TITHE' ? payment.titheDistributionSDA : null 
-              },
-            },
-          });
-          
-          await logActivity(`Payment ${payment.id} COMPLETED. KCB Transaction: ${transactionId}. Internal Receipt: ${internalReceiptNumber}`);
-
-          // Send SMS notification (non-blocking)
-          if (payment.user.phone) {
-            setImmediate(async () => {
-              try {
-                await sendSmsNotification(
-                  payment.user.phone,
-                  `Dear ${payment.user.fullName}, your KCB payment of KES ${payment.amount.toFixed(2)} for ${payment.paymentType} was successful. Receipt No: ${internalReceiptNumber}. Thank you.`
-                );
-                await logActivity(`SMS notification sent for payment ${payment.id}`);
-              } catch (smsError) {
-                await logActivity(`SMS notification failed for payment ${payment.id}:`, smsError.message);
-              }
-            });
-          }
-        }
-        
-        return { success: true, paymentId: payment.id };
-      } else {
-        // Failed payment
-        await tx.payment.update({ 
-          where: { id: payment.id }, 
-          data: {
-            status: 'FAILED',
-            description: `${payment.description || ''} (KCB Callback Failed: ${resultDescription})`.substring(0, 191),
-          }
-        });
-        
-        await logActivity(`Payment ${payment.id} FAILED. Reason: ${resultDescription}`);
-        return { success: false, reason: resultDescription, paymentId: payment.id };
-      }
-    }, {
-      maxWait: 10000,
-      timeout: 30000,
-    });
-    
-  } catch (error) {
-    await logActivity('Critical error in KCB callback processing:', error.message);
-    console.error(error);
-  }
-  
-  return res.status(200).json({ status: 'success', message: 'Callback received and processed.' });
 };
 
 // Update payment status (admin only)
@@ -1078,7 +1109,7 @@ exports.deletePayment = async (req, res) => {
     });
 
     await logAdminActivity('ADMIN_DELETE_PAYMENT', numericPaymentId, req.user.id, { 
-      amount: result.amount, 
+      amount: parseFloat(result.amount.toString()), 
       type: result.paymentType 
     });
 
