@@ -1022,6 +1022,87 @@ exports.mpesaCallback = async (req, res) => {
   return res.status(200).json({ ResultCode: 0, ResultDesc: 'Callback received and processed.' });
 };
 
+/**
+ * @desc    Add new payment items to an existing batch
+ * @route   POST /api/batch-payments/:batchId/add-items
+ * @access  Private/Admin
+ */
+exports.addItemsToBatch = async (req, res) => {
+  const { batchId } = req.params;
+  const { payments } = req.body;
+
+  if (!payments || !Array.isArray(payments) || payments.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'No payment items provided to add to the batch.',
+    });
+  }
+
+  try {
+    const batch = await prisma.batchPayment.findUnique({
+      where: { id: parseInt(batchId) },
+    });
+
+    if (!batch) {
+      return res.status(404).json({
+        success: false,
+        message: 'Batch not found.',
+      });
+    }
+
+    if (batch.status !== 'PENDING') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot add items to a batch with status "${batch.status}". Only PENDING batches can be modified.`,
+      });
+    }
+
+    const createdPayments = await prisma.$transaction(
+      payments.map(item => {
+        const paymentData = {
+          ...item,
+          batchPaymentId: parseInt(batchId),
+          paymentDate: new Date(item.paymentDate),
+          status: 'COMPLETED', // Individual payments are marked as COMPLETED within the PENDING batch
+        };
+        return prisma.payment.create({ data: paymentData });
+      })
+    );
+
+    // After adding the new payments, we need to update the batch's total amount and count.
+    const batchUpdate = await prisma.batchPayment.update({
+      where: { id: parseInt(batchId) },
+      data: {
+        totalAmount: {
+          increment: createdPayments.reduce((sum, p) => sum + p.amount, 0),
+        },
+        totalCount: {
+          increment: createdPayments.length,
+        },
+      },
+      include: {
+        payments: true,
+      },
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `${createdPayments.length} items added to batch successfully.`,
+      data: {
+        batchPayment: batchUpdate,
+      },
+    });
+
+  } catch (error) {
+    console.error('Error adding items to batch:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while adding items to batch.',
+      error: error.message,
+    });
+  }
+};
+
 // Update payment status (admin only)
 exports.updatePaymentStatus = async (req, res) => {
   try {

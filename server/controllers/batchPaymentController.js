@@ -594,4 +594,120 @@ exports.cancelBatchPayment = async (req, res) => {
   }
 };
 
+/**
+ * Add new items to an existing batch payment
+ * @route POST /api/batch-payments/:batchId/add-items
+ */
+exports.addItemsToBatch = async (req, res) => {
+  try {
+    if (isViewOnlyAdmin(req.user)) {
+      return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot modify batches.", { code: 'FORBIDDEN_VIEW_ONLY' });
+    }
+
+    const { batchId } = req.params;
+    const { payments } = req.body;
+
+    if (!payments || !Array.isArray(payments) || payments.length === 0) {
+      return sendResponse(res, 400, false, null, 'No payment items provided.', { code: 'INVALID_REQUEST' });
+    }
+
+    // Find the batch and verify it's in PENDING status
+    const batch = await prisma.batchPayment.findUnique({
+      where: { id: parseInt(batchId) }
+    });
+
+    if (!batch) {
+      return sendResponse(res, 404, false, null, 'Batch not found.', { code: 'BATCH_NOT_FOUND' });
+    }
+
+    if (batch.status !== 'PENDING') {
+      return sendResponse(res, 400, false, null, 'Can only add items to PENDING batches.', { code: 'INVALID_BATCH_STATUS' });
+    }
+
+    // Calculate total amount of new payments only
+    const newTotalAmount = payments.reduce((sum, payment) => sum + parseFloat(payment.amount), 0);
+
+    // Process new payments within a transaction
+    const result = await prisma.$transaction(async (tx) => {
+      const createdPayments = [];
+
+      for (const payment of payments) {
+        // Validate payment data
+        if (!payment.userId || !payment.amount || !payment.paymentType) {
+          throw new Error('Invalid payment data');
+        }
+
+        // Handle special offering validation
+        let processedPaymentType = payment.paymentType;
+        let processedSpecialOfferingId = payment.specialOfferingId;
+        
+        if (!['TITHE', 'OFFERING', 'DONATION', 'EXPENSE'].includes(payment.paymentType)) {
+          if (/^\d+$/.test(payment.paymentType)) {
+            processedSpecialOfferingId = parseInt(payment.paymentType);
+            processedPaymentType = 'SPECIAL_OFFERING_CONTRIBUTION';
+          }
+        }
+
+        const newPayment = await tx.payment.create({
+          data: {
+            userId: parseInt(payment.userId),
+            amount: parseFloat(payment.amount),
+            paymentType: processedPaymentType,
+            description: payment.description || '',
+            paymentMethod: 'BATCH_KCB',
+            status: 'PENDING',
+            paymentDate: payment.paymentDate ? new Date(payment.paymentDate) : new Date(),
+            processedById: req.user.id,
+            batchPaymentId: parseInt(batchId),
+            titheDistributionSDA: payment.titheDistributionSDA || null,
+            specialOfferingId: processedSpecialOfferingId,
+            isExpense: !!payment.isExpense,
+            department: payment.department || null,
+            isBatchProcessed: false,
+            bankDepositStatus: 'PENDING'
+          }
+        });
+
+        createdPayments.push(newPayment);
+      }
+
+      // Update batch totals with only the new amount
+      const updatedBatch = await tx.batchPayment.update({
+        where: { id: parseInt(batchId) },
+        data: {
+          totalAmount: { increment: newTotalAmount },
+          totalCount: { increment: payments.length }
+        },
+        include: {
+          payments: true
+        }
+      });
+
+      return { batch: updatedBatch, newPayments: createdPayments };
+    });
+
+    await logAdminActivity('ADD_BATCH_ITEMS', parseInt(batchId), req.user.id, {
+      itemsAdded: payments.length,
+      addedAmount: newTotalAmount,
+      batchReference: batch.batchReference
+    });
+
+    return sendResponse(res, 200, true, {
+      batchPayment: {
+        ...result.batch,
+        totalAmount: parseFloat(result.batch.totalAmount.toString())
+      },
+      addedPayments: result.newPayments.length,
+      addedAmount: newTotalAmount
+    }, `Successfully added ${result.newPayments.length} payments totaling ${newTotalAmount} to batch.`);
+
+  } catch (error) {
+    console.error('Error adding items to batch:', error);
+    return sendResponse(res, 500, false, null, error.message || 'Server error adding items to batch.', {
+      code: 'ADD_ITEMS_ERROR',
+      details: error.message
+    });
+  }
+};
+
 module.exports = exports;

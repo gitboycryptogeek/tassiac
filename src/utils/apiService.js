@@ -152,7 +152,8 @@ export class ApiService {
       this.token = token;
       this.user = user;
       
-      localStorage.setItem('authToken', token);
+      // Use 'token' as the key to be consistent with authService.js
+      localStorage.setItem('token', token); 
       localStorage.setItem('user', JSON.stringify(user));
       
       console.log('✅ Authentication data stored successfully');
@@ -161,6 +162,18 @@ export class ApiService {
       console.error('❌ Error storing authentication data:', error);
     }
   }
+
+  /**
+ * Add new payment items to an existing batch
+ * @param {number} batchId - The ID of the batch to update
+ * @param {Object} batchData - The data containing the new payment items
+ * @returns {Promise<Object>} The updated batch payment details
+ */
+async addItemsToBatch(batchId, batchData) {
+  console.log(`➕ Adding ${batchData.payments?.length || 0} items to existing batch ID:`, batchId);
+  // Corrected line: Use this.post instead of this.request
+  return this.post(`/batch-payments/${batchId}/add-items`, batchData);
+}
 
   /**
    * Clear all authentication data from memory and localStorage

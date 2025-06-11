@@ -69,6 +69,20 @@ router.get(
   batchPaymentController.getAllBatchPayments
 );
 
+
+// ====================================================================
+// == THIS IS THE CRUCIAL ROUTE THAT NEEDS TO BE ADDED ==
+// ====================================================================
+router.route('/:batchId/add-items')
+  .post(authenticateJWT, isAdmin, (req, res, next) => {
+    // Use the controller's function if it exists; otherwise, return a not-implemented error.
+    if (typeof batchPaymentController.addItemsToBatch === 'function') {
+      return batchPaymentController.addItemsToBatch(req, res, next);
+    } else {
+      return res.status(501).json({ error: 'addItemsToBatch not implemented' });
+    }
+  });
+
 // GET specific batch payment details
 router.get(
   '/:batchId',

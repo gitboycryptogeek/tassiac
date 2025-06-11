@@ -67,6 +67,61 @@ export class AdminAddPaymentView extends BaseComponent {
     }, 100);
   }
   
+  // Batch State Persistence Methods
+  saveBatchState() {
+    try {
+      const batchState = {
+        currentBatchId: this.currentBatchId,
+        paymentBatch: this.paymentBatch,
+        timestamp: Date.now()
+      };
+      localStorage.setItem('currentBatchState', JSON.stringify(batchState));
+      console.log('✅ Batch state saved to localStorage');
+    } catch (error) {
+      console.warn('Failed to save batch state:', error);
+    }
+  }
+
+  loadBatchState() {
+    try {
+      const savedState = localStorage.getItem('currentBatchState');
+      if (!savedState) return false;
+
+      const batchState = JSON.parse(savedState);
+      
+      // Check if state is not too old (24 hours)
+      const maxAge = 24 * 60 * 60 * 1000; // 24 hours
+      if (Date.now() - batchState.timestamp > maxAge) {
+        console.log('Batch state expired, clearing...');
+        this.clearBatchState();
+        return false;
+      }
+
+      this.currentBatchId = batchState.currentBatchId;
+      this.paymentBatch = batchState.paymentBatch || [];
+      
+      console.log('✅ Batch state restored from localStorage:', {
+        batchId: this.currentBatchId,
+        itemCount: this.paymentBatch.length
+      });
+      
+      return true;
+    } catch (error) {
+      console.warn('Failed to load batch state:', error);
+      this.clearBatchState();
+      return false;
+    }
+  }
+
+  clearBatchState() {
+    try {
+      localStorage.removeItem('currentBatchState');
+      console.log('🗑️ Batch state cleared from localStorage');
+    } catch (error) {
+      console.warn('Failed to clear batch state:', error);
+    }
+  }
+  
   async initialize() {
     try {
       await this.loadUsers();
@@ -90,6 +145,56 @@ export class AdminAddPaymentView extends BaseComponent {
     } catch (error) {
       console.warn("Could not load existing batches:", error);
       this.existingBatches = [];
+    }
+
+    // Load saved batch state after all data is loaded
+    const hasRestoredState = this.loadBatchState();
+    if (hasRestoredState && this.currentBatchId) {
+      // Verify the batch still exists and is still PENDING
+      await this.validateCurrentBatch();
+    }
+  }
+
+  async validateCurrentBatch() {
+    if (!this.currentBatchId) return;
+
+    try {
+      const response = await this.queueApiRequest(() =>
+        this.apiService.getBatchPaymentDetails(this.currentBatchId)
+      );
+      
+      const batch = response.batchPayment;
+      
+      // If batch exists and is still PENDING, keep it as current
+      if (batch && batch.status === 'PENDING') {
+        console.log('✅ Current batch validated and restored:', batch.batchReference);
+        // Update batch selector to reflect current batch
+        setTimeout(() => {
+          const batchSelector = document.getElementById('batch-selector');
+          if (batchSelector) {
+            batchSelector.value = this.currentBatchId;
+          }
+          this.updateBatchView();
+          
+          // Show notification that batch was restored
+          this.showNotification(
+            `Batch ${batch.batchReference} restored with ${this.paymentBatch.length} items. Add more items and click "Update Batch" to save changes to server.`, 
+            'info'
+          );
+        }, 500);
+      } else {
+        // Batch no longer exists or is not PENDING, clear state
+        console.log('⚠️ Current batch no longer valid, clearing state');
+        this.currentBatchId = null;
+        this.paymentBatch = [];
+        this.clearBatchState();
+      }
+    } catch (error) {
+      console.warn('Failed to validate current batch:', error);
+      // Clear invalid batch state
+      this.currentBatchId = null;
+      this.paymentBatch = [];
+      this.clearBatchState();
     }
   }
   
@@ -298,7 +403,24 @@ export class AdminAddPaymentView extends BaseComponent {
       this.existingBatches.forEach(batch => {
         const option = document.createElement('option');
         option.value = batch.id;
-        option.textContent = `Batch ${batch.batchReference} (${this.formatCurrency(batch.totalAmount)})`;
+        
+        let displayText = `Batch ${batch.batchReference} (${this.formatCurrency(batch.totalAmount)})`;
+        
+        // Add status indicator
+        if (batch.status === 'PENDING') {
+          displayText += ' - PENDING';
+        } else if (batch.status === 'DEPOSITED') {
+          displayText += ' - DEPOSITED';
+        }
+        
+        // Mark current batch
+        if (batch.id == this.currentBatchId) {
+          displayText += ' ← CURRENT';
+          option.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
+          option.style.color = '#10b981';
+        }
+        
+        option.textContent = displayText;
         batchSelect.appendChild(option);
       });
     }
@@ -1914,6 +2036,7 @@ export class AdminAddPaymentView extends BaseComponent {
     const batchContainer = document.getElementById('batch-view-container');
     const tbody = document.getElementById('batch-items-body');
     const totalAmountEl = document.getElementById('batch-total-amount');
+    const saveBatchBtn = document.getElementById('save-batch-btn');
 
     if (!batchContainer || !tbody || !totalAmountEl) return;
 
@@ -1923,6 +2046,40 @@ export class AdminAddPaymentView extends BaseComponent {
     }
 
     batchContainer.style.display = 'block';
+    
+    // Update title to show current batch status
+    const title = batchContainer.querySelector('h2');
+    if (title) {
+      if (this.currentBatchId) {
+        const currentBatch = this.existingBatches.find(b => b.id == this.currentBatchId);
+        const batchRef = currentBatch ? currentBatch.batchReference : `ID: ${this.currentBatchId}`;
+        title.textContent = `Editing Batch: ${batchRef}`;
+        title.style.color = '#10b981'; // Green to indicate it's a saved batch
+      } else {
+        title.textContent = 'New Batch (Unsaved)';
+        title.style.color = '#f59e0b'; // Yellow to indicate it's unsaved
+      }
+    }
+
+    // Update save button text based on context
+    if (saveBatchBtn) {
+      if (this.currentBatchId) {
+        saveBatchBtn.innerHTML = `
+          <span id="save-batch-spinner" class="spinner" style="display: none; width: 16px; height: 16px; border: 2px solid rgba(255, 255, 255, 0.3); border-top: 2px solid #fff; border-radius: 50%; animation: spin 0.75s linear infinite;"></span>
+          Update Batch
+        `;
+        saveBatchBtn.style.background = 'linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(5, 150, 105, 0.1))';
+        saveBatchBtn.style.color = '#10b981';
+      } else {
+        saveBatchBtn.innerHTML = `
+          <span id="save-batch-spinner" class="spinner" style="display: none; width: 16px; height: 16px; border: 2px solid rgba(255, 255, 255, 0.3); border-top: 2px solid #fff; border-radius: 50%; animation: spin 0.75s linear infinite;"></span>
+          Save as Draft
+        `;
+        saveBatchBtn.style.background = 'linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(37, 99, 235, 0.1))';
+        saveBatchBtn.style.color = '#3b82f6';
+      }
+    }
+    
     tbody.innerHTML = '';
     let totalAmount = 0;
 
@@ -2445,11 +2602,18 @@ export class AdminAddPaymentView extends BaseComponent {
       if (show && batchInfo) {
         const batchInfoDisplay = document.getElementById('batch-info-display');
         if (batchInfoDisplay) {
-          batchInfoDisplay.innerHTML = `
+          let batchInfoHTML = `
             <div style="margin-bottom: 10px;"><strong>Batch Total:</strong> ${this.formatCurrency(batchInfo.totalAmount)}</div>
             <div style="margin-bottom: 10px;"><strong>Payment Count:</strong> ${batchInfo.totalCount}</div>
-            <div style="color: #94a3b8; font-size: 13px;">This will initiate KCB payment for the entire batch amount</div>
           `;
+          
+          if (batchInfo.batchReference) {
+            batchInfoHTML = `<div style="margin-bottom: 10px;"><strong>Batch Reference:</strong> ${batchInfo.batchReference}</div>` + batchInfoHTML;
+          }
+          
+          batchInfoHTML += `<div style="color: #94a3b8; font-size: 13px;">This will initiate KCB payment for the entire batch amount</div>`;
+          
+          batchInfoDisplay.innerHTML = batchInfoHTML;
         }
       }
     }
@@ -2515,13 +2679,44 @@ export class AdminAddPaymentView extends BaseComponent {
     // Batch selector event listener
     const batchSelector = document.getElementById('batch-selector');
     if (batchSelector) {
-      batchSelector.addEventListener('change', (e) => {
-        this.currentBatchId = e.target.value || null;
-        if (this.currentBatchId) {
-          this.loadBatchItems(this.currentBatchId);
-        } else {
+      batchSelector.addEventListener('change', async (e) => {
+        const selectedBatchId = e.target.value || null;
+        
+        if (selectedBatchId !== this.currentBatchId) {
+          // Check if there are unsaved changes
+          if (this.paymentBatch.length > 0) {
+            let shouldProceed = true;
+            
+            if (this.currentBatchId) {
+              // Switching from one batch to another - offer to save changes
+              shouldProceed = confirm('You have unsaved changes in the current batch. These changes are saved locally but not on the server yet. Do you want to continue switching batches?');
+            } else {
+              // Switching from new batch to existing - offer to save
+              shouldProceed = confirm('You have unsaved items in a new batch. Do you want to continue switching? (Your current items will be lost)');
+            }
+            
+            if (!shouldProceed) {
+              // Reset selector to current batch
+              batchSelector.value = this.currentBatchId || '';
+              return;
+            }
+          }
+          
+          // Clear current batch state
           this.paymentBatch = [];
-          this.updateBatchView();
+          this.currentBatchId = selectedBatchId;
+          
+          if (this.currentBatchId) {
+            // Load the selected batch for editing
+            await this.loadBatchItems(this.currentBatchId);
+          } else {
+            // Creating new batch
+            this.updateBatchView();
+            this.showNotification('Started new batch. Add payments and click "Save as Draft" to save.', 'info');
+          }
+          
+          // Save new state
+          this.saveBatchState();
         }
       });
     }
@@ -2765,6 +2960,9 @@ export class AdminAddPaymentView extends BaseComponent {
         this.showNotification('Payment added to batch successfully!', 'success');
       }
       
+      // Save batch state to localStorage
+      this.saveBatchState();
+      
       this.resetForm();
       this.updateBatchView();
 
@@ -2896,6 +3094,10 @@ export class AdminAddPaymentView extends BaseComponent {
   handleRemoveBatchItem(index) {
     if (index < 0 || index >= this.paymentBatch.length) return;
     this.paymentBatch.splice(index, 1);
+    
+    // Save updated batch state
+    this.saveBatchState();
+    
     this.updateBatchView();
     this.showNotification('Item removed from batch.', 'success');
   }
@@ -2906,46 +3108,59 @@ export class AdminAddPaymentView extends BaseComponent {
       return;
     }
     if (this.isSubmitting) return;
-
+  
     this.isSubmitting = true;
     const saveBtn = document.getElementById('save-batch-btn');
-    const spinner = document.getElementById('save-batch-spinner');
+    const spinner = saveBtn ? saveBtn.querySelector('.spinner') : null;
     if (saveBtn && spinner) {
-        saveBtn.disabled = true;
-        spinner.style.display = 'inline-block';
+      saveBtn.disabled = true;
+      spinner.style.display = 'inline-block';
     }
-
+  
     try {
+      let response;
+      // If a currentBatchId exists, we are updating an existing batch.
+      if (this.currentBatchId) {
         const batchData = {
-            payments: this.paymentBatch,
-            description: `Draft batch - ${new Date().toLocaleDateString()}`
+          payments: this.paymentBatch,
         };
-
-        const response = await this.queueApiRequest(() =>
-            this.apiService.createBatchPayment(batchData)
+        response = await this.queueApiRequest(() =>
+          this.apiService.addItemsToBatch(this.currentBatchId, batchData)
         );
-
+        this.successMessage = 'Successfully added new items to the batch!';
+      } else {
+        // If no currentBatchId, we are creating a new batch.
+        const batchData = {
+          payments: this.paymentBatch,
+          description: `Draft batch - ${new Date().toLocaleDateString()}`
+        };
+        response = await this.queueApiRequest(() =>
+          this.apiService.createBatchPayment(batchData)
+        );
         this.successMessage = 'Batch saved as draft successfully!';
-        this.paymentBatch = [];
-        this.updateBatchView();
-        await this.loadExistingBatches();
-        this.updateExistingBatchesView();
-        this.showNotification(this.successMessage, 'success');
-
+      }
+  
+      this.paymentBatch = [];
+      this.currentBatchId = null;
+      this.updateBatchView();
+      await this.loadExistingBatches();
+      this.updateExistingBatchesView();
+      this.showNotification(this.successMessage, 'success');
+  
       // Reload special offerings and update dropdown
       await this.loadSpecialOfferings();
       this.updateSpecialOfferingsDropdown();
-
+  
     } catch (error) {
-        console.error('Save batch error:', error);
-        this.errorMessage = error.message || 'Failed to save batch as draft.';
-        this.showNotification(this.errorMessage, 'error');
+      console.error('Save batch error:', error);
+      this.errorMessage = error.message || 'Failed to save batch.';
+      this.showNotification(this.errorMessage, 'error');
     } finally {
-        this.isSubmitting = false;
-        if (saveBtn && spinner) {
-            saveBtn.disabled = false;
-            spinner.style.display = 'none';
-        }
+      this.isSubmitting = false;
+      if (saveBtn && spinner) {
+        saveBtn.disabled = false;
+        spinner.style.display = 'none';
+      }
     }
   }
 
@@ -2956,31 +3171,51 @@ export class AdminAddPaymentView extends BaseComponent {
     }
 
     try {
-      // First save the batch if it's new
+      // First ensure the batch is saved/updated on the server
       if (!this.currentBatchId) {
+        // No batch exists, create one first
         await this.handleSaveBatch();
-        await this.loadExistingBatches();
         
-        // Find the newly created batch
-        const newBatch = this.existingBatches.find(b => b.status === 'PENDING');
-        if (!newBatch) {
+        if (!this.currentBatchId) {
           throw new Error('Failed to create batch for processing');
         }
-        this.currentBatchId = newBatch.id;
+      } else {
+        // Batch exists, ensure it's up to date on server
+        console.log('Ensuring batch is up to date before processing...');
+        await this.handleSaveBatch();
+        
+        if (!this.currentBatchId) {
+          throw new Error('Failed to update batch for processing');
+        }
       }
 
-      // Show KCB payment modal
-      const totalAmount = this.paymentBatch.reduce((sum, payment) => sum + payment.amount, 0);
+      // Verify the batch exists and is in PENDING status
+      const batchResponse = await this.queueApiRequest(() =>
+        this.apiService.getBatchPaymentDetails(this.currentBatchId)
+      );
+      
+      const batch = batchResponse.batchPayment;
+      if (!batch) {
+        throw new Error('Batch not found on server');
+      }
+      
+      if (batch.status !== 'PENDING') {
+        throw new Error(`Cannot process batch. Batch is in ${batch.status} status.`);
+      }
+
+      // Show KCB payment modal for the verified batch
       const batchInfo = {
-        totalAmount: totalAmount,
-        totalCount: this.paymentBatch.length
+        totalAmount: batch.totalAmount,
+        totalCount: batch.totalCount,
+        batchReference: batch.batchReference
       };
       
+      console.log(`✅ Ready to process batch ${batch.batchReference} (ID: ${this.currentBatchId})`);
       this.toggleKcbPaymentModal(true, batchInfo);
 
     } catch (error) {
       console.error('Process batch error:', error);
-      this.showNotification(error.message || 'Failed to process batch.', 'error');
+      this.showNotification(error.message || 'Failed to prepare batch for processing.', 'error');
     }
   }
 
@@ -3020,9 +3255,11 @@ export class AdminAddPaymentView extends BaseComponent {
         this.toggleKcbPaymentModal(false);
         this.showNotification('KCB payment initiated! Please complete the payment on your phone.', 'success');
         
-        // Clear current batch and reload existing batches
+        // Clear current batch state since it's now being processed
         this.paymentBatch = [];
         this.currentBatchId = null;
+        this.clearBatchState();
+        
         this.updateBatchView();
         await this.loadExistingBatches();
         this.updateExistingBatchesView();
@@ -3051,6 +3288,10 @@ export class AdminAddPaymentView extends BaseComponent {
     if (confirm('Are you sure you want to clear the current batch? This will remove all items.')) {
       this.paymentBatch = [];
       this.currentBatchId = null;
+      
+      // Clear persistent state
+      this.clearBatchState();
+      
       this.updateBatchView();
       
       const batchSelector = document.getElementById('batch-selector');
@@ -3070,6 +3311,12 @@ export class AdminAddPaymentView extends BaseComponent {
       
       const batchPayment = response.batchPayment;
       if (batchPayment && batchPayment.payments) {
+        // Only load if the batch is still PENDING (editable)
+        if (batchPayment.status !== 'PENDING') {
+          this.showNotification(`Cannot edit batch in ${batchPayment.status} status. You can only edit PENDING batches.`, 'warning');
+          return;
+        }
+
         this.paymentBatch = batchPayment.payments.map(payment => {
           const cleanedPayment = {
             userId: payment.userId,
@@ -3098,8 +3345,17 @@ export class AdminAddPaymentView extends BaseComponent {
           return cleanedPayment;
         });
         
+        // Set the current batch ID
+        this.currentBatchId = batchId;
+        
+        // Save the loaded state
+        this.saveBatchState();
+        
         this.updateBatchView();
-        this.showNotification(`Loaded batch with ${this.paymentBatch.length} items.`, 'success');
+        this.showNotification(`Loaded batch ${batchPayment.batchReference} with ${this.paymentBatch.length} items for editing.`, 'success');
+        
+      } else {
+        this.showNotification('No payment data found in this batch.', 'warning');
       }
     } catch (error) {
       console.error('Error loading batch items:', error);
@@ -3624,6 +3880,9 @@ export class AdminAddPaymentView extends BaseComponent {
 
       // Load the batch items
       await this.loadBatchItems(batchId);
+      
+      // Save the updated batch state
+      this.saveBatchState();
       
       // Scroll to the form
       window.scrollTo({ top: 0, behavior: 'smooth' });

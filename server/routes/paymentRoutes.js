@@ -144,6 +144,7 @@ router.post(
   ],
   paymentController.addManualPayment
 );
+router.route('/:batchId/add-items').post(authenticateJWT, isAdmin, paymentController.addItemsToBatch);
 
 // PUT update payment status (admin only)
 router.put(
