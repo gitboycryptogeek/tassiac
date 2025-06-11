@@ -3,6 +3,7 @@ import { Router } from './utils/router';
 import authService from './utils/authService';
 import apiService from './utils/apiService';
 
+
 document.addEventListener('DOMContentLoaded', () => {
   console.log('DOM loaded, initializing application');
   
@@ -57,7 +58,9 @@ document.addEventListener('DOMContentLoaded', () => {
   router.add('/admin/add-payment', 'views/admin/addPayment.js', 'AdminAddPaymentView', true, true);
   router.add('/admin/receipts', 'views/admin/receipts.js', 'AdminReceiptsView', true, true);
   router.add('/about', 'views/about.js', 'AboutView');
+  router.add('/admin/wallet', 'views/admin/wallet.js', 'AdminWalletView', true, true);
   router.add('/contact', 'views/contact.js', 'ContactView');
+  
   router.add('/help', 'views/help.js', 'HelpView');
 
   // Add 404 route
