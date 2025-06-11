@@ -188,7 +188,7 @@ export class AboutView {
     missionBody.style.position = 'relative';
     
     const missionText = document.createElement('p');
-    missionText.textContent = 'TASSIAC Church is dedicated to spreading the message of love, hope, and salvation. Our mission is to create a welcoming community where people can grow in their faith, develop meaningful relationships, and make a positive impact in the world around them.';
+    missionText.textContent = 'Seventh-Day Adventist Church Tassia Central is dedicated to spreading the message of love, hope, and salvation. Our mission is to create a welcoming community where people can grow in their faith, develop meaningful relationships, and make a positive impact in the world around them.';
     missionText.style.fontSize = '17px';
     missionText.style.lineHeight = '1.8';
     missionText.style.color = '#e2e8f0';
@@ -367,7 +367,7 @@ export class AboutView {
     const historyPoints = [
       {
         year: '1995',
-        content: 'TASSIAC Church was founded by a small group of believers committed to creating an authentic community of faith. Starting with just 20 members meeting in a local community center, our church has grown steadily over the years.'
+        content: 'Seventh-Day Adventist Church Tassia Central was founded by a small group of believers committed to creating an authentic community of faith. Starting with just 20 members meeting in a local community center, our church has grown steadily over the years.'
       },
       {
         year: '2005',
@@ -457,26 +457,26 @@ export class AboutView {
     
     const leaders = [
       {
-        name: 'Pastor John Doe',
-        role: 'Senior Pastor',
-        bio: 'Leading our congregation since 2010 with wisdom and compassion.',
+        name: 'Pastor Masese',
+        role: 'District Pastor',
+        bio: 'Leading our congregation since 2021 with wisdom and compassion.',
         color: '#4a6da7'
       },
       {
-        name: 'Sarah Smith',
-        role: 'Worship Director',
-        bio: 'Coordinating our music ministry and leading our congregation in worship.',
+        name: 'Elder Benjamin Oyugi',
+        role: 'First Elder',
+        bio: 'Coordinating and leading our congregation in worship.',
         color: '#5d8a3e'
       },
       {
-        name: 'Michael Johnson',
-        role: 'Youth Pastor',
-        bio: 'Guiding and mentoring our youth with energy and dedication.',
+        name: 'Elder Vincent',
+        role: 'Treasury Elder',
+        bio: 'Connecting our church with the wider community through service.',
         color: '#a05195'
       },
       {
-        name: 'Elizabeth Brown',
-        role: 'Community Outreach',
+        name: 'Elder Don',
+        role: 'Communication Elder',
         bio: 'Connecting our church with the wider community through service.',
         color: '#ff7c43'
       }
