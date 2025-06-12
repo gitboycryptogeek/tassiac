@@ -50,11 +50,16 @@ export class Router {
   
   // Navigate to a URL
   navigateTo(url) {
+    console.log('🚀 Router navigating to:', url);
+    
     const urlObj = new URL(url, window.location.origin);
     const path = urlObj.pathname;
     
     // Don't navigate if we're already on this path
-    if (this.currentPath === path) return;
+    if (this.currentPath === path) {
+      console.log('📍 Already on path:', path);
+      return;
+    }
     
     // Update history and handle the route
     history.pushState(null, null, url);
@@ -63,6 +68,8 @@ export class Router {
   
   // Redirect without adding to history
   redirectTo(url) {
+    console.log('🔄 Router redirecting to:', url);
+    
     const urlObj = new URL(url, window.location.origin);
     const path = urlObj.pathname;
     
@@ -70,107 +77,280 @@ export class Router {
     this.handleRoute();
   }
   
-  // Main route handling
-  // Fixed import logic in handleRoute method
-async handleRoute() {
-  const path = window.location.pathname;
-  this.currentPath = path;
+  // Wait for auth services to be ready
+  async waitForAuthServices() {
+    let attempts = 0;
+    const maxAttempts = 20; // Wait up to 1 second
+    
+    while (attempts < maxAttempts) {
+      if (window.apiService && window.authService) {
+        // Also check if they have their methods
+        if (typeof window.apiService.isAuthenticated === 'function' && 
+            typeof window.authService.isAuthenticated === 'function') {
+          console.log('✅ Auth services are ready');
+          return true;
+        }
+      }
+      
+      console.log(`⏳ Waiting for auth services... (${attempts + 1}/${maxAttempts})`);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      attempts++;
+    }
+    
+    console.warn('⚠️ Auth services not fully ready after waiting');
+    return false;
+  }
   
-  try {
-    const route = this.findMatchingRoute(path);
-    document.title = `TASSIAC - ${this.getPageTitle(route.path)}`;
-    
-    if (route.requiresAuth) {
-      if (!this.authService || !this.authService.isAuthenticated()) {
-        console.log('Authentication required, redirecting to login');
-        this.redirectTo('/login');
-        return;
-      }
+  // Enhanced authentication check
+  isAuthenticated() {
+    try {
+      // Check both services for authentication
+      const apiAuth = window.apiService && window.apiService.isAuthenticated();
+      const authServiceAuth = window.authService && window.authService.isAuthenticated();
       
-      if (route.requiresAdmin && !this.authService.isAdmin()) {
-        console.log('Admin access required, redirecting to dashboard');
-        this.redirectTo(this.authService.isAdmin() ? '/admin/dashboard' : '/dashboard');
-        return;
-      }
-    }
-    
-    if (route.moduleUrl && route.className) {
-      const appContainer = document.getElementById('app');
-      if (!appContainer) {
-        console.error('App container not found');
-        return;
-      }
+      const isAuth = apiAuth || authServiceAuth;
+      console.log('🔍 Authentication check:', { apiAuth, authServiceAuth, final: isAuth });
       
-      this.showLoading(appContainer);
-      
-      try {
-        // Clean up the module path properly
-        let modulePath = route.moduleUrl.startsWith('/') 
-          ? route.moduleUrl.slice(1) 
-          : route.moduleUrl;
-        
-        // Remove 'views/' prefix if it exists (to avoid duplication)
-        if (modulePath.startsWith('views/')) {
-          modulePath = modulePath.slice(6); // Remove 'views/' (6 characters)
-        }
-        
-        // Construct the import path
-        const importPath = `../views/${modulePath}`;
-        
-        console.log('Attempting to load module:', importPath);
-        
-        const modulePromise = import(/* @vite-ignore */ importPath);
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Module loading timed out')), 10000)
-        );
-        
-        // Wait for module to load or timeout
-        const viewModule = await Promise.race([modulePromise, timeoutPromise]);
-        
-        // Check if the module exports the expected class
-        if (viewModule && viewModule[route.className]) {
-          const ViewClass = viewModule[route.className];
-          const view = new ViewClass();
-          
-          // Clear the app container
-          appContainer.innerHTML = '';
-          
-          try {
-            // Render the view
-            const renderedComponent = await Promise.resolve(view.render());
-            
-            if (renderedComponent instanceof Node) {
-              appContainer.appendChild(renderedComponent);
-              
-              // Execute any post-render scripts if available
-              if (typeof view.afterRender === 'function') {
-                setTimeout(() => view.afterRender(), 0);
-              }
-            } else {
-              console.error('Component render method did not return a valid DOM node');
-              this.renderErrorMessage(appContainer, 'Component returned invalid content');
-            }
-          } catch (renderError) {
-            console.error('Error rendering view:', renderError);
-            this.renderErrorMessage(appContainer, `Error rendering view: ${renderError.message}`);
-          }
-        } else {
-          console.error(`Module ${route.moduleUrl} does not export ${route.className}`);
-          this.renderErrorMessage(appContainer, `Component class '${route.className}' not found`);
-        }
-      } catch (loadError) {
-        console.error(`Error loading module ${route.moduleUrl}:`, loadError);
-        this.renderErrorMessage(appContainer, `Error loading module: ${loadError.message}`);
-      }
-    }
-  } catch (error) {
-    console.error('Route handling error:', error);
-    const appContainer = document.getElementById('app');
-    if (appContainer) {
-      this.renderErrorMessage(appContainer, `Routing error: ${error.message}`);
+      return isAuth;
+    } catch (error) {
+      console.error('❌ Error checking authentication:', error);
+      return false;
     }
   }
-}
+  
+  // Enhanced admin check
+  isAdmin() {
+    try {
+      let isAdminResult = false;
+      
+      // Check apiService first
+      if (window.apiService && window.apiService.isAuthenticated()) {
+        const user = window.apiService.getCurrentUser();
+        if (user) {
+          isAdminResult = this.checkUserIsAdmin(user);
+          console.log('🔍 Admin check via apiService:', isAdminResult, 'for user:', user);
+        }
+      }
+      
+      // Check authService if apiService didn't confirm admin
+      if (!isAdminResult && window.authService && window.authService.isAuthenticated()) {
+        const user = window.authService.getCurrentUser();
+        if (user) {
+          isAdminResult = this.checkUserIsAdmin(user);
+          console.log('🔍 Admin check via authService:', isAdminResult, 'for user:', user);
+        }
+      }
+      
+      console.log('🎯 Final admin determination:', isAdminResult);
+      return isAdminResult;
+    } catch (error) {
+      console.error('❌ Error checking admin status:', error);
+      return false;
+    }
+  }
+  
+  // Robust admin checking function
+  checkUserIsAdmin(user) {
+    if (!user) return false;
+    
+    // Multiple ways to check admin status
+    const adminChecks = [
+      user.isAdmin === true,
+      user.isAdmin === 'true',
+      user.isAdmin === 1,
+      user.isAdmin === '1',
+      String(user.isAdmin).toLowerCase() === 'true',
+      user.role && String(user.role).toLowerCase().includes('admin')
+    ];
+    
+    return adminChecks.some(check => check === true);
+  }
+  
+  // Main route handling with enhanced auth timing
+  async handleRoute() {
+    const path = window.location.pathname;
+    this.currentPath = path;
+    
+    console.log('🛣️ Router handling route:', path);
+    
+    // Wait for auth services to be ready
+    await this.waitForAuthServices();
+    
+    // Check for login navigation context
+    const loginNav = window._loginNavigation;
+    if (loginNav && (Date.now() - loginNav.timestamp) < 10000) { // 10 second window
+      console.log('🔐 Post-login navigation detected:', loginNav);
+      
+      // Use login context to ensure correct routing
+      if (loginNav.isAdmin && path === '/admin/dashboard') {
+        console.log('✅ Loading admin dashboard for post-login admin user');
+      } else if (!loginNav.isAdmin && path === '/dashboard') {
+        console.log('✅ Loading user dashboard for post-login regular user');
+      } else {
+        console.log('🔄 Correcting route based on login data...');
+        const correctPath = loginNav.isAdmin ? '/admin/dashboard' : '/dashboard';
+        
+        // Clear the login navigation flag first
+        delete window._loginNavigation;
+        
+        // Redirect to correct path
+        this.redirectTo(correctPath);
+        return;
+      }
+      
+      // Clear the login navigation flag after successful routing
+      delete window._loginNavigation;
+    }
+    
+    try {
+      const route = this.findMatchingRoute(path);
+      document.title = `TASSIAC - ${this.getPageTitle(route.path)}`;
+      
+      // Enhanced auth checking with timing
+      if (route.requiresAuth) {
+        console.log('🔒 Route requires authentication, checking...');
+        
+        // Wait a bit more for auth state to be fully ready
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        if (!this.isAuthenticated()) {
+          console.log('❌ Authentication required, redirecting to login');
+          this.redirectTo('/login');
+          return;
+        }
+        
+        if (route.requiresAdmin) {
+          console.log('👑 Route requires admin privileges, checking...');
+          
+          // Additional wait for admin check
+          await new Promise(resolve => setTimeout(resolve, 50));
+          
+          if (!this.isAdmin()) {
+            console.log('❌ Admin access required but user is not admin, redirecting');
+            this.redirectTo('/dashboard');
+            return;
+          }
+          
+          console.log('✅ Admin access confirmed');
+        }
+        
+        console.log('✅ Authentication confirmed');
+      }
+      
+      // Handle dashboard route conflicts
+      if (path === '/dashboard') {
+        console.log('👤 User dashboard route detected, checking if user should be admin...');
+        
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
+        if (this.isAuthenticated() && this.isAdmin()) {
+          console.log('👑 Authenticated admin accessing user dashboard, redirecting to admin dashboard');
+          this.redirectTo('/admin/dashboard');
+          return;
+        }
+      }
+      
+      if (route.moduleUrl && route.className) {
+        const appContainer = document.getElementById('app');
+        if (!appContainer) {
+          console.error('App container not found');
+          return;
+        }
+        
+        this.showLoading(appContainer);
+        
+        try {
+          // Clean up the module path properly
+          let modulePath = route.moduleUrl.startsWith('/') 
+            ? route.moduleUrl.slice(1) 
+            : route.moduleUrl;
+          
+          // Remove 'views/' prefix if it exists (to avoid duplication)
+          if (modulePath.startsWith('views/')) {
+            modulePath = modulePath.slice(6); // Remove 'views/' (6 characters)
+          }
+          
+          // Construct the import path
+          const importPath = `../views/${modulePath}`;
+          
+          console.log('📦 Loading module:', importPath);
+          
+          const modulePromise = import(/* @vite-ignore */ importPath);
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Module loading timed out')), 10000)
+          );
+          
+          // Wait for module to load or timeout
+          const viewModule = await Promise.race([modulePromise, timeoutPromise]);
+          
+          // Check if the module exports the expected class
+          if (viewModule && viewModule[route.className]) {
+            const ViewClass = viewModule[route.className];
+            const view = new ViewClass();
+            
+            // Clear the app container
+            appContainer.innerHTML = '';
+            
+            try {
+              console.log('🎭 Rendering view for:', route.path);
+              
+              // Pass authentication context to view if it's a dashboard
+              if (path.includes('dashboard')) {
+                view._authContext = {
+                  isAuthenticated: this.isAuthenticated(),
+                  isAdmin: this.isAdmin(),
+                  user: this.getCurrentUser()
+                };
+              }
+              
+              // Render the view
+              const renderedComponent = await Promise.resolve(view.render());
+              
+              if (renderedComponent instanceof Node) {
+                appContainer.appendChild(renderedComponent);
+                
+                console.log('✅ View rendered successfully for:', route.path);
+                
+                // Execute any post-render scripts if available
+                if (typeof view.afterRender === 'function') {
+                  setTimeout(() => view.afterRender(), 0);
+                }
+              } else {
+                console.error('Component render method did not return a valid DOM node');
+                this.renderErrorMessage(appContainer, 'Component returned invalid content');
+              }
+            } catch (renderError) {
+              console.error('❌ Error rendering view:', renderError);
+              this.renderErrorMessage(appContainer, `Error rendering view: ${renderError.message}`);
+            }
+          } else {
+            console.error(`Module ${route.moduleUrl} does not export ${route.className}`);
+            this.renderErrorMessage(appContainer, `Component class '${route.className}' not found`);
+          }
+        } catch (loadError) {
+          console.error(`❌ Error loading module ${route.moduleUrl}:`, loadError);
+          this.renderErrorMessage(appContainer, `Error loading module: ${loadError.message}`);
+        }
+      }
+    } catch (error) {
+      console.error('❌ Route handling error:', error);
+      const appContainer = document.getElementById('app');
+      if (appContainer) {
+        this.renderErrorMessage(appContainer, `Routing error: ${error.message}`);
+      }
+    }
+  }
+  
+  // Get current user from available auth services
+  getCurrentUser() {
+    if (window.apiService && window.apiService.isAuthenticated()) {
+      return window.apiService.getCurrentUser();
+    }
+    if (window.authService && window.authService.isAuthenticated()) {
+      return window.authService.getCurrentUser();
+    }
+    return null;
+  }
   
   // Find the matching route for a path
   findMatchingRoute(path) {
@@ -193,6 +373,21 @@ async handleRoute() {
     }
     
     return matchedRoute;
+  }
+  
+  // Add refresh method
+  refresh() {
+    console.log('🔄 Router refresh triggered');
+    this.handleRoute();
+  }
+  
+  // Add clear state method
+  clearState() {
+    console.log('🧹 Clearing router state');
+    const appContainer = document.getElementById('app');
+    if (appContainer) {
+      appContainer.innerHTML = '';
+    }
   }
   
   // Get a page title based on the path

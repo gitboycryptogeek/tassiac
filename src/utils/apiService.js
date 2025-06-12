@@ -103,8 +103,14 @@ export class ApiService {
    */
   loadStoredAuth() {
     try {
-      const storedToken = localStorage.getItem('authToken');
+      // Try both 'token' and 'authToken' keys for backward compatibility
+      let storedToken = localStorage.getItem('token') || localStorage.getItem('authToken');
       const storedUser = localStorage.getItem('user');
+      
+      // Also check sessionStorage
+      if (!storedToken) {
+        storedToken = sessionStorage.getItem('token') || sessionStorage.getItem('authToken');
+      }
       
       if (storedToken) {
         this.token = storedToken;
@@ -152,9 +158,13 @@ export class ApiService {
       this.token = token;
       this.user = user;
       
-      // Use 'token' as the key to be consistent with authService.js
+      // Use consistent 'token' key (not 'authToken')
       localStorage.setItem('token', token); 
       localStorage.setItem('user', JSON.stringify(user));
+      
+      // Clear any old authToken entries to avoid confusion
+      localStorage.removeItem('authToken');
+      sessionStorage.removeItem('authToken');
       
       console.log('✅ Authentication data stored successfully');
       console.log('👤 User:', user.fullName, '| Admin:', user.isAdmin, '| Role:', user.role);
@@ -188,12 +198,16 @@ async addItemsToBatch(batchId, batchData) {
     this.token = null;
     this.user = null;
     
+    // Clear from both localStorage and sessionStorage, and both key variants
     localStorage.removeItem('authToken');
+    localStorage.removeItem('token');
     localStorage.removeItem('user');
+    sessionStorage.removeItem('authToken');
+    sessionStorage.removeItem('token');
+    sessionStorage.removeItem('user');
     
     console.log('🗑️ Authentication data cleared from storage');
   }
-
   /**
    * Check if user is currently authenticated
    * 
@@ -320,95 +334,102 @@ async addItemsToBatch(batchId, batchData) {
    * Server responses with { success: true, data: {...}, message: "..." }
    * are automatically unwrapped to return just the data portion
    */
-  async handleResponse(response) {
-    const contentType = response.headers.get('content-type');
-    const isJson = contentType && contentType.includes('application/json');
-    let responseData;
+  // Fixed handleResponse method in apiService.js
+async handleResponse(response) {
+  const contentType = response.headers.get('content-type');
+  const isJson = contentType && contentType.includes('application/json');
+  let responseData;
 
-    // Parse response body based on content type
-    try {
-      responseData = isJson ? await response.json() : await response.text();
-    } catch (parseError) {
-      console.error('❌ Failed to parse API response:', parseError);
-      throw new Error(response.ok ? 'Invalid JSON response from server.' : `Request failed with status ${response.status}: ${response.statusText}`);
+  // Parse response body based on content type
+  try {
+    responseData = isJson ? await response.json() : await response.text();
+  } catch (parseError) {
+    console.error('❌ Failed to parse API response:', parseError);
+    throw new Error(response.ok ? 'Invalid JSON response from server.' : `Request failed with status ${response.status}: ${response.statusText}`);
+  }
+
+  // Handle HTTP error status codes
+  if (!response.ok) {
+    // Special handling for 401 Unauthorized - automatic logout
+    if (response.status === 401) {
+      console.warn('🔒 Received 401 Unauthorized - clearing authentication');
+      this.clearAuth();
+      
+      // Use router for navigation instead of hard redirect
+      const currentPath = window.location.pathname;
+      if (currentPath !== '/login' && currentPath !== '/' && !currentPath.includes('login')) {
+        console.log('🔄 Redirecting to login page due to authentication failure');
+        // Use the router if available, otherwise fallback to hash navigation
+        if (window.router && typeof window.router.navigateTo === 'function') {
+          window.router.navigateTo('/login');
+        } else {
+          // Fallback to hash-based navigation
+          window.location.hash = '#/login';
+        }
+      }
     }
 
-    // Handle HTTP error status codes
-    if (!response.ok) {
-      // Special handling for 401 Unauthorized - automatic logout
-      if (response.status === 401) {
-        console.warn('🔒 Received 401 Unauthorized - clearing authentication and redirecting');
-        this.clearAuth();
-        
-        // Redirect to login page if not already there
-        const currentPath = window.location.pathname;
-        if (currentPath !== '/login.html' && currentPath !== '/' && currentPath !== '/index.html') {
-          console.log('🔄 Redirecting to login page due to authentication failure');
-          window.location.href = '/login.html';
-        }
+    // Extract detailed error information from response
+    let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+    let errorCode = `HTTP_ERROR_${response.status}`;
+    let errorDetails = null;
+
+    // Parse structured error response
+    if (responseData && typeof responseData === 'object' && responseData.message) {
+      errorMessage = responseData.message;
+      if (responseData.error) {
+        errorCode = responseData.error.code || errorCode;
+        errorDetails = responseData.error.details || responseData.error;
       }
+    } else if (typeof responseData === 'string' && responseData.length > 0 && responseData.length < 200) {
+      errorMessage = responseData;
+    }
 
-      // Extract detailed error information from response
-      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-      let errorCode = `HTTP_ERROR_${response.status}`;
-      let errorDetails = null;
+    // Create comprehensive error object
+    const error = new Error(errorMessage);
+    error.code = errorCode;
+    error.status = response.status;
+    error.details = errorDetails;
+    error.response = responseData;
+    error.endpoint = response.url;
+    
+    console.error('🚨 API Request Failed:', {
+      endpoint: error.endpoint,
+      status: error.status,
+      code: error.code,
+      message: error.message,
+      details: error.details
+    });
+    
+    throw error;
+  }
 
-      // Parse structured error response
-      if (responseData && typeof responseData === 'object' && responseData.message) {
-        errorMessage = responseData.message;
-        if (responseData.error) {
-          errorCode = responseData.error.code || errorCode;
-          errorDetails = responseData.error.details || responseData.error;
-        }
-      } else if (typeof responseData === 'string' && responseData.length > 0 && responseData.length < 200) {
-        errorMessage = responseData;
-      }
-
-      // Create comprehensive error object
+  // Handle standardized successful response format
+  if (responseData && typeof responseData === 'object' && responseData.hasOwnProperty('success')) {
+    if (responseData.success === true) {
+      // Return data portion of successful response, fallback to message if no data
+      return responseData.data !== undefined ? responseData.data : { message: responseData.message };
+    } else {
+      // Server reported operation failure even with 200 status
+      const errorMessage = responseData.message || 'API operation reported failure.';
       const error = new Error(errorMessage);
-      error.code = errorCode;
-      error.status = response.status;
-      error.details = errorDetails;
+      error.code = responseData.error?.code || 'OPERATION_FAILED';
+      error.details = responseData.error?.details || null;
       error.response = responseData;
-      error.endpoint = response.url;
       
-      console.error('🚨 API Request Failed:', {
-        endpoint: error.endpoint,
-        status: error.status,
-        code: error.code,
+      console.error('⚠️ API Operation Failed:', {
         message: error.message,
+        code: error.code,
         details: error.details
       });
       
       throw error;
     }
-
-    // Handle standardized successful response format
-    if (responseData && typeof responseData === 'object' && responseData.hasOwnProperty('success')) {
-      if (responseData.success === true) {
-        // Return data portion of successful response, fallback to message if no data
-        return responseData.data !== undefined ? responseData.data : { message: responseData.message };
-      } else {
-        // Server reported operation failure even with 200 status
-        const errorMessage = responseData.message || 'API operation reported failure.';
-        const error = new Error(errorMessage);
-        error.code = responseData.error?.code || 'OPERATION_FAILED';
-        error.details = responseData.error?.details || null;
-        error.response = responseData;
-        
-        console.error('⚠️ API Operation Failed:', {
-          message: error.message,
-          code: error.code,
-          details: error.details
-        });
-        
-        throw error;
-      }
-    }
-
-    // Return raw response data for non-standardized responses (file downloads, etc.)
-    return responseData;
   }
+
+  // Return raw response data for non-standardized responses (file downloads, etc.)
+  return responseData;
+}
 
   // ================================================================================================
   // AUTHENTICATION AND USER MANAGEMENT API CALLS
@@ -537,9 +558,14 @@ async addItemsToBatch(batchId, batchData) {
       console.log('🧹 Clearing local authentication data');
       this.clearAuth();
       
-      // Redirect to login page
+      // Use router for navigation instead of hard redirect
       console.log('🔄 Redirecting to login page');
-      window.location.href = '/login.html';
+      if (window.router && typeof window.router.navigateTo === 'function') {
+        await window.router.navigateTo('/login');
+      } else {
+        // Fallback to hash-based navigation
+        window.location.hash = '#/login';
+      }
     }
   }
 
