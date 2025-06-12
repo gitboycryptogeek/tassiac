@@ -104,13 +104,11 @@ class WalletService {
     
     try {
       // Find or create wallet
-      let wallet = await prismaClient.wallet.findUnique({
-        where: {
-          walletType_subType: {
-            walletType: walletType,
-            subType: subType,
-          },
-        },
+      let wallet = await prismaClient.wallet.findFirst({ // MODIFIED
+        where: {                                      // MODIFIED
+            walletType: walletType,                     // MODIFIED
+            subType: subType,                           // MODIFIED
+        },                                              // MODIFIED
       });
 
       if (!wallet) {
@@ -183,12 +181,10 @@ class WalletService {
     
     for (const walletConfig of defaultWallets) {
       try {
-        const existingWallet = await prismaClient.wallet.findUnique({
+        const existingWallet = await prismaClient.wallet.findFirst({ // MODIFIED
           where: {
-            walletType_subType: {
-              walletType: walletConfig.walletType,
-              subType: walletConfig.subType,
-            },
+            walletType: walletConfig.walletType,
+            subType: walletConfig.subType,
           },
         });
 

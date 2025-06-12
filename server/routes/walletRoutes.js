@@ -25,7 +25,11 @@ const titheDistributionValidation = [
 
 // Core wallet routes - Using only available controller methods
 router.get('/all', authenticateJWT, isAdmin, walletController.getAllWallets);
-router.get('/:walletId/transactions', authenticateJWT, walletController.getWalletTransactions);
+// **FIX**: The route is now implemented and uncommented
+router.get('/:walletId/transactions', authenticateJWT, isAdmin, [
+    param('walletId').isInt().withMessage('A valid wallet ID is required.')
+], walletController.getWalletTransactions);
+
 
 // Wallet management routes
 router.post('/initialize', authenticateJWT, isAdmin, walletController.initializeWallets);

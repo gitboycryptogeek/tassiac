@@ -8,6 +8,7 @@ const specialOfferingRoutes = require('./specialOfferingRoutes');
 const contactRoutes = require('./contactRoutes');
 const adminRoutes = require('./adminRoutes');
 const walletRoutes = require('./walletRoutes');
+const batchPaymentRoutes = require('./batchPaymentRoutes'); // <-- ADD THIS LINE
 
 const router = express.Router();
 
@@ -19,6 +20,7 @@ router.use('/special-offerings', specialOfferingRoutes);
 router.use('/contact', contactRoutes);
 router.use('/admin', adminRoutes);
 router.use('/wallets', walletRoutes);
+router.use('/batch-payments', batchPaymentRoutes); // <-- AND ADD THIS LINE
 
 // Base API route
 router.get('/', (req, res) => {

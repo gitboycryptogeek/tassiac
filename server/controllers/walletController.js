@@ -706,4 +706,121 @@ exports.getWithdrawalRequests = async (req, res) => {
   }
 };
 
+// ** NEW FUNCTION **
+// Get transactions for a specific wallet
+exports.getWalletTransactions = async (req, res) => {
+    const { walletId } = req.params;
+    const { page = 1, limit = 20 } = req.query;
+    const numericWalletId = parseInt(walletId);
+
+    logActivity(`Get Wallet Transactions for walletId: ${numericWalletId}`);
+
+    try {
+        if (isNaN(numericWalletId)) {
+            return sendResponse(res, 400, false, null, 'Invalid Wallet ID format.', { code: 'INVALID_WALLET_ID' });
+        }
+        
+        // First, get the wallet details
+        const wallet = await prisma.wallet.findUnique({
+            where: { id: numericWalletId }
+        });
+
+        if (!wallet) {
+            return sendResponse(res, 404, false, null, 'Wallet not found.', { code: 'WALLET_NOT_FOUND' });
+        }
+
+        // Determine the query conditions to find relevant payments
+        let whereClause = {};
+
+        if (wallet.walletType === 'TITHE') {
+            if (wallet.subType) {
+                // Specific tithe category wallet
+                whereClause = {
+                    paymentType: 'TITHE',
+                    titheDistributionSDA: { path: `$.${wallet.subType}`, not: 0 } // Assumes the amount is stored
+                };
+            } else {
+                // General tithe wallet (complicated to isolate perfectly without more schema changes)
+                // For now, let's find all tithe payments. A better solution would involve tracking wallet mutations.
+                whereClause = { paymentType: 'TITHE' };
+            }
+        } else if (wallet.walletType === 'SPECIAL_OFFERING') {
+            whereClause = {
+                specialOfferingId: wallet.specialOfferingId,
+                paymentType: 'SPECIAL_OFFERING_CONTRIBUTION'
+            };
+        } else {
+            // General wallets like OFFERING, DONATION
+            whereClause = {
+                paymentType: wallet.walletType,
+                isExpense: false // Ensure it's not an expense from a different system
+            };
+        }
+        
+        const take = parseInt(limit);
+        const skip = (parseInt(page) - 1) * take;
+
+        // Find all payments that contributed to this wallet
+        const deposits = await prisma.payment.findMany({
+            where: { ...whereClause, status: 'COMPLETED', isExpense: false },
+            include: { user: { select: { fullName: true } } },
+            orderBy: { paymentDate: 'desc' },
+            skip,
+            take,
+        });
+
+        // Find all withdrawals (as expenses) related to this wallet
+        const withdrawals = await prisma.withdrawalRequest.findMany({
+            where: { walletId: numericWalletId, status: 'COMPLETED' },
+            include: { requester: { select: { fullName: true } } },
+            orderBy: { processedAt: 'desc' },
+            skip,
+            take,
+        });
+        
+        // Combine and format transactions
+        const transactions = [
+            ...deposits.map(p => ({
+                id: `P-${p.id}`,
+                type: 'DEPOSIT',
+                amount: parseFloat(p.amount.toString()),
+                date: p.paymentDate,
+                description: p.description,
+                relatedUser: p.user?.fullName || 'N/A'
+            })),
+            ...withdrawals.map(w => ({
+                id: `W-${w.id}`,
+                type: 'WITHDRAWAL',
+                amount: -parseFloat(w.amount.toString()), // Negative for withdrawal
+                date: w.processedAt,
+                description: w.purpose,
+                relatedUser: w.requester?.fullName || 'N/A'
+            }))
+        ];
+        
+        // Sort combined transactions by date
+        transactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        // Note: Proper pagination would require a more complex query or view. This is a simplified approach.
+        const paginatedTransactions = transactions.slice(skip, skip + take);
+
+        return sendResponse(res, 200, true, {
+            wallet,
+            transactions: paginatedTransactions,
+            currentPage: parseInt(page),
+            totalTransactions: transactions.length, // Total of combined local results
+            totalPages: Math.ceil(transactions.length / take)
+        }, 'Wallet transactions retrieved successfully');
+
+    } catch (error) {
+        logActivity('Error getting wallet transactions:', error.message);
+        console.error(error);
+        return sendResponse(res, 500, false, null, 'Server error retrieving wallet transactions.', {
+            code: 'SERVER_ERROR',
+            details: error.message,
+        });
+    }
+};
+
+
 module.exports = exports;
