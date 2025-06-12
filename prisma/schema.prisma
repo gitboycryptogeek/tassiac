@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql" // changed from sqlite
+  provider = "postgresql"
   url      = env("DATABASE_URL_PRISMA")
 }
 
@@ -37,12 +37,15 @@ model User {
   submittedContactInquiries ContactInquiry[]      @relation("SubmittedByUser")
   handledContactInquiries ContactInquiry[]        @relation("HandledByAdmin")
   
-  // New wallet and batch payment relations
+  // Wallet and batch payment relations
   batchPaymentsCreated    BatchPayment[]          @relation("BatchPaymentCreator")
   batchPaymentsProcessed  BatchPayment[]          @relation("BatchPaymentProcessor")
   withdrawalRequests      WithdrawalRequest[]     @relation("WithdrawalRequester")
   withdrawalApprovals     WithdrawalApproval[]    @relation("WithdrawalApprover")
 
+  @@index([isActive, isAdmin])
+  @@index([lastLogin])
+  @@index([username, isActive])
   @@map("Users")
 }
 
@@ -58,6 +61,9 @@ model AdminAction {
   updatedAt         DateTime                @updatedAt @map("updatedAt")
   approvals         AdminActionApproval[]
 
+  @@index([actionType, createdAt])
+  @@index([initiatedById])
+  @@index([status])
   @@map("AdminActions")
 }
 
@@ -72,6 +78,8 @@ model AdminActionApproval {
   createdAt     DateTime     @default(now()) @map("createdAt")
   updatedAt     DateTime     @updatedAt @map("updatedAt")
 
+  @@index([adminActionId])
+  @@index([adminId])
   @@map("AdminActionApprovals")
 }
 
@@ -81,7 +89,7 @@ model SpecialOffering {
   offeringCode  String    @unique @map("offeringCode")
   name          String
   description   String?
-  targetAmount  Float?    @map("targetAmount")
+  targetAmount  Decimal?  @map("targetAmount") @db.Decimal(12, 2)
   startDate     DateTime  @default(now()) @map("startDate")
   endDate       DateTime? @map("endDate")
   isActive      Boolean   @default(true) @map("isActive")
@@ -89,9 +97,13 @@ model SpecialOffering {
   createdById   Int       @map("createdById")
   creator       User      @relation("SpecialOfferingCreator", fields: [createdById], references: [id])
   contributions Payment[] @relation("SpecialOfferingContributions")
+  wallets       Wallet[]  @relation("SpecialOfferingWallets")
   createdAt     DateTime  @default(now()) @map("createdAt")
   updatedAt     DateTime  @updatedAt @map("updatedAt")
 
+  @@index([isActive, endDate])
+  @@index([offeringCode])
+  @@index([createdById])
   @@map("SpecialOfferings")
 }
 
@@ -99,7 +111,7 @@ model Payment {
   id                   Int               @id @default(autoincrement())
   userId               Int               @map("userId")
   user                 User              @relation("UserPayments", fields: [userId], references: [id])
-  amount               Float             @map("amount")
+  amount               Decimal           @map("amount") @db.Decimal(12, 2)
   paymentType          String            @map("paymentType")
   paymentMethod        String            @map("paymentMethod")
   description          String?
@@ -108,42 +120,51 @@ model Payment {
   status               String            @default("COMPLETED")
   receiptNumber        String?           @unique @map("receiptNumber")
   paymentDate          DateTime          @default(now()) @map("paymentDate")
-  platformFee          Float             @default(0.00) @map("platformFee")
-  titheDistributionSDA Json?             @map("titheDistributionSDA") // Now stores amounts instead of booleans: {"campMeetingExpenses": 200, "welfare": 300, ...}
+  processedAt          DateTime?         @map("processedAt")
+  platformFee          Decimal           @default(0.00) @map("platformFee") @db.Decimal(8, 2)
+  titheDistributionSDA Json?             @map("titheDistributionSDA")
   isExpense            Boolean           @default(false) @map("isExpense")
   department           String?
   expenseReceiptUrl    String?           @map("expenseReceiptUrl")
+  failureReason        String?           @map("failureReason")
   processedById        Int?
   processor            User?             @relation("PaymentProcessor", fields: [processedById], references: [id])
   specialOfferingId    Int?              @map("specialOfferingId")
   specialOffering      SpecialOffering?  @relation("SpecialOfferingContributions", fields: [specialOfferingId], references: [id])
   isTemplate           Boolean?          @default(false) @map("isTemplate")
-  targetGoal           Float?            @map("targetGoal")
+  targetGoal           Decimal?          @map("targetGoal") @db.Decimal(12, 2)
   
-  // New batch payment fields
+  // Batch payment fields
   batchPaymentId       Int?              @map("batchPaymentId")
   batchPayment         BatchPayment?     @relation(fields: [batchPaymentId], references: [id])
   isBatchProcessed     Boolean           @default(false) @map("isBatchProcessed")
   
-  // New KCB integration fields
+  // KCB integration fields
   kcbTransactionId     String?           @map("kcbTransactionId")
   kcbReference         String?           @map("kcbReference")
-  bankDepositStatus    String?           @default("PENDING") @map("bankDepositStatus") // PENDING, DEPOSITED, FAILED
+  bankDepositStatus    String?           @default("PENDING") @map("bankDepositStatus")
   
   createdAt            DateTime          @default(now()) @map("createdAt")
   updatedAt            DateTime          @updatedAt @map("updatedAt")
   receipt              Receipt?
+  kcbSync              KcbTransactionSync? @relation("KcbLinkedPayment")
 
+  @@index([paymentDate, status])
+  @@index([userId, paymentType])
+  @@index([status, isExpense])
+  @@index([paymentType, specialOfferingId])
+  @@index([batchPaymentId])
+  @@index([kcbTransactionId])
+  @@index([processedAt])
   @@map("Payments")
 }
 
-// New Batch Payment Model
 model BatchPayment {
   id                Int       @id @default(autoincrement())
   batchReference    String    @unique @map("batchReference")
-  totalAmount       Float     @map("totalAmount")
+  totalAmount       Decimal   @map("totalAmount") @db.Decimal(15, 2)
   totalCount        Int       @map("totalCount")
-  status            String    @default("PENDING") @map("status") // PENDING, DEPOSITED, COMPLETED, FAILED
+  status            String    @default("PENDING") @map("status")
   description       String?
   createdById       Int       @map("createdById")
   creator           User      @relation("BatchPaymentCreator", fields: [createdById], references: [id])
@@ -152,52 +173,59 @@ model BatchPayment {
   kcbTransactionId  String?   @map("kcbTransactionId")
   kcbReference      String?   @map("kcbReference")
   depositedAt       DateTime? @map("depositedAt")
+  processedAt       DateTime? @map("processedAt")
   createdAt         DateTime  @default(now()) @map("createdAt")
   updatedAt         DateTime  @updatedAt @map("updatedAt")
   
   payments          Payment[]
 
+  @@index([status, createdAt])
+  @@index([batchReference])
+  @@index([createdById])
+  @@index([processedById])
   @@map("BatchPayments")
 }
 
-// New Wallet Model
 model Wallet {
-  id              Int     @id @default(autoincrement())
-  walletType      String  @map("walletType") // TITHE, OFFERING, DONATION, SPECIAL_OFFERING
-  subType         String? @map("subType") // For tithe: campMeetingExpenses, welfare, etc. For special offerings: offering code
-  balance         Float   @default(0) @map("balance")
-  totalDeposits   Float   @default(0) @map("totalDeposits")
-  totalWithdrawals Float  @default(0) @map("totalWithdrawals")
-  lastUpdated     DateTime @default(now()) @map("lastUpdated")
-  isActive        Boolean @default(true) @map("isActive")
+  id              Int              @id @default(autoincrement())
+  walletType      String           @map("walletType")
+  subType         String?          @map("subType")
+  uniqueKey       String           @unique @map("uniqueKey") // walletType + "-" + (subType || "NULL")
+  balance         Decimal          @default(0) @map("balance") @db.Decimal(15, 2)
+  totalDeposits   Decimal          @default(0) @map("totalDeposits") @db.Decimal(15, 2)
+  totalWithdrawals Decimal         @default(0) @map("totalWithdrawals") @db.Decimal(15, 2)
+  lastUpdated     DateTime         @default(now()) @map("lastUpdated")
+  isActive        Boolean          @default(true) @map("isActive")
   
   // Metadata for special offerings
-  specialOfferingId Int? @map("specialOfferingId")
+  specialOfferingId Int?           @map("specialOfferingId")
+  specialOffering   SpecialOffering? @relation("SpecialOfferingWallets", fields: [specialOfferingId], references: [id])
   
-  createdAt       DateTime @default(now()) @map("createdAt")
-  updatedAt       DateTime @updatedAt @map("updatedAt")
+  createdAt       DateTime         @default(now()) @map("createdAt")
+  updatedAt       DateTime         @updatedAt @map("updatedAt")
   
   withdrawalRequests WithdrawalRequest[]
 
-  @@unique([walletType, subType])
+  @@index([walletType, isActive])
+  @@index([specialOfferingId])
+  @@index([lastUpdated])
   @@map("Wallets")
 }
 
-// New Withdrawal Request Model
 model WithdrawalRequest {
   id                Int       @id @default(autoincrement())
   withdrawalReference String  @unique @map("withdrawalReference")
   walletId          Int       @map("walletId")
   wallet            Wallet    @relation(fields: [walletId], references: [id])
-  amount            Float
+  amount            Decimal   @db.Decimal(12, 2)
   purpose           String
   description       String?
   requestedById     Int       @map("requestedById")
   requester         User      @relation("WithdrawalRequester", fields: [requestedById], references: [id])
-  status            String    @default("PENDING") @map("status") // PENDING, APPROVED, REJECTED, COMPLETED
+  status            String    @default("PENDING") @map("status")
   
   // Withdrawal destination
-  withdrawalMethod  String    @map("withdrawalMethod") // BANK_TRANSFER, MPESA, CASH
+  withdrawalMethod  String    @map("withdrawalMethod")
   destinationAccount String? @map("destinationAccount")
   destinationPhone  String?  @map("destinationPhone")
   
@@ -210,15 +238,20 @@ model WithdrawalRequest {
   currentApprovals  Int      @default(0) @map("currentApprovals")
   
   processedAt       DateTime? @map("processedAt")
+  rejectedAt        DateTime? @map("rejectedAt")
+  rejectionReason   String?   @map("rejectionReason")
   createdAt         DateTime  @default(now()) @map("createdAt")
   updatedAt         DateTime  @updatedAt @map("updatedAt")
   
   approvals         WithdrawalApproval[]
 
+  @@index([status, createdAt])
+  @@index([walletId])
+  @@index([requestedById])
+  @@index([withdrawalReference])
   @@map("WithdrawalRequests")
 }
 
-// New Withdrawal Approval Model
 model WithdrawalApproval {
   id                  Int               @id @default(autoincrement())
   withdrawalRequestId Int               @map("withdrawalRequestId")
@@ -226,28 +259,30 @@ model WithdrawalApproval {
   approvedById        Int               @map("approvedById")
   approver            User              @relation("WithdrawalApprover", fields: [approvedById], references: [id])
   approved            Boolean
-  password            String?           // For password-based approval
-  approvalMethod      String            @map("approvalMethod") // PASSWORD, EMAIL, GOOGLE_AUTH
+  password            String?
+  approvalMethod      String            @map("approvalMethod")
   comment             String?
   createdAt           DateTime          @default(now()) @map("createdAt")
 
   @@unique([withdrawalRequestId, approvedById])
+  @@index([withdrawalRequestId])
+  @@index([approvedById])
   @@map("WithdrawalApprovals")
 }
 
-// New KCB Transaction Sync Model
 model KcbTransactionSync {
   id                Int      @id @default(autoincrement())
   kcbTransactionId  String   @unique @map("kcbTransactionId")
   kcbReference      String?  @map("kcbReference")
-  amount            Float
+  amount            Decimal  @db.Decimal(12, 2)
   transactionDate   DateTime @map("transactionDate")
   description       String?
-  transactionType   String   @map("transactionType") // CREDIT, DEBIT
+  transactionType   String   @map("transactionType")
   
-  // Sync status
-  syncStatus        String   @default("UNLINKED") @map("syncStatus") // UNLINKED, LINKED, IGNORED
+  // Sync status with proper foreign key
+  syncStatus        String   @default("UNLINKED") @map("syncStatus")
   linkedPaymentId   Int?     @map("linkedPaymentId")
+  linkedPayment     Payment? @relation("KcbLinkedPayment", fields: [linkedPaymentId], references: [id], onDelete: SetNull)
   
   // Raw KCB data
   rawData           Json?    @map("rawData")
@@ -255,6 +290,10 @@ model KcbTransactionSync {
   createdAt         DateTime @default(now()) @map("createdAt")
   updatedAt         DateTime @updatedAt @map("updatedAt")
 
+  @@index([syncStatus])
+  @@index([transactionDate])
+  @@index([linkedPaymentId])
+  @@index([kcbTransactionId])
   @@map("KcbTransactionSyncs")
 }
 
@@ -274,6 +313,9 @@ model Receipt {
   createdAt       DateTime  @default(now()) @map("createdAt")
   updatedAt       DateTime  @updatedAt @map("updatedAt")
 
+  @@index([userId, receiptDate])
+  @@index([receiptNumber])
+  @@index([paymentId])
   @@map("Receipts")
 }
 
@@ -291,6 +333,8 @@ model Notification {
   createdAt        DateTime @default(now()) @map("createdAt")
   updatedAt        DateTime @updatedAt @map("updatedAt")
 
+  @@index([userId, isRead])
+  @@index([notificationType])
   @@map("Notifications")
 }
 
@@ -310,5 +354,8 @@ model ContactInquiry {
   createdAt         DateTime  @default(now()) @map("createdAt")
   updatedAt         DateTime  @updatedAt @map("updatedAt")
 
+  @@index([status, createdAt])
+  @@index([email])
+  @@index([handledById])
   @@map("ContactInquiries")
 }
