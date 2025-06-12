@@ -3,25 +3,41 @@ const bcrypt = require('bcrypt');
 
 const prisma = new PrismaClient();
 
+async function safeDeleteMany(model, modelName) {
+  try {
+    await model.deleteMany({});
+    console.log(`✓ Cleaned ${modelName}`);
+  } catch (error) {
+    if (error.code === 'P2021') {
+      console.log(`⚠ Table ${modelName} does not exist, skipping...`);
+    } else {
+      throw error;
+    }
+  }
+}
+
 async function main() {
   console.log('Start seeding ...');
 
-  // 1. Clean up the database
+  // 1. Clean up the database (safely)
   console.log('Cleaning database...');
+  
   // Delete in an order that respects foreign key constraints
-  await prisma.withdrawalApproval.deleteMany({});
-  await prisma.withdrawalRequest.deleteMany({});
-  await prisma.wallet.deleteMany({});
-  await prisma.payment.deleteMany({});
-  await prisma.batchPayment.deleteMany({});
-  await prisma.specialOffering.deleteMany({});
-  await prisma.adminActionApproval.deleteMany({});
-  await prisma.adminAction.deleteMany({});
-  await prisma.notification.deleteMany({});
-  await prisma.receipt.deleteMany({});
-  await prisma.contactInquiry.deleteMany({});
-  await prisma.user.deleteMany({});
-  console.log('Database cleaned.');
+  await safeDeleteMany(prisma.withdrawalApproval, 'WithdrawalApprovals');
+  await safeDeleteMany(prisma.withdrawalRequest, 'WithdrawalRequests');
+  await safeDeleteMany(prisma.wallet, 'Wallets');
+  await safeDeleteMany(prisma.kcbTransactionSync, 'KcbTransactionSyncs');
+  await safeDeleteMany(prisma.receipt, 'Receipts');
+  await safeDeleteMany(prisma.payment, 'Payments');
+  await safeDeleteMany(prisma.batchPayment, 'BatchPayments');
+  await safeDeleteMany(prisma.specialOffering, 'SpecialOfferings');
+  await safeDeleteMany(prisma.adminActionApproval, 'AdminActionApprovals');
+  await safeDeleteMany(prisma.adminAction, 'AdminActions');
+  await safeDeleteMany(prisma.notification, 'Notifications');
+  await safeDeleteMany(prisma.contactInquiry, 'ContactInquiries');
+  await safeDeleteMany(prisma.user, 'Users');
+  
+  console.log('Database cleaning completed.');
 
   // 2. Create Users
   console.log('Creating users...');
@@ -65,9 +81,9 @@ async function main() {
       role: 'MEMBER',
     },
   });
-  console.log(`Created admin user: ${adminUser.username}`);
-  console.log(`Created regular user: ${user1.username}`);
-  console.log(`Created regular user: ${user2.username}`);
+  console.log(`✓ Created admin user: ${adminUser.username}`);
+  console.log(`✓ Created regular user: ${user1.username}`);
+  console.log(`✓ Created regular user: ${user2.username}`);
 
   // 3. Create a Special Offering
   console.log('Creating special offering...');
@@ -85,9 +101,11 @@ async function main() {
       },
     },
   });
-  console.log(`Created special offering: ${specialOffering.name}`);
+  console.log(`✓ Created special offering: ${specialOffering.name}`);
 
-  // You can add more data creation here, e.g., Payments, Offerings, etc.
+  // 4. Create sample payments
+  console.log('Creating sample payments...');
+  
   // Example: Create a Tithe payment for John Doe
   await prisma.payment.create({
     data: {
@@ -105,7 +123,7 @@ async function main() {
       processedById: adminUser.id,
     },
   });
-  console.log(`Created a sample Tithe payment for ${user1.fullName}.`);
+  console.log(`✓ Created sample Tithe payment for ${user1.fullName}`);
   
   // Example: Create a contribution to the special offering for Jane Doe
   await prisma.payment.create({
@@ -121,17 +139,16 @@ async function main() {
         processedById: adminUser.id,
       }
   });
-  console.log(`Created a sample Special Offering payment for ${user2.fullName}.`);
+  console.log(`✓ Created sample Special Offering payment for ${user2.fullName}`);
 
-
-  console.log('Seeding finished.');
+  console.log('\n🎉 Seeding completed successfully!');
 }
 
 main()
   .catch((e) => {
-    console.error(e);
+    console.error('❌ Seeding failed:', e);
     process.exit(1);
   })
   .finally(async () => {
     await prisma.$disconnect();
-  }); 
+  });

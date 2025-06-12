@@ -54,4 +54,17 @@ router.post('/withdrawals/:withdrawalId/receipt', authenticateJWT, isAdmin,
 router.post('/validate-tithe', authenticateJWT, isAdmin, 
     titheDistributionValidation, walletController.validateTitheDistribution);
 
+// Temporary implementation for add-items route
+router.route('/:batchId/add-items')
+  .post(authenticateJWT, isAdmin, (req, res) => {
+    res.status(501).json({ 
+      success: false,
+      message: 'Not yet implemented',
+      error: {
+        code: 'NOT_IMPLEMENTED',
+        details: 'This endpoint is planned but not yet implemented.'
+      }
+    });
+  });
+
 module.exports = router;

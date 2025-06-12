@@ -281,7 +281,7 @@ model KcbTransactionSync {
   
   // Sync status with proper foreign key
   syncStatus        String   @default("UNLINKED") @map("syncStatus")
-  linkedPaymentId   Int?     @map("linkedPaymentId")
+  linkedPaymentId   Int?     @unique @map("linkedPaymentId")  // Added @unique here
   linkedPayment     Payment? @relation("KcbLinkedPayment", fields: [linkedPaymentId], references: [id], onDelete: SetNull)
   
   // Raw KCB data
