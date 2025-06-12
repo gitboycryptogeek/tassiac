@@ -265,6 +265,56 @@ class WalletService {
       throw error;
     }
   }
+  /**
+   * Retrieves all wallets, groups them by type, and calculates overall summary statistics.
+   * @returns {Promise<object>} An object containing grouped wallets and summary data.
+   */
+  static async getWalletsGroupedByType() {
+    const allWallets = await prisma.wallet.findMany({
+      orderBy: {
+        walletType: 'asc',
+        subType: 'asc',
+      },
+    });
+
+    // If no wallets exist, return a default empty structure
+    if (!allWallets || allWallets.length === 0) {
+      return { 
+        wallets: {}, 
+        totalBalance: 0, 
+        totalDeposits: 0, 
+        totalWithdrawals: 0 
+      };
+    }
+
+    // Calculate totals by iterating through the wallets
+    let totalBalance = 0;
+    let totalDeposits = 0;
+    let totalWithdrawals = 0;
+
+    allWallets.forEach(wallet => {
+      totalBalance += Number(wallet.balance);
+      totalDeposits += Number(wallet.totalDeposits);
+      totalWithdrawals += Number(wallet.totalWithdrawals);
+    });
+
+    // Group wallets by their main type (e.g., TITHE, OFFERING)
+    const groupedWallets = allWallets.reduce((acc, wallet) => {
+      const key = wallet.walletType;
+      if (!acc[key]) {
+        acc[key] = [];
+      }
+      acc[key].push(wallet);
+      return acc;
+    }, {});
+
+    return {
+      wallets: groupedWallets,
+      totalBalance,
+      totalDeposits,
+      totalWithdrawals
+    };
+  }
 
   // Validate tithe distribution amounts
   static validateTitheDistribution(distribution, totalAmount) {

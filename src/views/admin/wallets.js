@@ -79,7 +79,7 @@ export class AdminWalletsView {
         try {
             // Load wallets and withdrawals in parallel
             const [walletsResponse, withdrawalsResponse] = await Promise.all([
-                this.apiService.request('GET', '/wallets', null, {
+                this.apiService.request('GET', '/wallets/all', null, { // <-- Changed this line
                     signal: abortController.signal
                 }),
                 this.apiService.request('GET', '/wallets/withdrawals', null, {
@@ -159,10 +159,8 @@ export class AdminWalletsView {
 
     renderErrorState() {
         return `
-            <!-- Navigation -->
             ${this.renderNavigation()}
             
-            <!-- Main Content -->
             <main class="main-content">
                 <div class="error-state">
                     <div class="error-icon">❌</div>
@@ -176,10 +174,8 @@ export class AdminWalletsView {
 
     renderLoadingState() {
         return `
-            <!-- Navigation -->
             ${this.renderNavigation()}
             
-            <!-- Main Content -->
             <main class="main-content">
                 <div class="loading-state">
                     <div class="loading-spinner"></div>
@@ -194,12 +190,9 @@ export class AdminWalletsView {
         const pendingApprovals = this.withdrawalRequests.filter(w => w.status === 'PENDING');
         
         return `
-            <!-- Navigation -->
             ${this.renderNavigation()}
 
-            <!-- Main Content -->
             <main class="main-content">
-                <!-- Header -->
                 <header class="page-header">
                     <h1 class="page-title">Wallet Management</h1>
                     <div class="header-actions">
@@ -218,10 +211,8 @@ export class AdminWalletsView {
                     </div>
                 </header>
 
-                <!-- Alerts -->
                 <div id="alerts-container"></div>
 
-                <!-- Hero Section -->
                 <section class="hero-section">
                     <div class="hero-card">
                         <div class="balance-display">
@@ -235,7 +226,6 @@ export class AdminWalletsView {
                     </div>
                 </section>
 
-                <!-- System Stats -->
                 <section class="system-stats">
                     <div class="stats-grid">
                         <div class="stat-card">
@@ -269,7 +259,6 @@ export class AdminWalletsView {
                     </div>
                 </section>
 
-                <!-- Pending Approvals -->
                 ${pendingApprovals.length > 0 ? `
                 <section class="pending-approvals">
                     <div class="card">
@@ -283,7 +272,6 @@ export class AdminWalletsView {
                 </section>
                 ` : ''}
 
-                <!-- Wallets Grid -->
                 <section class="wallets-section">
                     <h2 class="section-title">Wallet Categories</h2>
                     <div class="wallets-grid">
@@ -291,7 +279,6 @@ export class AdminWalletsView {
                     </div>
                 </section>
 
-                <!-- Recent Withdrawals -->
                 <section class="withdrawals-section">
                     <div class="card">
                         <div class="card-header">
@@ -1131,7 +1118,7 @@ export class AdminWalletsView {
                 throw new Error('Phone number is required for M-Pesa transfers');
             }
             // Validate Kenyan phone number format
-            const phonePattern = /^(\+254|0)?[17]\d{8}$/;
+            const phonePattern = /^(\\+254|0)?[17]\\d{8}$/;
             if (!phonePattern.test(destinationPhone)) {
                 throw new Error('Please enter a valid Kenyan phone number');
             }

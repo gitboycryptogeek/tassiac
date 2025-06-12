@@ -2,7 +2,7 @@
 const { PrismaClient, Prisma } = require('@prisma/client');
 const { validationResult } = require('express-validator');
 const { promisify } = require('util');
-const fs = require('fs').promises;
+const { logger } = require('../config/logger');
 const path = require('path');
 const crypto = require('crypto');
 const { initiateKcbWithdrawal } = require('../utils/kcbPaymentUtils.js');
@@ -11,24 +11,9 @@ const WalletService = require('../utils/walletService.js');
 
 const prisma = new PrismaClient();
 
-// Centralized logging utility (non-blocking)
+// Replace the existing logActivity function with this simpler version
 const logActivity = async (message, data = null) => {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] WALLET_CTRL: ${message}${data ? ` | Data: ${JSON.stringify(data)}` : ''}`;
-  console.log(logMessage);
-  
-  // Non-blocking file logging
-  if (process.env.NODE_ENV !== 'production') {
-    const LOG_DIR = path.join(__dirname, '..', 'logs');
-    const LOG_FILE = path.join(LOG_DIR, 'wallet-controller.log');
-    
-    try {
-      await fs.mkdir(LOG_DIR, { recursive: true });
-      await fs.appendFile(LOG_FILE, logMessage + '\n');
-    } catch (error) {
-      console.error('Logging failed:', error.message);
-    }
-  }
+    logger.wallet(message, data);
 };
 
 // Standardized response helper
@@ -144,58 +129,44 @@ exports.validateTitheDistribution = async (req, res) => {
 };
 
 // Get all wallets with their balances
-exports.getAllWallets = async (req, res) => {
+exports.getAllWallets = async (req, res, next) => {
+  logger.info('Get All Wallets attempt started');
   try {
-    await logActivity('Get All Wallets attempt started');
-    
-    const wallets = await prisma.wallet.findMany({
-      where: { isActive: true },
-      orderBy: [
-        { walletType: 'asc' },
-        { subType: 'asc' },
-      ],
-    });
+      const {
+          wallets,
+          totalBalance,
+          totalDeposits,
+          totalWithdrawals
+      } = await walletService.getWalletsGroupedByType();
 
-    // Group wallets by type for better frontend organization
-    const groupedWallets = {
-      TITHE: wallets.filter(w => w.walletType === 'TITHE'),
-      OFFERING: wallets.filter(w => w.walletType === 'OFFERING'),
-      DONATION: wallets.filter(w => w.walletType === 'DONATION'),
-      SPECIAL_OFFERING: wallets.filter(w => w.walletType === 'SPECIAL_OFFERING'),
-    };
+      if (!wallets || Object.keys(wallets).length === 0) {
+          return res.status(404).json({
+              success: false,
+              message: 'No wallets found. Please initialize the wallet system.',
+          });
+      }
 
-    // Calculate totals safely
-    const totalBalance = wallets.reduce((sum, wallet) => sum + parseFloat(wallet.balance.toString()), 0);
-    const totalDeposits = wallets.reduce((sum, wallet) => sum + parseFloat(wallet.totalDeposits.toString()), 0);
-    const totalWithdrawals = wallets.reduce((sum, wallet) => sum + parseFloat(wallet.totalWithdrawals.toString()), 0);
+      const walletCount = Object.values(wallets).reduce((acc, val) => acc + val.length, 0);
 
-    // Convert Decimal fields to numbers for JSON serialization
-    const serializedGroupedWallets = {};
-    Object.keys(groupedWallets).forEach(key => {
-      serializedGroupedWallets[key] = groupedWallets[key].map(wallet => ({
-        ...wallet,
-        balance: parseFloat(wallet.balance.toString()),
-        totalDeposits: parseFloat(wallet.totalDeposits.toString()),
-        totalWithdrawals: parseFloat(wallet.totalWithdrawals.toString()),
-      }));
-    });
+      logger.info(`Retrieved ${walletCount} wallets with total balance: ${totalBalance}`);
 
-    await logActivity(`Retrieved ${wallets.length} wallets with total balance: ${totalBalance}`);
-    
-    return sendResponse(res, 200, true, {
-      wallets: serializedGroupedWallets,
-      summary: {
-        totalBalance: parseFloat(totalBalance.toFixed(2)),
-        totalDeposits: parseFloat(totalDeposits.toFixed(2)),
-        totalWithdrawals: parseFloat(totalWithdrawals.toFixed(2)),
-        walletsCount: wallets.length,
-      },
-    }, 'Wallets retrieved successfully.');
+      return res.status(200).json({
+          success: true,
+          message: `Retrieved ${walletCount} wallets successfully.`,
+          data: {
+              wallets: wallets,
+              summary: {
+                  totalBalance: totalBalance,
+                  totalDeposits: totalDeposits,
+                  totalWithdrawals: totalWithdrawals,
+                  walletsCount: walletCount
+              }
+          }
+      });
 
   } catch (error) {
-    await logActivity('Error getting wallets:', error.message);
-    console.error(error);
-    return sendResponse(res, 500, false, null, 'Server error retrieving wallets.', { code: 'SERVER_ERROR', details: error.message });
+      logger.error(`Error in getAllWallets: ${error.message}`);
+      next(new AppError('Server error while retrieving wallets.', 500));
   }
 };
 
