@@ -1,4 +1,3 @@
-// server/routes/walletRoutes.js
 const express = require('express');
 const { body, param, query } = require('express-validator');
 const walletController = require('../controllers/walletController.js');
@@ -16,13 +15,29 @@ router.post(
   walletController.initializeWallets
 );
 
+// POST recalculate wallet balances from all payments (data repair function)
+router.post(
+  '/recalculate',
+  walletController.recalculateWalletBalances
+);
+
+// POST validate tithe distribution
+router.post(
+  '/validate-tithe',
+  [
+    body('distribution').isObject().withMessage('Distribution must be an object.'),
+    body('totalAmount').isFloat({ gt: 0 }).withMessage('Total amount must be a positive number.'),
+  ],
+  walletController.validateTitheDistribution
+);
+
 // GET all wallets with balances
 router.get(
   '/',
   walletController.getAllWallets
 );
 
-// POST update wallet balances from completed payments
+// POST update wallet balances from completed payments (manual trigger)
 router.post(
   '/update-balances',
   [
@@ -85,4 +100,4 @@ router.post(
   walletController.approveWithdrawalRequest
 );
 
-module.exports = router;
+module.exports = router; 

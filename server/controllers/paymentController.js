@@ -9,6 +9,7 @@ const { sendSmsNotification } = require('../utils/notificationUtils.js');
 const { initiateMpesaPayment } = require('../utils/paymentUtils.js');
 const { initiateKcbMpesaStkPush } = require('../utils/kcbPaymentUtils.js');
 const { isViewOnlyAdmin } = require('../middlewares/auth.js');
+const WalletService = require('../utils/walletService.js');
 
 const prisma = new PrismaClient();
 
@@ -100,7 +101,7 @@ exports.getAllPayments = async (req, res) => {
       if (titheCategory) {
         whereConditions.titheDistributionSDA = {
           path: `$.${titheCategory}`,
-          equals: true
+          not: 0
         };
       }
     } else if (paymentType === 'SPECIAL_OFFERING_CONTRIBUTION') {
@@ -421,6 +422,17 @@ exports.initiatePayment = async (req, res) => {
       }
     }
 
+    // Validate tithe distribution if provided
+    if (paymentType === 'TITHE' && titheDistributionSDA) {
+      const validation = WalletService.validateTitheDistribution(titheDistributionSDA, paymentAmount);
+      if (!validation.valid) {
+        return sendResponse(res, 400, false, null, 'Invalid tithe distribution', {
+          code: 'INVALID_TITHE_DISTRIBUTION',
+          details: validation.errors
+        });
+      }
+    }
+
     // ATOMIC TRANSACTION: Gateway first, then database
     const result = await prisma.$transaction(async (tx) => {
       // Process special offering ID conversion
@@ -480,19 +492,6 @@ exports.initiatePayment = async (req, res) => {
         await logActivity(`M-Pesa STK push initiated. Ref: ${gatewayResponse.reference}`);
       }
 
-      // Validate tithe distribution if provided
-      let validatedTitheDistribution = null;
-      if (processedPaymentType === 'TITHE' && titheDistributionSDA) {
-        const sdaCategories = ['campMeetingExpenses', 'welfare', 'thanksgiving', 'stationFund', 'mediaMinistry'];
-        validatedTitheDistribution = {};
-        
-        for (const key of sdaCategories) {
-          if (titheDistributionSDA.hasOwnProperty(key)) {
-            validatedTitheDistribution[key] = Boolean(titheDistributionSDA[key]);
-          }
-        }
-      }
-
       // Only create payment record AFTER successful gateway response
       const paymentData = {
         userId: parseInt(userId),
@@ -511,7 +510,7 @@ exports.initiatePayment = async (req, res) => {
         kcbReference: paymentMethod.toUpperCase() === 'KCB' ? gatewayResponse.reference : null,
         bankDepositStatus: 'PENDING',
         specialOfferingId: processedSpecialOfferingId || null,
-        titheDistributionSDA: validatedTitheDistribution
+        titheDistributionSDA: titheDistributionSDA || null
       };
 
       const payment = await tx.payment.create({ data: paymentData });
@@ -601,7 +600,7 @@ exports.getPaymentStatus = async (req, res) => {
   }
 };
 
-// Add manual payment (admin only)
+// Add manual payment (admin only) - ENHANCED WITH AUTOMATIC WALLET UPDATES
 exports.addManualPayment = async (req, res) => {
   try {
     await logActivity('Admin: Add Manual Payment attempt started');
@@ -640,10 +639,21 @@ exports.addManualPayment = async (req, res) => {
     }
     
     const processedByAdminId = req.user.id;
-
     const paymentAmount = parseFloat(amount);
+    
     if (!userId || isNaN(paymentAmount) || paymentAmount <= 0 || !paymentType) {
       return sendResponse(res, 400, false, null, 'Missing or invalid required fields: userId, amount, paymentType.', { code: 'MISSING_INVALID_FIELDS' });
+    }
+
+    // Validate tithe distribution if provided
+    if (processedPaymentType === 'TITHE' && titheDistributionSDA) {
+      const validation = WalletService.validateTitheDistribution(titheDistributionSDA, paymentAmount);
+      if (!validation.valid) {
+        return sendResponse(res, 400, false, null, 'Invalid tithe distribution', {
+          code: 'INVALID_TITHE_DISTRIBUTION',
+          details: validation.errors
+        });
+      }
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -685,6 +695,7 @@ exports.addManualPayment = async (req, res) => {
         paymentData.description = description || `Contribution to ${offering.name}`;
       }
 
+      // Store tithe distribution as amounts, not booleans
       if (processedPaymentType === 'TITHE' && titheDistributionSDA) {
         paymentData.titheDistributionSDA = titheDistributionSDA;
       }
@@ -699,8 +710,19 @@ exports.addManualPayment = async (req, res) => {
 
       const createdPayment = await tx.payment.create({ 
         data: paymentData,
-        include: { user: true } 
+        include: { user: true, specialOffering: true } 
       });
+
+      // 🚀 AUTOMATICALLY UPDATE WALLETS FOR NON-EXPENSE PAYMENTS
+      if (!createdPayment.isExpense && createdPayment.status === 'COMPLETED') {
+        try {
+          await WalletService.updateWalletsForPayment(createdPayment.id, tx);
+          await logActivity(`✅ Wallets updated for payment ${createdPayment.id}`);
+        } catch (walletError) {
+          console.error('Wallet update failed:', walletError.message);
+          throw new Error(`Payment created but wallet update failed: ${walletError.message}`);
+        }
+      }
 
       // Generate receipt for non-expense completed payments
       if (!createdPayment.isExpense && createdPayment.status === 'COMPLETED') {
@@ -719,7 +741,7 @@ exports.addManualPayment = async (req, res) => {
               userName: user.fullName, 
               paymentDate: createdPayment.paymentDate,
               description: createdPayment.description,
-              titheDesignations: paymentType === 'TITHE' ? createdPayment.titheDistributionSDA : null 
+              titheDesignations: createdPayment.paymentType === 'TITHE' ? createdPayment.titheDistributionSDA : null 
             },
           }
         });
@@ -748,7 +770,7 @@ exports.addManualPayment = async (req, res) => {
         ...result,
         amount: parseFloat(result.amount.toString())
       }
-    }, 'Manual payment added successfully.');
+    }, 'Manual payment added successfully and wallets updated.');
 
   } catch (error) {
     await logActivity('Error adding manual payment:', error.message);
@@ -760,7 +782,7 @@ exports.addManualPayment = async (req, res) => {
   }
 };
 
-// KCB Callback - ENHANCED WITH PROPER ERROR HANDLING
+// KCB Callback - ENHANCED WITH WALLET UPDATES
 exports.kcbCallback = async (req, res) => {
   await logActivity('KCB Callback received:', JSON.stringify(req.body, null, 2));
   
@@ -784,7 +806,7 @@ exports.kcbCallback = async (req, res) => {
           status: 'PENDING',
           paymentMethod: 'KCB'
         },
-        include: { user: true }
+        include: { user: true, specialOffering: true }
       });
 
       if (!payment) {
@@ -812,6 +834,16 @@ exports.kcbCallback = async (req, res) => {
             bankDepositStatus: 'DEPOSITED',
           }
         });
+
+        // 🚀 AUTOMATICALLY UPDATE WALLETS
+        try {
+          await WalletService.updateWalletsForPayment(payment.id, tx);
+          await logActivity(`✅ Wallets updated for completed KCB payment ${payment.id}`);
+        } catch (walletError) {
+          console.error('Wallet update failed for KCB payment:', walletError.message);
+          // Don't fail the entire transaction, but log the error
+          await logActivity(`❌ Wallet update failed for payment ${payment.id}: ${walletError.message}`);
+        }
 
         // Create receipt atomically
         if (payment.user) {
@@ -883,7 +915,7 @@ exports.kcbCallback = async (req, res) => {
   return res.status(200).json({ status: 'success', message: 'Callback received and processed.' });
 };
 
-// M-Pesa Callback - ENHANCED WITH PROPER ERROR HANDLING
+// M-Pesa Callback - ENHANCED WITH WALLET UPDATES
 exports.mpesaCallback = async (req, res) => {
   await logActivity('M-Pesa Callback received:', JSON.stringify(req.body, null, 2));
   
@@ -907,7 +939,7 @@ exports.mpesaCallback = async (req, res) => {
           status: 'PENDING',
           paymentMethod: 'MPESA'
         },
-        include: { user: true }
+        include: { user: true, specialOffering: true }
       });
 
       if (!payment) {
@@ -953,6 +985,15 @@ exports.mpesaCallback = async (req, res) => {
             paymentDate: transactionDate,
           }
         });
+
+        // 🚀 AUTOMATICALLY UPDATE WALLETS
+        try {
+          await WalletService.updateWalletsForPayment(payment.id, tx);
+          await logActivity(`✅ Wallets updated for completed M-Pesa payment ${payment.id}`);
+        } catch (walletError) {
+          console.error('Wallet update failed for M-Pesa payment:', walletError.message);
+          await logActivity(`❌ Wallet update failed for payment ${payment.id}: ${walletError.message}`);
+        }
 
         // Create receipt atomically
         if (payment.user) {
@@ -1022,11 +1063,7 @@ exports.mpesaCallback = async (req, res) => {
   return res.status(200).json({ ResultCode: 0, ResultDesc: 'Callback received and processed.' });
 };
 
-/**
- * @desc    Add new payment items to an existing batch
- * @route   POST /api/batch-payments/:batchId/add-items
- * @access  Private/Admin
- */
+// Add new payment items to an existing batch
 exports.addItemsToBatch = async (req, res) => {
   const { batchId } = req.params;
   const { payments } = req.body;
@@ -1057,39 +1094,67 @@ exports.addItemsToBatch = async (req, res) => {
       });
     }
 
-    const createdPayments = await prisma.$transaction(
-      payments.map(item => {
-        const paymentData = {
-          ...item,
-          batchPaymentId: parseInt(batchId),
-          paymentDate: new Date(item.paymentDate),
-          status: 'COMPLETED', // Individual payments are marked as COMPLETED within the PENDING batch
-        };
-        return prisma.payment.create({ data: paymentData });
-      })
-    );
+    const result = await prisma.$transaction(async (tx) => {
+      const createdPayments = [];
+      let totalNewAmount = 0;
 
-    // After adding the new payments, we need to update the batch's total amount and count.
-    const batchUpdate = await prisma.batchPayment.update({
-      where: { id: parseInt(batchId) },
-      data: {
-        totalAmount: {
-          increment: createdPayments.reduce((sum, p) => sum + p.amount, 0),
+      for (const item of payments) {
+        // Validate payment data
+        if (!item.userId || !item.amount || !item.paymentType) {
+          throw new Error('Invalid payment data: userId, amount, and paymentType are required');
+        }
+
+        const paymentData = {
+          userId: parseInt(item.userId),
+          amount: parseFloat(item.amount),
+          paymentType: item.paymentType,
+          paymentMethod: 'BATCH_KCB',
+          description: item.description || '',
+          status: 'PENDING',
+          paymentDate: item.paymentDate ? new Date(item.paymentDate) : new Date(),
+          processedById: req.user.id,
+          batchPaymentId: parseInt(batchId),
+          isBatchProcessed: false,
+          bankDepositStatus: 'PENDING',
+          isExpense: !!item.isExpense,
+          department: item.department || null,
+          specialOfferingId: item.specialOfferingId || null,
+          titheDistributionSDA: item.titheDistributionSDA || null,
+        };
+
+        const createdPayment = await tx.payment.create({ data: paymentData });
+        createdPayments.push(createdPayment);
+        totalNewAmount += parseFloat(item.amount);
+      }
+
+      // Update batch totals
+      const updatedBatch = await tx.batchPayment.update({
+        where: { id: parseInt(batchId) },
+        data: {
+          totalAmount: { increment: totalNewAmount },
+          totalCount: { increment: createdPayments.length }
         },
-        totalCount: {
-          increment: createdPayments.length,
-        },
-      },
-      include: {
-        payments: true,
-      },
+      });
+
+      return { createdPayments, updatedBatch, totalNewAmount };
+    });
+
+    await logAdminActivity('ADD_BATCH_ITEMS', parseInt(batchId), req.user.id, {
+      itemsAdded: result.createdPayments.length,
+      addedAmount: result.totalNewAmount,
+      batchReference: batch.batchReference
     });
 
     res.status(200).json({
       success: true,
-      message: `${createdPayments.length} items added to batch successfully.`,
+      message: `${result.createdPayments.length} items added to batch successfully.`,
       data: {
-        batchPayment: batchUpdate,
+        batchPayment: {
+          ...result.updatedBatch,
+          totalAmount: parseFloat(result.updatedBatch.totalAmount.toString())
+        },
+        addedPayments: result.createdPayments.length,
+        addedAmount: result.totalNewAmount
       },
     });
 
@@ -1097,7 +1162,7 @@ exports.addItemsToBatch = async (req, res) => {
     console.error('Error adding items to batch:', error);
     res.status(500).json({
       success: false,
-      message: 'Server error while adding items to batch.',
+      message: error.message || 'Server error while adding items to batch.',
       error: error.message,
     });
   }
@@ -1127,15 +1192,32 @@ exports.updatePaymentStatus = async (req, res) => {
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      const payment = await tx.payment.findUnique({ where: { id: numericPaymentId } });
+      const payment = await tx.payment.findUnique({ 
+        where: { id: numericPaymentId },
+        include: { specialOffering: true }
+      });
       if (!payment) {
         throw new Error('Payment not found.');
       }
 
+      const oldStatus = payment.status;
+      const newStatus = status.toUpperCase();
+
       const updatedPayment = await tx.payment.update({
         where: { id: numericPaymentId },
-        data: { status: status.toUpperCase() },
+        data: { status: newStatus },
       });
+
+      // Handle wallet updates when status changes to COMPLETED
+      if (oldStatus !== 'COMPLETED' && newStatus === 'COMPLETED' && !payment.isExpense) {
+        try {
+          await WalletService.updateWalletsForPayment(numericPaymentId, tx);
+          await logActivity(`✅ Wallets updated for payment ${numericPaymentId} status change to COMPLETED`);
+        } catch (walletError) {
+          console.error('Wallet update failed:', walletError.message);
+          await logActivity(`❌ Wallet update failed for payment ${numericPaymentId}: ${walletError.message}`);
+        }
+      }
 
       return { payment, updatedPayment };
     });

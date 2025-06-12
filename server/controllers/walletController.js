@@ -7,6 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { initiateKcbWithdrawal } = require('../utils/kcbPaymentUtils.js');
 const { isViewOnlyAdmin } = require('../middlewares/auth.js');
+const WalletService = require('../utils/walletService.js'); 
 
 const prisma = new PrismaClient();
 
@@ -70,50 +71,8 @@ exports.initializeWallets = async (req, res) => {
       return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot initialize wallets.", { code: 'FORBIDDEN_VIEW_ONLY' });
     }
 
-    const defaultWallets = [
-      // Main offering wallets
-      { walletType: 'OFFERING', subType: null },
-      { walletType: 'DONATION', subType: null },
-      
-      // Tithe wallets with SDA categories
-      { walletType: 'TITHE', subType: 'campMeetingExpenses' },
-      { walletType: 'TITHE', subType: 'welfare' },
-      { walletType: 'TITHE', subType: 'thanksgiving' },
-      { walletType: 'TITHE', subType: 'stationFund' },
-      { walletType: 'TITHE', subType: 'mediaMinistry' },
-      
-      // Special offering wallet (will be dynamically created per offering)
-      { walletType: 'SPECIAL_OFFERING', subType: 'general' },
-    ];
-
     const result = await prisma.$transaction(async (tx) => {
-      const createdWallets = [];
-      
-      for (const walletConfig of defaultWallets) {
-        try {
-          const existingWallet = await tx.wallet.findUnique({
-            where: {
-              walletType_subType: {
-                walletType: walletConfig.walletType,
-                subType: walletConfig.subType,
-              },
-            },
-          });
-
-          if (!existingWallet) {
-            const wallet = await tx.wallet.create({
-              data: walletConfig,
-            });
-            createdWallets.push(wallet);
-            await logActivity(`Created wallet: ${walletConfig.walletType}/${walletConfig.subType}`);
-          }
-        } catch (error) {
-          await logActivity(`Error creating wallet ${walletConfig.walletType}/${walletConfig.subType}:`, error.message);
-          // Continue with other wallets instead of failing entire transaction
-        }
-      }
-      
-      return createdWallets;
+      return await WalletService.initializeDefaultWallets(tx);
     }, {
       maxWait: 10000,
       timeout: 30000,
@@ -128,6 +87,59 @@ exports.initializeWallets = async (req, res) => {
     await logActivity('Error initializing wallets:', error.message);
     console.error(error);
     return sendResponse(res, 500, false, null, 'Server error initializing wallets.', { code: 'SERVER_ERROR', details: error.message });
+  }
+};
+
+// Add new function to recalculate wallet balances
+exports.recalculateWalletBalances = async (req, res) => {
+  try {
+    await logActivity('Recalculate Wallet Balances attempt started');
+    
+    if (isViewOnlyAdmin(req.user)) {
+      return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot recalculate wallet balances.", { code: 'FORBIDDEN_VIEW_ONLY' });
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      return await WalletService.recalculateAllWalletBalances(tx);
+    }, {
+      maxWait: 30000,
+      timeout: 120000,
+    });
+
+    await logAdminActivity('RECALCULATE_WALLET_BALANCES', 'SYSTEM', req.user.id, { 
+      walletsProcessed: result.length 
+    });
+    
+    await logActivity(`Wallet balance recalculation completed for ${result.length} wallets.`);
+    
+    return sendResponse(res, 200, true, { 
+      walletSummary: result,
+      walletsProcessed: result.length
+    }, `Wallet balances recalculated successfully for ${result.length} wallets.`);
+
+  } catch (error) {
+    await logActivity('Error recalculating wallet balances:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error recalculating wallet balances.', { code: 'SERVER_ERROR', details: error.message });
+  }
+};
+
+// Add function to validate tithe distribution
+exports.validateTitheDistribution = async (req, res) => {
+  try {
+    const { distribution, totalAmount } = req.body;
+    
+    if (!distribution || !totalAmount) {
+      return sendResponse(res, 400, false, null, 'Distribution and totalAmount are required.', { code: 'MISSING_PARAMETERS' });
+    }
+
+    const validation = WalletService.validateTitheDistribution(distribution, parseFloat(totalAmount));
+    
+    return sendResponse(res, 200, true, validation, 'Tithe distribution validation completed.');
+
+  } catch (error) {
+    console.error(error);
+    return sendResponse(res, 500, false, null, 'Server error validating tithe distribution.', { code: 'SERVER_ERROR', details: error.message });
   }
 };
 
@@ -190,7 +202,7 @@ exports.getAllWallets = async (req, res) => {
 // Update wallet balances based on completed payments - ATOMIC OPERATIONS
 exports.updateWalletBalances = async (req, res) => {
   try {
-    await logActivity('Update Wallet Balances attempt started');
+    await logActivity('Manual Update Wallet Balances attempt started');
     
     if (isViewOnlyAdmin(req.user)) {
       return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot update wallet balances.", { code: 'FORBIDDEN_VIEW_ONLY' });
@@ -203,131 +215,41 @@ exports.updateWalletBalances = async (req, res) => {
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      const updatedWallets = new Map();
+      const updatedWallets = [];
       const processedPayments = [];
       
       for (const paymentId of paymentIds) {
-        const payment = await tx.payment.findUnique({
-          where: { id: parseInt(paymentId) },
-          include: { specialOffering: true },
-        });
-
-        if (!payment || payment.status !== 'COMPLETED' || payment.isExpense) {
-          continue; // Skip non-completed payments or expenses
-        }
-
-        const amount = parseFloat(payment.amount.toString());
-        let walletsToUpdate = [];
-
-        // Determine which wallets to update based on payment type
-        if (payment.paymentType === 'TITHE' && payment.titheDistributionSDA) {
-          // Distribute tithe among SDA categories
-          const distribution = payment.titheDistributionSDA;
-          const categories = ['campMeetingExpenses', 'welfare', 'thanksgiving', 'stationFund', 'mediaMinistry'];
-          const activeCategories = categories.filter(cat => distribution[cat] === true);
-          
-          if (activeCategories.length > 0) {
-            const amountPerCategory = amount / activeCategories.length;
-            activeCategories.forEach(category => {
-              walletsToUpdate.push({
-                walletType: 'TITHE',
-                subType: category,
-                amount: amountPerCategory,
-              });
-            });
-          } else {
-            // If no specific categories, put in general tithe wallet
-            walletsToUpdate.push({
-              walletType: 'TITHE',
-              subType: null,
-              amount: amount,
-            });
+        try {
+          const wallets = await WalletService.updateWalletsForPayment(parseInt(paymentId), tx);
+          if (wallets) {
+            updatedWallets.push(...wallets);
+            processedPayments.push(paymentId);
           }
-        } else if (payment.paymentType === 'SPECIAL_OFFERING_CONTRIBUTION' && payment.specialOffering) {
-          walletsToUpdate.push({
-            walletType: 'SPECIAL_OFFERING',
-            subType: payment.specialOffering.offeringCode,
-            amount: amount,
-          });
-        } else {
-          // Regular offering or donation
-          walletsToUpdate.push({
-            walletType: payment.paymentType,
-            subType: null,
-            amount: amount,
-          });
+        } catch (error) {
+          console.error(`Error updating wallets for payment ${paymentId}:`, error.message);
         }
-
-        // ATOMIC WALLET UPDATES
-        for (const walletUpdate of walletsToUpdate) {
-          const walletKey = `${walletUpdate.walletType}_${walletUpdate.subType || 'null'}`;
-          
-          let wallet = await tx.wallet.findUnique({
-            where: {
-              walletType_subType: {
-                walletType: walletUpdate.walletType,
-                subType: walletUpdate.subType,
-              },
-            },
-          });
-
-          if (!wallet) {
-            // Create wallet if it doesn't exist (for special offerings)
-            wallet = await tx.wallet.create({
-              data: {
-                walletType: walletUpdate.walletType,
-                subType: walletUpdate.subType,
-                balance: walletUpdate.amount,
-                totalDeposits: walletUpdate.amount,
-                specialOfferingId: payment.specialOfferingId,
-                lastUpdated: new Date(),
-              },
-            });
-          } else {
-            // ATOMIC UPDATE: Use increment operations to prevent race conditions
-            wallet = await tx.wallet.update({
-              where: { id: wallet.id },
-              data: {
-                balance: { increment: walletUpdate.amount },
-                totalDeposits: { increment: walletUpdate.amount },
-                lastUpdated: new Date(),
-              },
-            });
-          }
-
-          // Store updated wallet (overwrite if multiple updates to same wallet)
-          updatedWallets.set(walletKey, {
-            ...wallet,
-            balance: parseFloat(wallet.balance.toString()),
-            totalDeposits: parseFloat(wallet.totalDeposits.toString()),
-            totalWithdrawals: parseFloat(wallet.totalWithdrawals.toString()),
-          });
-          
-          await logActivity(`ATOMIC UPDATE: Wallet ${wallet.walletType}/${wallet.subType} incremented by ${walletUpdate.amount}`);
-        }
-        
-        processedPayments.push(payment.id);
       }
 
-      return { 
-        updatedWallets: Array.from(updatedWallets.values()), 
-        processedPayments 
-      };
+      return { updatedWallets, processedPayments };
     }, {
       maxWait: 15000,
       timeout: 60000,
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable // Highest isolation level
     });
 
-    await logAdminActivity('UPDATE_WALLET_BALANCES', 'SYSTEM', req.user.id, { 
+    await logAdminActivity('MANUAL_UPDATE_WALLET_BALANCES', 'SYSTEM', req.user.id, { 
       paymentsProcessed: result.processedPayments.length, 
       walletsUpdated: result.updatedWallets.length 
     });
     
-    await logActivity(`Updated ${result.updatedWallets.length} wallets from ${result.processedPayments.length} payments`);
+    await logActivity(`Manually updated ${result.updatedWallets.length} wallets from ${result.processedPayments.length} payments`);
     
     return sendResponse(res, 200, true, { 
-      updatedWallets: result.updatedWallets,
+      updatedWallets: result.updatedWallets.map(wallet => ({
+        ...wallet,
+        balance: parseFloat(wallet.balance.toString()),
+        totalDeposits: parseFloat(wallet.totalDeposits.toString()),
+        totalWithdrawals: parseFloat(wallet.totalWithdrawals.toString()),
+      })),
       processedPayments: result.processedPayments
     }, `Updated ${result.updatedWallets.length} wallets from ${result.processedPayments.length} payments.`);
 
@@ -489,7 +411,7 @@ exports.approveWithdrawalRequest = async (req, res) => {
           withdrawalRequestId: parseInt(withdrawalId),
           approvedById: req.user.id,
           approved: true,
-          password: password ? 'VERIFIED' : null, // Don't store actual password
+          password: password ? 'VERIFIED' : null,
           approvalMethod,
           comment: comment || null,
         },
@@ -505,8 +427,8 @@ exports.approveWithdrawalRequest = async (req, res) => {
 
       // Check if all required approvals are met
       if (updatedRequest.currentApprovals >= updatedRequest.requiredApprovals) {
-        // Process the withdrawal
-        return await processWithdrawal(tx, updatedRequest);
+        // Process the withdrawal using WalletService
+        return await processWithdrawalWithWalletService(tx, updatedRequest);
       }
 
       return { 
@@ -542,24 +464,19 @@ exports.approveWithdrawalRequest = async (req, res) => {
 };
 
 // Process withdrawal (internal function) - ATOMIC OPERATIONS
-async function processWithdrawal(tx, withdrawalRequest) {
-  await logActivity(`Processing withdrawal: ${withdrawalRequest.withdrawalReference}`);
+async function processWithdrawalWithWalletService(tx, withdrawalRequest) {
+  await logActivity(`Processing withdrawal using WalletService: ${withdrawalRequest.withdrawalReference}`);
   
   try {
-    // ATOMIC UPDATE: Update wallet balance using decrement with row locking
-    const updatedWallet = await tx.wallet.update({
-      where: { id: withdrawalRequest.walletId },
-      data: {
-        balance: { decrement: withdrawalRequest.amount },
-        totalWithdrawals: { increment: withdrawalRequest.amount },
-        lastUpdated: new Date(),
-      },
-    });
-
-    // Verify balance didn't go negative (additional safety check)
-    if (parseFloat(updatedWallet.balance.toString()) < 0) {
-      throw new Error('Withdrawal would result in negative balance. Operation cancelled.');
-    }
+    // Use WalletService to update wallet balance
+    await WalletService.updateOrCreateWallet(
+      withdrawalRequest.wallet.walletType,
+      withdrawalRequest.wallet.subType,
+      withdrawalRequest.amount,
+      'WITHDRAWAL',
+      withdrawalRequest.wallet.specialOfferingId,
+      tx
+    );
 
     // Create expense record for the withdrawal
     const expensePayment = await tx.payment.create({
@@ -604,7 +521,7 @@ async function processWithdrawal(tx, withdrawalRequest) {
       },
     });
 
-    await logActivity(`Withdrawal processed successfully: ${withdrawalRequest.withdrawalReference}`);
+    await logActivity(`Withdrawal processed successfully using WalletService: ${withdrawalRequest.withdrawalReference}`);
     
     return {
       approved: true,
@@ -613,13 +530,12 @@ async function processWithdrawal(tx, withdrawalRequest) {
         ...finalWithdrawalRequest,
         amount: parseFloat(finalWithdrawalRequest.amount.toString()),
       },
-      walletBalance: parseFloat(updatedWallet.balance.toString()),
       expensePaymentId: expensePayment.id,
       kcbResponse: kcbResponse
     };
 
   } catch (error) {
-    await logActivity('Error in processWithdrawal:', error.message);
+    await logActivity('Error in processWithdrawalWithWalletService:', error.message);
     throw error;
   }
 }

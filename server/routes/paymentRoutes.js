@@ -124,15 +124,30 @@ router.post(
     body('isExpense').optional().isBoolean().toBoolean(),
     body('department').if(body('isExpense').equals(true)).notEmpty().withMessage('Department is required for expenses.'),
 
-    // Conditional validation for tithes
+    // Updated tithe distribution validation for amounts instead of booleans
     body('titheDistributionSDA').if(body('paymentType').equals('TITHE')).optional().isObject().withMessage('Tithe distribution data must be an object.')
       .custom((value, { req }) => {
         if (req.body.paymentType === 'TITHE' && value) {
-          const requiredKeys = ["campMeetingExpenses", "welfare", "thanksgiving", "stationFund", "mediaMinistry"];
-          for (const key of requiredKeys) {
-            if (value.hasOwnProperty(key) && typeof value[key] !== 'boolean') {
-              throw new Error(`Invalid tithe category: ${key}. Must be a boolean value.`);
+          const totalAmount = parseFloat(req.body.amount);
+          const validCategories = ['campMeetingExpenses', 'welfare', 'thanksgiving', 'stationFund', 'mediaMinistry'];
+          let totalDistributed = 0;
+          
+          // Validate each category amount
+          for (const [category, amount] of Object.entries(value)) {
+            if (!validCategories.includes(category)) {
+              throw new Error(`Invalid tithe category: ${category}. Valid categories are: ${validCategories.join(', ')}`);
             }
+            
+            if (typeof amount !== 'number' || amount < 0) {
+              throw new Error(`Invalid amount for ${category}: must be a non-negative number`);
+            }
+            
+            totalDistributed += amount;
+          }
+          
+          // Check that distributed amount doesn't exceed total
+          if (totalDistributed > totalAmount) {
+            throw new Error(`Total tithe distribution (${totalDistributed}) cannot exceed payment amount (${totalAmount})`);
           }
         }
         return true;
@@ -217,15 +232,30 @@ router.post(
     body('paymentMethod').optional().isIn(['MPESA', 'KCB']).withMessage('Invalid payment method. Must be MPESA or KCB.'),
     body('phoneNumber').isMobilePhone('any', { strictMode: false }).withMessage('Valid phone number is required.'),
     
-    // Conditional validation for tithes
+    // Updated tithe distribution validation for amounts
     body('titheDistributionSDA').if(body('paymentType').equals('TITHE')).optional().isObject()
       .custom((value, { req }) => {
         if (req.body.paymentType === 'TITHE' && value) {
-          const requiredKeys = ["campMeetingExpenses", "welfare", "thanksgiving", "stationFund", "mediaMinistry"];
-          for (const key of requiredKeys) {
-            if (value.hasOwnProperty(key) && typeof value[key] !== 'boolean') {
-              throw new Error(`Invalid tithe category: ${key}. Must be a boolean value.`);
+          const totalAmount = parseFloat(req.body.amount);
+          const validCategories = ['campMeetingExpenses', 'welfare', 'thanksgiving', 'stationFund', 'mediaMinistry'];
+          let totalDistributed = 0;
+          
+          // Validate each category amount
+          for (const [category, amount] of Object.entries(value)) {
+            if (!validCategories.includes(category)) {
+              throw new Error(`Invalid tithe category: ${category}. Valid categories are: ${validCategories.join(', ')}`);
             }
+            
+            if (typeof amount !== 'number' || amount < 0) {
+              throw new Error(`Invalid amount for ${category}: must be a non-negative number`);
+            }
+            
+            totalDistributed += amount;
+          }
+          
+          // Check that distributed amount doesn't exceed total
+          if (totalDistributed > totalAmount) {
+            throw new Error(`Total tithe distribution (${totalDistributed}) cannot exceed payment amount (${totalAmount})`);
           }
         }
         return true;
@@ -236,7 +266,6 @@ router.post(
   ],
   paymentController.initiatePayment
 );
-
 // POST initiate M-Pesa payment (legacy endpoint for backward compatibility)
 router.post(
   '/initiate-mpesa',
@@ -253,7 +282,34 @@ router.post(
       }),
     body('description').optional().isString().trim(),
     body('phoneNumber').isMobilePhone('any', { strictMode: false }).withMessage('Valid phone number is required.'),
-    body('titheDistributionSDA').if(body('paymentType').equals('TITHE')).optional().isObject(),
+    
+    // Updated tithe distribution validation
+    body('titheDistributionSDA').if(body('paymentType').equals('TITHE')).optional().isObject()
+      .custom((value, { req }) => {
+        if (req.body.paymentType === 'TITHE' && value) {
+          const totalAmount = parseFloat(req.body.amount);
+          const validCategories = ['campMeetingExpenses', 'welfare', 'thanksgiving', 'stationFund', 'mediaMinistry'];
+          let totalDistributed = 0;
+          
+          for (const [category, amount] of Object.entries(value)) {
+            if (!validCategories.includes(category)) {
+              throw new Error(`Invalid tithe category: ${category}`);
+            }
+            
+            if (typeof amount !== 'number' || amount < 0) {
+              throw new Error(`Invalid amount for ${category}: must be a non-negative number`);
+            }
+            
+            totalDistributed += amount;
+          }
+          
+          if (totalDistributed > totalAmount) {
+            throw new Error(`Total tithe distribution cannot exceed payment amount`);
+          }
+        }
+        return true;
+      }),
+    
     body('specialOfferingId').if(body('paymentType').equals('SPECIAL')).optional().isInt(),
   ],
   paymentController.initiateMpesaPayment
@@ -275,7 +331,34 @@ router.post(
       }),
     body('description').optional().isString().trim(),
     body('phoneNumber').isMobilePhone('any', { strictMode: false }).withMessage('Valid phone number is required.'),
-    body('titheDistributionSDA').if(body('paymentType').equals('TITHE')).optional().isObject(),
+    
+    // Updated tithe distribution validation
+    body('titheDistributionSDA').if(body('paymentType').equals('TITHE')).optional().isObject()
+      .custom((value, { req }) => {
+        if (req.body.paymentType === 'TITHE' && value) {
+          const totalAmount = parseFloat(req.body.amount);
+          const validCategories = ['campMeetingExpenses', 'welfare', 'thanksgiving', 'stationFund', 'mediaMinistry'];
+          let totalDistributed = 0;
+          
+          for (const [category, amount] of Object.entries(value)) {
+            if (!validCategories.includes(category)) {
+              throw new Error(`Invalid tithe category: ${category}`);
+            }
+            
+            if (typeof amount !== 'number' || amount < 0) {
+              throw new Error(`Invalid amount for ${category}: must be a non-negative number`);
+            }
+            
+            totalDistributed += amount;
+          }
+          
+          if (totalDistributed > totalAmount) {
+            throw new Error(`Total tithe distribution cannot exceed payment amount`);
+          }
+        }
+        return true;
+      }),
+    
     body('specialOfferingId').if(body('paymentType').equals('SPECIAL')).optional().isInt(),
   ],
   (req, res, next) => {
