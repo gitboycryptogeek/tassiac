@@ -71,96 +71,106 @@ export class Router {
   }
   
   // Main route handling
-  async handleRoute() {
-    const path = window.location.pathname;
-    this.currentPath = path;
+  // Fixed import logic in handleRoute method
+async handleRoute() {
+  const path = window.location.pathname;
+  this.currentPath = path;
+  
+  try {
+    const route = this.findMatchingRoute(path);
+    document.title = `TASSIAC - ${this.getPageTitle(route.path)}`;
     
-    try {
-      // Find the matching route
-      const route = this.findMatchingRoute(path);
-      document.title = `TASSIAC - ${this.getPageTitle(route.path)}`;
-      
-      // Check if route requires authentication
-      if (route.requiresAuth) {
-        if (!this.authService || !this.authService.isAuthenticated()) {
-          console.log('Authentication required, redirecting to login');
-          this.redirectTo('/login');
-          return;
-        }
-        
-        // Check if route requires admin access
-        if (route.requiresAdmin && !this.authService.isAdmin()) {
-          console.log('Admin access required, redirecting to dashboard');
-          this.redirectTo(this.authService.isAdmin() ? '/admin/dashboard' : '/dashboard');
-          return;
-        }
+    if (route.requiresAuth) {
+      if (!this.authService || !this.authService.isAuthenticated()) {
+        console.log('Authentication required, redirecting to login');
+        this.redirectTo('/login');
+        return;
       }
       
-      // Load the view module
-      if (route.moduleUrl && route.className) {
-        const appContainer = document.getElementById('app');
-        if (!appContainer) {
-          console.error('App container not found');
-          return;
-        }
-        
-        // Show a loading indicator
-        this.showLoading(appContainer);
-        
-        try {
-          // Dynamic import with a timeout to ensure we don't wait forever
-          const modulePromise = import(/* @vite-ignore */ `../${route.moduleUrl}`);
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Module loading timed out')), 10000)
-          );
-          
-          // Wait for module to load or timeout
-          const viewModule = await Promise.race([modulePromise, timeoutPromise]);
-          
-          // Check if the module exports the expected class
-          if (viewModule && viewModule[route.className]) {
-            const ViewClass = viewModule[route.className];
-            const view = new ViewClass();
-            
-            // Clear the app container
-            appContainer.innerHTML = '';
-            
-            try {
-              // Render the view
-              const renderedComponent = await Promise.resolve(view.render());
-              
-              if (renderedComponent instanceof Node) {
-                appContainer.appendChild(renderedComponent);
-                
-                // Execute any post-render scripts if available
-                if (typeof view.afterRender === 'function') {
-                  setTimeout(() => view.afterRender(), 0);
-                }
-              } else {
-                console.error('Component render method did not return a valid DOM node');
-                this.renderErrorMessage(appContainer, 'Component returned invalid content');
-              }
-            } catch (renderError) {
-              console.error('Error rendering view:', renderError);
-              this.renderErrorMessage(appContainer, `Error rendering view: ${renderError.message}`);
-            }
-          } else {
-            console.error(`Module ${route.moduleUrl} does not export ${route.className}`);
-            this.renderErrorMessage(appContainer, `Component class '${route.className}' not found`);
-          }
-        } catch (loadError) {
-          console.error(`Error loading module ${route.moduleUrl}:`, loadError);
-          this.renderErrorMessage(appContainer, `Error loading module: ${loadError.message}`);
-        }
-      }
-    } catch (error) {
-      console.error('Route handling error:', error);
-      const appContainer = document.getElementById('app');
-      if (appContainer) {
-        this.renderErrorMessage(appContainer, `Routing error: ${error.message}`);
+      if (route.requiresAdmin && !this.authService.isAdmin()) {
+        console.log('Admin access required, redirecting to dashboard');
+        this.redirectTo(this.authService.isAdmin() ? '/admin/dashboard' : '/dashboard');
+        return;
       }
     }
+    
+    if (route.moduleUrl && route.className) {
+      const appContainer = document.getElementById('app');
+      if (!appContainer) {
+        console.error('App container not found');
+        return;
+      }
+      
+      this.showLoading(appContainer);
+      
+      try {
+        // Clean up the module path properly
+        let modulePath = route.moduleUrl.startsWith('/') 
+          ? route.moduleUrl.slice(1) 
+          : route.moduleUrl;
+        
+        // Remove 'views/' prefix if it exists (to avoid duplication)
+        if (modulePath.startsWith('views/')) {
+          modulePath = modulePath.slice(6); // Remove 'views/' (6 characters)
+        }
+        
+        // Construct the import path
+        const importPath = `../views/${modulePath}`;
+        
+        console.log('Attempting to load module:', importPath);
+        
+        const modulePromise = import(/* @vite-ignore */ importPath);
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Module loading timed out')), 10000)
+        );
+        
+        // Wait for module to load or timeout
+        const viewModule = await Promise.race([modulePromise, timeoutPromise]);
+        
+        // Check if the module exports the expected class
+        if (viewModule && viewModule[route.className]) {
+          const ViewClass = viewModule[route.className];
+          const view = new ViewClass();
+          
+          // Clear the app container
+          appContainer.innerHTML = '';
+          
+          try {
+            // Render the view
+            const renderedComponent = await Promise.resolve(view.render());
+            
+            if (renderedComponent instanceof Node) {
+              appContainer.appendChild(renderedComponent);
+              
+              // Execute any post-render scripts if available
+              if (typeof view.afterRender === 'function') {
+                setTimeout(() => view.afterRender(), 0);
+              }
+            } else {
+              console.error('Component render method did not return a valid DOM node');
+              this.renderErrorMessage(appContainer, 'Component returned invalid content');
+            }
+          } catch (renderError) {
+            console.error('Error rendering view:', renderError);
+            this.renderErrorMessage(appContainer, `Error rendering view: ${renderError.message}`);
+          }
+        } else {
+          console.error(`Module ${route.moduleUrl} does not export ${route.className}`);
+          this.renderErrorMessage(appContainer, `Component class '${route.className}' not found`);
+        }
+      } catch (loadError) {
+        console.error(`Error loading module ${route.moduleUrl}:`, loadError);
+        this.renderErrorMessage(appContainer, `Error loading module: ${loadError.message}`);
+      }
+    }
+  } catch (error) {
+    console.error('Route handling error:', error);
+    const appContainer = document.getElementById('app');
+    if (appContainer) {
+      this.renderErrorMessage(appContainer, `Routing error: ${error.message}`);
+    }
   }
+}
   
   // Find the matching route for a path
   findMatchingRoute(path) {

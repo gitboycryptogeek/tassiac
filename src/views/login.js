@@ -402,16 +402,19 @@ export class LoginView extends BaseComponent {
         storage.setItem('token', loginResult.token);
         storage.setItem('user', JSON.stringify(loginResult.user));
         
-        // Check if user is admin and redirect accordingly
-        console.log('User data:', loginResult.user);
-        console.log('Is admin:', loginResult.user.isAdmin === 1 || loginResult.user.isAdmin === true);
-        
-        if (loginResult.user.isAdmin === 1 || loginResult.user.isAdmin === true) {
-          console.log('Redirecting to admin dashboard');
-          window.location.href = '/admin/dashboard';
-        } else {
-          console.log('Redirecting to user dashboard');
-          window.location.href = '/dashboard';
+        // Wait for router navigation to complete
+        try {
+          if (loginResult.user.isAdmin) {
+            console.log('Redirecting to admin dashboard');
+            await this.router.navigateTo('/admin/dashboard');
+          } else {
+            console.log('Redirecting to user dashboard');
+            await this.router.navigateTo('/dashboard');
+          }
+          return; // Exit after successful navigation
+        } catch (navError) {
+          console.error('Navigation error:', navError);
+          this.error = 'Error during navigation. Please try again.';
         }
       } else {
         // Handle unexpected response format
