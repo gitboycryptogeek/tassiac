@@ -289,37 +289,77 @@ exports.createWithdrawalRequest = async (req, res) => {
     } = req.body;
 
     const result = await prisma.$transaction(async (tx) => {
-      // Validate wallet and amount with row-level locking
+      // Import validation service
+      const WalletValidationService = require('../utils/walletValidation.js');
+      
+      // Validate wallet existence and get with row-level locking
       const wallet = await tx.wallet.findUnique({ 
         where: { id: parseInt(walletId) },
-        // Use SELECT FOR UPDATE to lock the row
       });
       
       if (!wallet) {
         throw new Error('Wallet not found.');
       }
 
-      const withdrawalAmount = parseFloat(amount);
-      const currentBalance = parseFloat(wallet.balance.toString());
-      
-      if (withdrawalAmount > currentBalance) {
-        throw new Error(`Insufficient wallet balance. Available: ${currentBalance}, Requested: ${withdrawalAmount}`);
+      if (!wallet.isActive) {
+        throw new Error('Cannot withdraw from inactive wallet.');
       }
 
-      // Generate unique withdrawal reference
-      const withdrawalReference = `WD-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+      const withdrawalAmount = parseFloat(amount);
+      
+      // Enhanced validation
+      WalletValidationService.validateWithdrawalAmount(wallet, withdrawalAmount);
+      WalletValidationService.validateWithdrawalDestination(withdrawalMethod, destinationAccount, destinationPhone);
+      
+      // Business hours validation (can be disabled in env)
+      if (process.env.ENFORCE_BUSINESS_HOURS === 'true') {
+        WalletValidationService.validateBusinessHours();
+      }
+      
+      // Daily withdrawal limit validation
+      if (process.env.ENFORCE_DAILY_LIMITS === 'true') {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        
+        const todaysWithdrawals = await tx.withdrawalRequest.findMany({
+          where: {
+            requestedById: req.user.id,
+            createdAt: {
+              gte: today,
+              lt: tomorrow
+            },
+            status: {
+              in: ['PENDING', 'APPROVED', 'COMPLETED']
+            }
+          }
+        });
+        
+        WalletValidationService.validateDailyWithdrawalLimit(req.user.id, withdrawalAmount, todaysWithdrawals);
+      }
 
+      // Generate unique withdrawal reference with better format
+      const currentDate = new Date();
+      const dateStr = currentDate.toISOString().slice(0, 10).replace(/-/g, '');
+      const timeStr = currentDate.toTimeString().slice(0, 8).replace(/:/g, '');
+      const randomStr = crypto.randomBytes(3).toString('hex').toUpperCase();
+      const withdrawalReference = `WD-${dateStr}-${timeStr}-${randomStr}`;
+
+      // Create withdrawal request
       const withdrawalRequest = await tx.withdrawalRequest.create({
         data: {
           withdrawalReference,
           walletId: parseInt(walletId),
           amount: withdrawalAmount,
-          purpose,
-          description,
+          purpose: purpose.trim(),
+          description: description.trim(),
           requestedById: req.user.id,
           withdrawalMethod,
-          destinationAccount,
-          destinationPhone,
+          destinationAccount: destinationAccount ? destinationAccount.trim() : null,
+          destinationPhone: destinationPhone ? destinationPhone.trim() : null,
+          requiredApprovals: parseInt(process.env.REQUIRED_WITHDRAWAL_APPROVALS || '3'),
+          currentApprovals: 0,
         },
         include: {
           wallet: true,
@@ -338,7 +378,8 @@ exports.createWithdrawalRequest = async (req, res) => {
       amount: result.amount, 
       walletType: result.wallet.walletType,
       walletSubType: result.wallet.subType,
-      reference: result.withdrawalReference 
+      reference: result.withdrawalReference,
+      method: result.withdrawalMethod
     });
 
     await logActivity(`Withdrawal request created: ${result.withdrawalReference} for amount ${result.amount}`);
@@ -358,6 +399,70 @@ exports.createWithdrawalRequest = async (req, res) => {
     await logActivity('Error creating withdrawal request:', error.message);
     console.error(error);
     return sendResponse(res, 500, false, null, error.message || 'Server error creating withdrawal request.', { code: 'SERVER_ERROR', details: error.message });
+  }
+};
+
+exports.uploadWithdrawalReceipt = async (req, res) => {
+  try {
+    await logActivity('Upload Withdrawal Receipt attempt started');
+    
+    if (isViewOnlyAdmin(req.user)) {
+      return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot upload receipts.", { code: 'FORBIDDEN_VIEW_ONLY' });
+    }
+
+    const { withdrawalId } = req.params;
+    
+    if (!req.file) {
+      return sendResponse(res, 400, false, null, 'No file uploaded.', { code: 'NO_FILE_UPLOADED' });
+    }
+
+    // Validate file type and size
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'];
+    const maxSize = 5 * 1024 * 1024; // 5MB
+
+    if (!allowedTypes.includes(req.file.mimetype)) {
+      return sendResponse(res, 400, false, null, 'Invalid file type. Only JPEG, PNG, and PDF files are allowed.', { code: 'INVALID_FILE_TYPE' });
+    }
+
+    if (req.file.size > maxSize) {
+      return sendResponse(res, 400, false, null, 'File too large. Maximum size is 5MB.', { code: 'FILE_TOO_LARGE' });
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const withdrawal = await tx.withdrawalRequest.findUnique({
+        where: { id: parseInt(withdrawalId) }
+      });
+
+      if (!withdrawal) {
+        throw new Error('Withdrawal request not found.');
+      }
+
+      // Update withdrawal with receipt path
+      const receiptPath = `/uploads/withdrawal-receipts/${req.file.filename}`;
+      
+      const updatedWithdrawal = await tx.withdrawalRequest.update({
+        where: { id: parseInt(withdrawalId) },
+        data: {
+          // Add receipt path to existing data structure
+          // You might need to add a receiptPath field to your schema
+        }
+      });
+
+      return updatedWithdrawal;
+    });
+
+    await logAdminActivity('UPLOAD_WITHDRAWAL_RECEIPT', parseInt(withdrawalId), req.user.id, { 
+      filename: req.file.filename,
+      fileSize: req.file.size
+    });
+
+    await logActivity(`Withdrawal receipt uploaded: ${req.file.filename}`);
+    return sendResponse(res, 200, true, { receiptPath: `/uploads/withdrawal-receipts/${req.file.filename}` }, 'Receipt uploaded successfully.');
+
+  } catch (error) {
+    await logActivity('Error uploading withdrawal receipt:', error.message);
+    console.error(error);
+    return sendResponse(res, 500, false, null, error.message || 'Server error uploading receipt.', { code: 'SERVER_ERROR', details: error.message });
   }
 };
 

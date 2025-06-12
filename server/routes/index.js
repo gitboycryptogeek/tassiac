@@ -1,26 +1,24 @@
 // server/routes/index.js
 const express = require('express');
-const authRoutes = require('./authRoutes.js');
-const paymentRoutes = require('./paymentRoutes.js');
-const receiptRoutes = require('./receiptRoutes.js');
-const contactRoutes = require('./contactRoutes.js');
-const specialOfferingRoutes = require('./specialOfferingRoutes.js');
-const adminRoutes = require('./adminRoutes.js');
-const walletRoutes = require('./walletRoutes.js');
-const batchPaymentRoutes = require('./batchPaymentRoutes.js');
-const kcbSyncRoutes = require('./kcbSyncRoutes.js');
+const authRoutes = require('./authRoutes');
+const paymentRoutes = require('./paymentRoutes');
+const kcbSyncRoutes = require('./kcbSyncRoutes');
+const receiptRoutes = require('./receiptRoutes');
+const specialOfferingRoutes = require('./specialOfferingRoutes');
+const contactRoutes = require('./contactRoutes');
+const adminRoutes = require('./adminRoutes');
+const walletRoutes = require('./walletRoutes');
 
 const router = express.Router();
 
 router.use('/auth', authRoutes);
 router.use('/payment', paymentRoutes);
+router.use('/kcb-sync', kcbSyncRoutes);
 router.use('/receipt', receiptRoutes);
-router.use('/contact', contactRoutes);
 router.use('/special-offerings', specialOfferingRoutes);
+router.use('/contact', contactRoutes);
 router.use('/admin', adminRoutes);
 router.use('/wallets', walletRoutes);
-router.use('/batch-payments', batchPaymentRoutes);
-router.use('/kcb-sync', kcbSyncRoutes);
 
 // Base API route
 router.get('/', (req, res) => {

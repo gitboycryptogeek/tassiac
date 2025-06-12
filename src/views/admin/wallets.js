@@ -4,77 +4,67 @@ export class AdminWalletsView {
     constructor() {
         this.apiService = window.apiService;
         this.authService = window.authService;
-        this.user = this.authService?.getUser() || this.apiService?.getCurrentUser() || { fullName: 'Admin User' };
+        this.user = this.authService?.getUser() || this.apiService?.getCurrentUser() || null;
         
+        // Validate dependencies
+        if (!this.apiService) {
+            throw new Error('API Service is required but not available');
+        }
+        
+        if (!this.user) {
+            throw new Error('User authentication is required');
+        }
+
         // Data state
         this.wallets = [];
         this.groupedWallets = {};
         this.withdrawalRequests = [];
         this.totalBalance = 0;
-        this.isLoading = false; // Start as false to show interface immediately
+        this.isLoading = false;
         this.error = null;
-        this.success = null;
+        this.summary = null;
         
         // View state
-        this.isCreatingWithdrawal = false;
-        this.isViewingWalletDetails = false;
-        this.isApprovingWithdrawal = false;
+        this.activeModals = new Set();
         this.currentWallet = null;
         this.currentWithdrawal = null;
-        this.selectedFile = null;
         
-        // Filter state for wallet details
-        this.detailsStartDate = '';
-        this.detailsEndDate = '';
-        this.walletTransactions = [];
+        // Event abort controllers for cleanup
+        this.abortControllers = new Map();
         
-        // Chart data for wallet details
-        this.chartData = [];
+        // Bind methods properly
+        this.bindMethods();
         
-        // Withdrawal approval state
-        this.pendingApprovals = [];
-        this.approvalPassword = '';
+        console.log('💰 AdminWalletsView initialized for user:', this.user.fullName);
+    }
+
+    bindMethods() {
+        // Bind all event handlers to maintain proper context
+        const methodsToBind = [
+            'refreshData', 'openWithdrawalModal', 'openWalletDetails', 'openApprovalModal',
+            'closeWithdrawalModal', 'closeWalletDetailsModal', 'closeApprovalModal',
+            'handleWithdrawalSubmit', 'handleApprovalSubmit', 'toggleMethodFields',
+            'viewWithdrawalDetails', 'printWalletReport', 'downloadWalletData',
+            'initializeWalletSystem', 'recalculateBalances'
+        ];
         
-        // Initialize with fallback data immediately
-        this.createFallbackWallets();
-        
-        // Bind methods
-        this.closeWithdrawalModal = this.closeWithdrawalModal.bind(this);
-        this.closeWalletDetailsModal = this.closeWalletDetailsModal.bind(this);
-        this.closeApprovalModal = this.closeApprovalModal.bind(this);
-        this.handleWithdrawalSubmit = this.handleWithdrawalSubmit.bind(this);
-        this.handleApprovalSubmit = this.handleApprovalSubmit.bind(this);
-        this.toggleMethodFields = this.toggleMethodFields.bind(this);
-        this.refreshData = this.refreshData.bind(this);
-        this.openWithdrawalModal = this.openWithdrawalModal.bind(this);
-        this.openWalletDetails = this.openWalletDetails.bind(this);
-        this.openApprovalModal = this.openApprovalModal.bind(this);
-        this.viewWithdrawalDetails = this.viewWithdrawalDetails.bind(this);
-        this.printWalletReport = this.printWalletReport.bind(this);
-        this.downloadWalletData = this.downloadWalletData.bind(this);
-        
-        console.log('💰 AdminWalletsView initialized with fallback data');
+        methodsToBind.forEach(method => {
+            if (this[method]) {
+                this[method] = this[method].bind(this);
+            }
+        });
     }
 
     async init() {
         console.log('🚀 Initializing Wallets View');
         
-        // Always show interface first, then try to load real data
         try {
-            // Check if API service is available
-            if (!this.apiService) {
-                console.warn('⚠️ API Service not available, using fallback data');
-                this.showAlert('API Service not available. Using demo data.', 'info');
-                return; // Use fallback data already created in constructor
-            }
-            
-            console.log('📡 API Service available, loading real data...');
             await this.loadInitialData();
             console.log('✅ Wallet data loaded successfully');
         } catch (error) {
             console.error('❌ Error loading wallet data:', error);
-            this.showAlert('Could not load wallet data from server. Using demo data.', 'info');
-            // Keep fallback data, don't throw error
+            this.error = error.message;
+            this.showAlert('Failed to load wallet data: ' + error.message, 'error');
         }
     }
 
@@ -83,205 +73,63 @@ export class AdminWalletsView {
         this.isLoading = true;
         this.error = null;
         
+        const abortController = new AbortController();
+        this.abortControllers.set('loadData', abortController);
+        
         try {
-            // Load wallets
-            console.log('📊 Fetching wallets...');
-            try {
-                const walletsResponse = await this.apiService.getAllWallets();
-                console.log('📊 Wallets response:', walletsResponse);
-                
-                if (walletsResponse?.wallets) {
-                    this.groupedWallets = walletsResponse.wallets;
-                    this.totalBalance = walletsResponse.summary?.totalBalance || 0;
-                    
-                    // Flatten wallets for easier access
-                    this.wallets = [];
-                    Object.values(this.groupedWallets).forEach(categoryWallets => {
-                        if (Array.isArray(categoryWallets)) {
-                            this.wallets.push(...categoryWallets);
-                        }
-                    });
-                    
-                    console.log('💰 Total balance:', this.totalBalance);
-                    console.log('🏦 Total wallets:', this.wallets.length);
-                } else {
-                    console.warn('⚠️ No wallets data received, using fallback');
-                    this.createFallbackWallets();
-                }
-            } catch (walletError) {
-                console.warn('⚠️ Wallets API failed, using fallback:', walletError.message);
-                this.createFallbackWallets();
-            }
-            
-            // Load withdrawal requests
-            try {
-                console.log('💸 Fetching withdrawal requests...');
-                const withdrawalsResponse = await this.apiService.getWithdrawalRequests();
-                console.log('💸 Withdrawals response:', withdrawalsResponse);
-                
-                if (withdrawalsResponse?.withdrawalRequests) {
-                    this.withdrawalRequests = withdrawalsResponse.withdrawalRequests;
-                    this.pendingApprovals = this.withdrawalRequests.filter(w => w.status === 'PENDING');
-                    console.log('⏳ Pending approvals:', this.pendingApprovals.length);
-                } else {
-                    this.withdrawalRequests = [];
-                    this.pendingApprovals = [];
-                }
-            } catch (withdrawalError) {
-                console.warn('⚠️ Could not load withdrawals:', withdrawalError.message);
-                this.withdrawalRequests = [];
-                this.pendingApprovals = [];
-            }
-            
-        } catch (error) {
-            console.error('❌ Error loading wallet data:', error);
-            this.error = null; // Don't show error, just use fallback
-            this.createFallbackWallets();
-        } finally {
-            // Always ensure loading is set to false
-            this.isLoading = false;
-            console.log('✅ Wallet data loading completed');
-        }
-    }
+            // Load wallets and withdrawals in parallel
+            const [walletsResponse, withdrawalsResponse] = await Promise.all([
+                this.apiService.request('GET', '/wallets', null, {
+                    signal: abortController.signal
+                }),
+                this.apiService.request('GET', '/wallets/withdrawals', null, {
+                    signal: abortController.signal
+                })
+            ]);
 
-    createFallbackWallets() {
-        console.log('🔄 Creating fallback wallet data...');
-        
-        // Create fallback wallet structure with common church wallet types
-        this.groupedWallets = {
-            'TITHE': [
-                {
-                    id: 1,
-                    walletType: 'TITHE',
-                    subType: 'welfare',
-                    balance: 0,
-                    totalDeposits: 0,
-                    totalWithdrawals: 0,
-                    isActive: true,
-                    lastUpdated: new Date().toISOString(),
-                    updatedAt: new Date().toISOString()
-                },
-                {
-                    id: 2,
-                    walletType: 'TITHE',
-                    subType: 'campMeetingExpenses',
-                    balance: 0,
-                    totalDeposits: 0,
-                    totalWithdrawals: 0,
-                    isActive: true,
-                    lastUpdated: new Date().toISOString(),
-                    updatedAt: new Date().toISOString()
-                },
-                {
-                    id: 3,
-                    walletType: 'TITHE',
-                    subType: 'thanksgiving',
-                    balance: 0,
-                    totalDeposits: 0,
-                    totalWithdrawals: 0,
-                    isActive: true,
-                    lastUpdated: new Date().toISOString(),
-                    updatedAt: new Date().toISOString()
-                },
-                {
-                    id: 4,
-                    walletType: 'TITHE',
-                    subType: 'stationFund',
-                    balance: 0,
-                    totalDeposits: 0,
-                    totalWithdrawals: 0,
-                    isActive: true,
-                    lastUpdated: new Date().toISOString(),
-                    updatedAt: new Date().toISOString()
-                },
-                {
-                    id: 5,
-                    walletType: 'TITHE',
-                    subType: 'mediaMinistry',
-                    balance: 0,
-                    totalDeposits: 0,
-                    totalWithdrawals: 0,
-                    isActive: true,
-                    lastUpdated: new Date().toISOString(),
-                    updatedAt: new Date().toISOString()
-                }
-            ],
-            'OFFERING': [
-                {
-                    id: 6,
-                    walletType: 'OFFERING',
-                    subType: null,
-                    balance: 0,
-                    totalDeposits: 0,
-                    totalWithdrawals: 0,
-                    isActive: true,
-                    lastUpdated: new Date().toISOString(),
-                    updatedAt: new Date().toISOString()
-                }
-            ],
-            'DONATION': [
-                {
-                    id: 7,
-                    walletType: 'DONATION',
-                    subType: null,
-                    balance: 0,
-                    totalDeposits: 0,
-                    totalWithdrawals: 0,
-                    isActive: true,
-                    lastUpdated: new Date().toISOString(),
-                    updatedAt: new Date().toISOString()
-                }
-            ],
-            'SPECIAL_OFFERING': [
-                {
-                    id: 8,
-                    walletType: 'SPECIAL_OFFERING',
-                    subType: 'Building Fund',
-                    balance: 0,
-                    totalDeposits: 0,
-                    totalWithdrawals: 0,
-                    isActive: true,
-                    lastUpdated: new Date().toISOString(),
-                    updatedAt: new Date().toISOString()
-                },
-                {
-                    id: 9,
-                    walletType: 'SPECIAL_OFFERING',
-                    subType: 'Rice Project',
-                    balance: 0,
-                    totalDeposits: 0,
-                    totalWithdrawals: 0,
-                    isActive: true,
-                    lastUpdated: new Date().toISOString(),
-                    updatedAt: new Date().toISOString()
-                },
-                {
-                    id: 10,
-                    walletType: 'SPECIAL_OFFERING',
-                    subType: 'Youth Ministry',
-                    balance: 0,
-                    totalDeposits: 0,
-                    totalWithdrawals: 0,
-                    isActive: true,
-                    lastUpdated: new Date().toISOString(),
-                    updatedAt: new Date().toISOString()
-                }
-            ]
-        };
-        
-        this.totalBalance = 0;
-        this.withdrawalRequests = [];
-        this.pendingApprovals = [];
-        
-        // Flatten wallets for easier access
-        this.wallets = [];
-        Object.values(this.groupedWallets).forEach(categoryWallets => {
-            if (Array.isArray(categoryWallets)) {
-                this.wallets.push(...categoryWallets);
+            // Process wallets response
+            if (walletsResponse?.success && walletsResponse?.data) {
+                this.groupedWallets = walletsResponse.data.wallets || {};
+                this.summary = walletsResponse.data.summary || {};
+                this.totalBalance = this.summary.totalBalance || 0;
+                
+                // Flatten wallets for easier access
+                this.wallets = [];
+                Object.values(this.groupedWallets).forEach(categoryWallets => {
+                    if (Array.isArray(categoryWallets)) {
+                        this.wallets.push(...categoryWallets);
+                    }
+                });
+                
+                console.log('💰 Wallets loaded:', {
+                    totalBalance: this.totalBalance,
+                    categories: Object.keys(this.groupedWallets).length,
+                    totalWallets: this.wallets.length
+                });
+            } else {
+                throw new Error('Invalid wallets response structure');
             }
-        });
-        
-        console.log('✅ Fallback wallet data created with', this.wallets.length, 'wallets');
+
+            // Process withdrawals response
+            if (withdrawalsResponse?.success && withdrawalsResponse?.data) {
+                this.withdrawalRequests = withdrawalsResponse.data.withdrawalRequests || [];
+                console.log('💸 Withdrawal requests loaded:', this.withdrawalRequests.length);
+            } else {
+                console.warn('⚠️ Could not load withdrawal requests');
+                this.withdrawalRequests = [];
+            }
+
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                console.log('📡 Load data request was cancelled');
+                return;
+            }
+            console.error('❌ Error loading wallet data:', error);
+            throw new Error(`Failed to load wallet data: ${error.message}`);
+        } finally {
+            this.isLoading = false;
+            this.abortControllers.delete('loadData');
+        }
     }
 
     async render() {
@@ -294,8 +142,175 @@ export class AdminWalletsView {
         const container = document.createElement('div');
         container.className = 'wallet-page';
 
-        const html = `
+        if (this.error) {
+            container.innerHTML = this.renderErrorState();
+        } else if (this.isLoading) {
+            container.innerHTML = this.renderLoadingState();
+        } else {
+            container.innerHTML = this.renderMainContent();
+        }
+        
+        // Add event listeners after DOM is created
+        this.attachEventListeners(container);
+        
+        console.log('✅ Wallet view rendered successfully');
+        return container;
+    }
+
+    renderErrorState() {
+        return `
             <!-- Navigation -->
+            ${this.renderNavigation()}
+            
+            <!-- Main Content -->
+            <main class="main-content">
+                <div class="error-state">
+                    <div class="error-icon">❌</div>
+                    <h2>Unable to Load Wallet Data</h2>
+                    <p>${this.error}</p>
+                    <button class="btn btn-primary" id="retry-btn">🔄 Retry</button>
+                </div>
+            </main>
+        `;
+    }
+
+    renderLoadingState() {
+        return `
+            <!-- Navigation -->
+            ${this.renderNavigation()}
+            
+            <!-- Main Content -->
+            <main class="main-content">
+                <div class="loading-state">
+                    <div class="loading-spinner"></div>
+                    <h2>Loading Wallet Data...</h2>
+                    <p>Please wait while we load your wallet information.</p>
+                </div>
+            </main>
+        `;
+    }
+
+    renderMainContent() {
+        const pendingApprovals = this.withdrawalRequests.filter(w => w.status === 'PENDING');
+        
+        return `
+            <!-- Navigation -->
+            ${this.renderNavigation()}
+
+            <!-- Main Content -->
+            <main class="main-content">
+                <!-- Header -->
+                <header class="page-header">
+                    <h1 class="page-title">Wallet Management</h1>
+                    <div class="header-actions">
+                        <button class="btn btn-secondary" id="refresh-btn">
+                            <span>🔄</span> Refresh
+                        </button>
+                        <button class="btn btn-secondary" id="initialize-btn">
+                            <span>⚡</span> Initialize System
+                        </button>
+                        <button class="btn btn-secondary" id="recalculate-btn">
+                            <span>🧮</span> Recalculate Balances
+                        </button>
+                        <button class="btn btn-primary btn-withdraw" id="withdrawal-btn">
+                            <span>💸</span> Request Withdrawal
+                        </button>
+                    </div>
+                </header>
+
+                <!-- Alerts -->
+                <div id="alerts-container"></div>
+
+                <!-- Hero Section -->
+                <section class="hero-section">
+                    <div class="hero-card">
+                        <div class="balance-display">
+                            <div class="balance-label">Total Church Balance</div>
+                            <div class="balance-amount">KES ${this.formatCurrency(this.totalBalance)}</div>
+                            <div class="balance-info">Across ${Object.keys(this.groupedWallets).length} wallet categories • ${this.wallets.length} total wallets</div>
+                        </div>
+                        <div class="quick-stats">
+                            ${this.renderQuickStats()}
+                        </div>
+                    </div>
+                </section>
+
+                <!-- System Stats -->
+                <section class="system-stats">
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon">💰</div>
+                            <div class="stat-content">
+                                <div class="stat-value">KES ${this.formatCurrency(this.summary?.totalDeposits || 0)}</div>
+                                <div class="stat-label">Total Deposits</div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon">💸</div>
+                            <div class="stat-content">
+                                <div class="stat-value">KES ${this.formatCurrency(this.summary?.totalWithdrawals || 0)}</div>
+                                <div class="stat-label">Total Withdrawals</div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon">📊</div>
+                            <div class="stat-content">
+                                <div class="stat-value">${this.summary?.walletsCount || 0}</div>
+                                <div class="stat-label">Active Wallets</div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon">⏳</div>
+                            <div class="stat-content">
+                                <div class="stat-value">${pendingApprovals.length}</div>
+                                <div class="stat-label">Pending Approvals</div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Pending Approvals -->
+                ${pendingApprovals.length > 0 ? `
+                <section class="pending-approvals">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>⏳ Pending Withdrawal Approvals</h2>
+                        </div>
+                        <div class="card-body">
+                            ${this.renderPendingApprovals(pendingApprovals)}
+                        </div>
+                    </div>
+                </section>
+                ` : ''}
+
+                <!-- Wallets Grid -->
+                <section class="wallets-section">
+                    <h2 class="section-title">Wallet Categories</h2>
+                    <div class="wallets-grid">
+                        ${this.renderWalletsGrid()}
+                    </div>
+                </section>
+
+                <!-- Recent Withdrawals -->
+                <section class="withdrawals-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>Recent Withdrawals</h2>
+                            <div class="card-actions">
+                                <button class="btn btn-small btn-secondary" id="view-all-withdrawals">View All</button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            ${this.renderRecentWithdrawals()}
+                        </div>
+                    </div>
+                </section>
+            </main>
+        `;
+    }
+
+    renderNavigation() {
+        return `
             <nav class="top-nav">
                 <div class="nav-brand">
                     <span class="brand-icon">⛪</span>
@@ -323,154 +338,108 @@ export class AdminWalletsView {
                     <span class="user-name">${this.user?.fullName || 'Admin User'}</span>
                 </div>
             </nav>
-
-            <!-- Main Content -->
-            <main class="main-content">
-                <!-- Header -->
-                <header class="page-header">
-                    <h1 class="page-title">Wallet Management</h1>
-                    <div class="header-actions">
-                        <button class="btn btn-secondary" id="refresh-btn">
-                            <span>🔄</span> Refresh
-                        </button>
-                        <button class="btn btn-primary btn-withdraw" id="withdrawal-btn">
-                            <span>💸</span> Request Withdrawal
-                        </button>
-                    </div>
-                </header>
-
-                <!-- Alerts -->
-                <div id="alerts-container"></div>
-
-                <!-- Hero Section -->
-                <section class="hero-section">
-                    <div class="hero-card">
-                        <div class="balance-display">
-                            <div class="balance-label">Total Church Balance</div>
-                            <div class="balance-amount">KES ${this.formatCurrency(this.totalBalance)}</div>
-                            <div class="balance-info">Across ${Object.keys(this.groupedWallets).length} wallet categories</div>
-                        </div>
-                        <div class="quick-stats">
-                            ${this.renderQuickStats()}
-                        </div>
-                    </div>
-                </section>
-
-                <!-- Pending Approvals -->
-                ${this.pendingApprovals.length > 0 ? `
-                <section class="pending-approvals">
-                    <div class="card">
-                        <div class="card-header">
-                            <h2>⏳ Pending Withdrawal Approvals</h2>
-                        </div>
-                        <div class="card-body">
-                            ${this.renderPendingApprovals()}
-                        </div>
-                    </div>
-                </section>
-                ` : ''}
-
-                <!-- Wallets Grid -->
-                <section class="wallets-section">
-                    <h2 class="section-title">Wallet Categories</h2>
-                    <div class="wallets-grid">
-                        ${this.renderWalletsGrid()}
-                    </div>
-                </section>
-
-                <!-- Recent Withdrawals -->
-                <section class="withdrawals-section">
-                    <div class="card">
-                        <div class="card-header">
-                            <h2>Recent Withdrawals</h2>
-                        </div>
-                        <div class="card-body">
-                            ${this.renderRecentWithdrawals()}
-                        </div>
-                    </div>
-                </section>
-            </main>
         `;
-
-        container.innerHTML = html;
-        
-        // Add event listeners after DOM is created
-        this.attachEventListeners(container);
-        
-        window.walletsView = this; // Make available globally for fallback
-        console.log('✅ Wallet view rendered successfully');
-        
-        // Return the DOM element for the router
-        return container;
     }
 
     attachEventListeners(container) {
         console.log('🔗 Attaching event listeners...');
         
         // Header buttons
+        this.attachHeaderEventListeners(container);
+        
+        // Wallet cards interaction
+        this.attachWalletCardListeners(container);
+        
+        // Pending approvals interaction
+        this.attachApprovalListeners(container);
+        
+        // Withdrawals interaction
+        this.attachWithdrawalListeners(container);
+        
+        // Error state retry
+        const retryBtn = container.querySelector('#retry-btn');
+        if (retryBtn) {
+            retryBtn.addEventListener('click', this.refreshData);
+        }
+        
+        console.log('✅ Event listeners attached successfully');
+    }
+
+    attachHeaderEventListeners(container) {
         const refreshBtn = container.querySelector('#refresh-btn');
+        const initializeBtn = container.querySelector('#initialize-btn');
+        const recalculateBtn = container.querySelector('#recalculate-btn');
         const withdrawalBtn = container.querySelector('#withdrawal-btn');
         
         if (refreshBtn) {
             refreshBtn.addEventListener('click', this.refreshData);
         }
         
+        if (initializeBtn) {
+            initializeBtn.addEventListener('click', this.initializeWalletSystem);
+        }
+        
+        if (recalculateBtn) {
+            recalculateBtn.addEventListener('click', this.recalculateBalances);
+        }
+        
         if (withdrawalBtn) {
             withdrawalBtn.addEventListener('click', this.openWithdrawalModal);
         }
-        
-        // Wallet cards - delegate to parent container
+    }
+
+    attachWalletCardListeners(container) {
         const walletsGrid = container.querySelector('.wallets-grid');
         if (walletsGrid) {
             walletsGrid.addEventListener('click', (e) => {
                 const walletCard = e.target.closest('.wallet-card');
                 if (walletCard) {
-                    const walletId = walletCard.getAttribute('data-wallet-id');
+                    const walletId = parseInt(walletCard.getAttribute('data-wallet-id'));
                     if (walletId && !e.target.closest('.view-btn')) {
-                        this.openWalletDetails(parseInt(walletId));
+                        this.openWalletDetails(walletId);
                     }
                 }
                 
                 const viewBtn = e.target.closest('.view-btn');
                 if (viewBtn) {
                     e.stopPropagation();
-                    const walletId = viewBtn.getAttribute('data-wallet-id');
+                    const walletId = parseInt(viewBtn.getAttribute('data-wallet-id'));
                     if (walletId) {
-                        this.openWalletDetails(parseInt(walletId));
+                        this.openWalletDetails(walletId);
                     }
                 }
             });
         }
-        
-        // Pending approvals section
+    }
+
+    attachApprovalListeners(container) {
         const pendingApprovalsSection = container.querySelector('.pending-approvals');
         if (pendingApprovalsSection) {
             pendingApprovalsSection.addEventListener('click', (e) => {
                 const approvalBtn = e.target.closest('.approval-btn');
                 if (approvalBtn) {
-                    const withdrawalId = approvalBtn.getAttribute('data-withdrawal-id');
+                    const withdrawalId = parseInt(approvalBtn.getAttribute('data-withdrawal-id'));
                     if (withdrawalId) {
-                        this.openApprovalModal(parseInt(withdrawalId));
+                        this.openApprovalModal(withdrawalId);
                     }
                 }
             });
         }
-        
-        // Withdrawals section
+    }
+
+    attachWithdrawalListeners(container) {
         const withdrawalsSection = container.querySelector('.withdrawals-section');
         if (withdrawalsSection) {
             withdrawalsSection.addEventListener('click', (e) => {
                 const viewWithdrawalBtn = e.target.closest('.view-withdrawal-btn');
                 if (viewWithdrawalBtn) {
-                    const withdrawalId = viewWithdrawalBtn.getAttribute('data-withdrawal-id');
+                    const withdrawalId = parseInt(viewWithdrawalBtn.getAttribute('data-withdrawal-id'));
                     if (withdrawalId) {
-                        this.viewWithdrawalDetails(parseInt(withdrawalId));
+                        this.viewWithdrawalDetails(withdrawalId);
                     }
                 }
             });
         }
-        
-        console.log('✅ Event listeners attached successfully');
     }
 
     renderQuickStats() {
@@ -515,15 +484,16 @@ export class AdminWalletsView {
         `;
     }
 
-    renderPendingApprovals() {
-        return this.pendingApprovals.map(withdrawal => `
+    renderPendingApprovals(pendingApprovals) {
+        return pendingApprovals.map(withdrawal => `
             <div class="approval-item">
                 <div class="approval-info">
                     <div class="approval-ref">${withdrawal.withdrawalReference}</div>
                     <div class="approval-details">
                         <span class="approval-amount">KES ${this.formatCurrency(withdrawal.amount)}</span>
-                        <span class="approval-purpose">${withdrawal.purpose}</span>
+                        <span class="approval-purpose">${this.escapeHtml(withdrawal.purpose)}</span>
                         <span class="approval-progress">${withdrawal.currentApprovals}/${withdrawal.requiredApprovals} approvals</span>
+                        <span class="approval-wallet">${this.formatWalletName(withdrawal.wallet)}</span>
                     </div>
                 </div>
                 <button class="btn btn-primary btn-small approval-btn" data-withdrawal-id="${withdrawal.id}">
@@ -539,7 +509,8 @@ export class AdminWalletsView {
                 <div class="empty-state">
                     <div class="empty-icon">💰</div>
                     <h3>No Wallets Found</h3>
-                    <p>No wallet data available. Please check your configuration.</p>
+                    <p>Initialize the wallet system to get started.</p>
+                    <button class="btn btn-primary" id="init-from-empty">Initialize Wallets</button>
                 </div>
             `;
         }
@@ -564,12 +535,13 @@ export class AdminWalletsView {
                                     <div class="wallet-name">${this.formatWalletName(wallet)}</div>
                                     <div class="wallet-balance">KES ${this.formatCurrency(wallet.balance || 0)}</div>
                                     <div class="wallet-meta">
-                                        <span>Deposits: KES ${this.formatCurrency(wallet.totalDeposits || 0)}</span>
-                                        <span>Withdrawals: KES ${this.formatCurrency(wallet.totalWithdrawals || 0)}</span>
+                                        <span>In: KES ${this.formatCurrency(wallet.totalDeposits || 0)}</span>
+                                        <span>Out: KES ${this.formatCurrency(wallet.totalWithdrawals || 0)}</span>
+                                        <span>Updated: ${this.formatDate(wallet.lastUpdated)}</span>
                                     </div>
                                 </div>
                                 <div class="wallet-action">
-                                    <button class="view-btn" data-wallet-id="${wallet.id}">👁️</button>
+                                    <button class="view-btn" data-wallet-id="${wallet.id}" title="View Details">👁️</button>
                                 </div>
                             </div>
                         `).join('')}
@@ -585,7 +557,7 @@ export class AdminWalletsView {
                 <div class="empty-state">
                     <div class="empty-icon">💸</div>
                     <h3>No Withdrawals Yet</h3>
-                    <p>No withdrawal requests have been made. Click "Request Withdrawal" to create your first withdrawal.</p>
+                    <p>No withdrawal requests have been made.</p>
                 </div>
             `;
         }
@@ -594,20 +566,24 @@ export class AdminWalletsView {
             <div class="withdrawals-table">
                 <div class="table-header">
                     <div>Reference</div>
+                    <div>Wallet</div>
                     <div>Amount</div>
                     <div>Purpose</div>
                     <div>Status</div>
+                    <div>Progress</div>
                     <div>Date</div>
                     <div>Actions</div>
                 </div>
                 ${this.withdrawalRequests.slice(0, 10).map(withdrawal => `
                     <div class="table-row">
                         <div data-label="Reference">${withdrawal.withdrawalReference}</div>
+                        <div data-label="Wallet">${this.formatWalletName(withdrawal.wallet)}</div>
                         <div data-label="Amount">KES ${this.formatCurrency(withdrawal.amount)}</div>
-                        <div data-label="Purpose">${withdrawal.purpose}</div>
+                        <div data-label="Purpose">${this.escapeHtml(withdrawal.purpose)}</div>
                         <div data-label="Status">
                             <span class="status-badge status-${withdrawal.status.toLowerCase()}">${withdrawal.status}</span>
                         </div>
+                        <div data-label="Progress">${withdrawal.currentApprovals}/${withdrawal.requiredApprovals}</div>
                         <div data-label="Date">${this.formatDate(withdrawal.createdAt)}</div>
                         <div data-label="Actions">
                             <button class="btn btn-small btn-secondary view-withdrawal-btn" data-withdrawal-id="${withdrawal.id}">View</button>
@@ -621,26 +597,32 @@ export class AdminWalletsView {
     // Modal Methods
     openWithdrawalModal() {
         console.log('💸 Opening withdrawal modal');
-        this.isCreatingWithdrawal = true;
+        if (this.activeModals.has('withdrawal')) return;
+        
+        this.activeModals.add('withdrawal');
         this.showWithdrawalModal();
     }
 
     openApprovalModal(withdrawalId) {
         console.log('✅ Opening approval modal for withdrawal:', withdrawalId);
+        if (this.activeModals.has('approval')) return;
+        
         const withdrawal = this.withdrawalRequests.find(w => w.id === withdrawalId);
         if (withdrawal) {
             this.currentWithdrawal = withdrawal;
-            this.isApprovingWithdrawal = true;
+            this.activeModals.add('approval');
             this.showApprovalModal();
         }
     }
 
     openWalletDetails(walletId) {
         console.log('👁️ Opening wallet details for wallet:', walletId);
+        if (this.activeModals.has('walletDetails')) return;
+        
         const wallet = this.wallets.find(w => w.id === walletId);
         if (wallet) {
             this.currentWallet = wallet;
-            this.isViewingWalletDetails = true;
+            this.activeModals.add('walletDetails');
             this.showWalletDetailsModal();
         }
     }
@@ -665,13 +647,13 @@ export class AdminWalletsView {
                                 </div>
                                 
                                 <div class="form-group">
-                                    <label>Amount *</label>
+                                    <label>Amount (KES) *</label>
                                     <input type="number" name="amount" step="0.01" min="0.01" placeholder="0.00" required>
                                 </div>
                                 
                                 <div class="form-group">
                                     <label>Purpose *</label>
-                                    <input type="text" name="purpose" placeholder="Brief description" required>
+                                    <input type="text" name="purpose" placeholder="Brief description" required maxlength="100">
                                 </div>
                                 
                                 <div class="form-group form-group-full">
@@ -691,18 +673,12 @@ export class AdminWalletsView {
                                 
                                 <div class="form-group method-field" id="mpesaField" style="display: none;">
                                     <label>M-Pesa Phone Number</label>
-                                    <input type="tel" name="destinationPhone" placeholder="0712345678">
+                                    <input type="tel" name="destinationPhone" placeholder="0712345678" pattern="^(\\+254|0)?[17]\\d{8}$">
                                 </div>
                                 
                                 <div class="form-group form-group-full">
                                     <label>Description *</label>
-                                    <textarea name="description" rows="3" placeholder="Detailed description of the withdrawal..." required></textarea>
-                                </div>
-                                
-                                <div class="form-group form-group-full">
-                                    <label>Expense Receipt/Document</label>
-                                    <input type="file" name="expenseDocument" accept=".jpg,.jpeg,.png,.pdf">
-                                    <small class="file-info">Upload expense receipt or supporting document (max 5MB)</small>
+                                    <textarea name="description" rows="3" placeholder="Detailed description of the withdrawal..." required maxlength="500"></textarea>
                                 </div>
                                 
                                 <div class="form-group form-group-full">
@@ -710,8 +686,8 @@ export class AdminWalletsView {
                                         <div class="info-icon">ℹ️</div>
                                         <div class="info-text">
                                             <strong>Multi-Admin Approval Required</strong><br>
-                                            This withdrawal will require approval from 3 different administrators before processing.
-                                            All withdrawals are automatically treated as expenses.
+                                            This withdrawal will require approval from ${this.getRequiredApprovals()} different administrators before processing.
+                                            All withdrawals are automatically treated as expenses and will be recorded in the system.
                                         </div>
                                     </div>
                                 </div>
@@ -719,7 +695,7 @@ export class AdminWalletsView {
                             
                             <div class="modal-actions">
                                 <button type="button" class="btn btn-secondary" id="cancel-withdrawal">Cancel</button>
-                                <button type="submit" class="btn btn-primary">Submit Withdrawal Request</button>
+                                <button type="submit" class="btn btn-primary" id="submit-withdrawal">Submit Withdrawal Request</button>
                             </div>
                         </form>
                     </div>
@@ -731,12 +707,15 @@ export class AdminWalletsView {
         const modal = document.getElementById('withdrawalModal');
         modal.style.display = 'flex';
         
-        // Attach modal event listeners
         this.attachWithdrawalModalListeners();
         
-        setTimeout(() => {
-            document.querySelector('#withdrawalModal .modal').classList.add('show');
-        }, 10);
+        // Show modal with animation
+        requestAnimationFrame(() => {
+            const modalElement = modal.querySelector('.modal');
+            if (modalElement) {
+                modalElement.classList.add('show');
+            }
+        });
     }
 
     attachWithdrawalModalListeners() {
@@ -775,6 +754,15 @@ export class AdminWalletsView {
                 this.closeWithdrawalModal();
             }
         });
+        
+        // Escape key to close
+        const handleEscape = (e) => {
+            if (e.key === 'Escape') {
+                this.closeWithdrawalModal();
+                document.removeEventListener('keydown', handleEscape);
+            }
+        };
+        document.addEventListener('keydown', handleEscape);
     }
 
     showApprovalModal() {
@@ -794,37 +782,46 @@ export class AdminWalletsView {
                                 <span class="detail-value">${this.currentWithdrawal.withdrawalReference}</span>
                             </div>
                             <div class="detail-row">
+                                <span class="detail-label">Wallet:</span>
+                                <span class="detail-value">${this.formatWalletName(this.currentWithdrawal.wallet)}</span>
+                            </div>
+                            <div class="detail-row">
                                 <span class="detail-label">Amount:</span>
                                 <span class="detail-value">KES ${this.formatCurrency(this.currentWithdrawal.amount)}</span>
                             </div>
                             <div class="detail-row">
                                 <span class="detail-label">Purpose:</span>
-                                <span class="detail-value">${this.currentWithdrawal.purpose}</span>
+                                <span class="detail-value">${this.escapeHtml(this.currentWithdrawal.purpose)}</span>
                             </div>
                             <div class="detail-row">
                                 <span class="detail-label">Method:</span>
                                 <span class="detail-value">${this.currentWithdrawal.withdrawalMethod}</span>
                             </div>
                             <div class="detail-row">
-                                <span class="detail-label">Approvals:</span>
-                                <span class="detail-value">${this.currentWithdrawal.currentApprovals}/${this.currentWithdrawal.requiredApprovals}</span>
+                                <span class="detail-label">Progress:</span>
+                                <span class="detail-value">${this.currentWithdrawal.currentApprovals}/${this.currentWithdrawal.requiredApprovals} approvals</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Requested by:</span>
+                                <span class="detail-value">${this.currentWithdrawal.requester?.fullName || 'Unknown'}</span>
                             </div>
                         </div>
                         
                         <form id="approvalForm">
                             <div class="form-group">
                                 <label>Withdrawal Password *</label>
-                                <input type="password" name="password" placeholder="Enter withdrawal approval password" required>
+                                <input type="password" name="password" placeholder="Enter withdrawal approval password" required autocomplete="new-password">
+                                <small class="form-help">Contact your system administrator for the withdrawal password.</small>
                             </div>
                             
                             <div class="form-group">
                                 <label>Comment (Optional)</label>
-                                <textarea name="comment" rows="3" placeholder="Optional comment about this approval..."></textarea>
+                                <textarea name="comment" rows="3" placeholder="Optional comment about this approval..." maxlength="300"></textarea>
                             </div>
                             
                             <div class="modal-actions">
                                 <button type="button" class="btn btn-secondary" id="cancel-approval">Cancel</button>
-                                <button type="submit" class="btn btn-primary">Approve Withdrawal</button>
+                                <button type="submit" class="btn btn-primary" id="submit-approval">Approve Withdrawal</button>
                             </div>
                         </form>
                     </div>
@@ -836,12 +833,15 @@ export class AdminWalletsView {
         const modal = document.getElementById('approvalModal');
         modal.style.display = 'flex';
         
-        // Attach modal event listeners
         this.attachApprovalModalListeners();
         
-        setTimeout(() => {
-            document.querySelector('#approvalModal .modal').classList.add('show');
-        }, 10);
+        // Show modal with animation
+        requestAnimationFrame(() => {
+            const modalElement = modal.querySelector('.modal');
+            if (modalElement) {
+                modalElement.classList.add('show');
+            }
+        });
     }
 
     attachApprovalModalListeners() {
@@ -872,6 +872,15 @@ export class AdminWalletsView {
                 this.closeApprovalModal();
             }
         });
+        
+        // Escape key to close
+        const handleEscape = (e) => {
+            if (e.key === 'Escape') {
+                this.closeApprovalModal();
+                document.removeEventListener('keydown', handleEscape);
+            }
+        };
+        document.addEventListener('keydown', handleEscape);
     }
 
     showWalletDetailsModal() {
@@ -904,17 +913,38 @@ export class AdminWalletsView {
                             </div>
                         </div>
                         
-                        <div class="chart-container">
-                            <h3>Balance Trend</h3>
-                            <div class="chart-placeholder">
-                                <div class="chart-icon">📈</div>
-                                <div class="chart-text">Chart visualization would go here</div>
+                        <div class="wallet-meta-info">
+                            <div class="meta-row">
+                                <span class="meta-label">Wallet ID:</span>
+                                <span class="meta-value">${this.currentWallet.id}</span>
+                            </div>
+                            <div class="meta-row">
+                                <span class="meta-label">Type:</span>
+                                <span class="meta-value">${this.currentWallet.walletType}</span>
+                            </div>
+                            ${this.currentWallet.subType ? `
+                                <div class="meta-row">
+                                    <span class="meta-label">Sub-type:</span>
+                                    <span class="meta-value">${this.currentWallet.subType}</span>
+                                </div>
+                            ` : ''}
+                            <div class="meta-row">
+                                <span class="meta-label">Status:</span>
+                                <span class="meta-value">
+                                    <span class="status-badge ${this.currentWallet.isActive ? 'status-active' : 'status-inactive'}">
+                                        ${this.currentWallet.isActive ? 'Active' : 'Inactive'}
+                                    </span>
+                                </span>
+                            </div>
+                            <div class="meta-row">
+                                <span class="meta-label">Created:</span>
+                                <span class="meta-value">${this.formatDate(this.currentWallet.createdAt)}</span>
                             </div>
                         </div>
                         
                         <div class="modal-actions">
                             <button class="btn btn-secondary" id="print-wallet-report">🖨️ Print Report</button>
-                            <button class="btn btn-secondary" id="download-wallet-data">💾 Download Data</button>
+                            <button class="btn btn-secondary" id="download-wallet-data">💾 Download CSV</button>
                         </div>
                     </div>
                 </div>
@@ -925,12 +955,15 @@ export class AdminWalletsView {
         const modal = document.getElementById('walletDetailsModal');
         modal.style.display = 'flex';
         
-        // Attach modal event listeners
         this.attachWalletDetailsModalListeners();
         
-        setTimeout(() => {
-            document.querySelector('#walletDetailsModal .modal').classList.add('show');
-        }, 10);
+        // Show modal with animation
+        requestAnimationFrame(() => {
+            const modalElement = modal.querySelector('.modal');
+            if (modalElement) {
+                modalElement.classList.add('show');
+            }
+        });
     }
 
     attachWalletDetailsModalListeners() {
@@ -961,8 +994,18 @@ export class AdminWalletsView {
                 this.closeWalletDetailsModal();
             }
         });
+        
+        // Escape key to close
+        const handleEscape = (e) => {
+            if (e.key === 'Escape') {
+                this.closeWalletDetailsModal();
+                document.removeEventListener('keydown', handleEscape);
+            }
+        };
+        document.addEventListener('keydown', handleEscape);
     }
 
+    // Modal close methods
     closeWithdrawalModal() {
         console.log('❌ Closing withdrawal modal');
         const modal = document.getElementById('withdrawalModal');
@@ -970,8 +1013,7 @@ export class AdminWalletsView {
             modal.style.display = 'none';
             modal.remove();
         }
-        this.isCreatingWithdrawal = false;
-        this.selectedFile = null;
+        this.activeModals.delete('withdrawal');
     }
 
     closeApprovalModal() {
@@ -981,7 +1023,7 @@ export class AdminWalletsView {
             modal.style.display = 'none';
             modal.remove();
         }
-        this.isApprovingWithdrawal = false;
+        this.activeModals.delete('approval');
         this.currentWithdrawal = null;
     }
 
@@ -992,7 +1034,7 @@ export class AdminWalletsView {
             modal.style.display = 'none';
             modal.remove();
         }
-        this.isViewingWalletDetails = false;
+        this.activeModals.delete('walletDetails');
         this.currentWallet = null;
     }
 
@@ -1003,58 +1045,107 @@ export class AdminWalletsView {
         
         const form = event.target;
         const formData = new FormData(form);
-        const submitButton = form.querySelector('button[type="submit"]');
+        const submitButton = form.querySelector('#submit-withdrawal');
         
         // Disable submit button
-        submitButton.disabled = true;
-        submitButton.textContent = 'Creating Request...';
+        if (submitButton) {
+            submitButton.disabled = true;
+            submitButton.textContent = 'Creating Request...';
+        }
         
         try {
-            const withdrawalData = {
-                walletId: parseInt(formData.get('walletId')),
-                amount: parseFloat(formData.get('amount')),
-                purpose: formData.get('purpose'),
-                description: formData.get('description'),
-                withdrawalMethod: formData.get('withdrawalMethod'),
-                destinationAccount: formData.get('destinationAccount') || null,
-                destinationPhone: formData.get('destinationPhone') || null
-            };
-
+            // Validate form data
+            const withdrawalData = this.validateWithdrawalData(formData);
+            
             console.log('📤 Sending withdrawal request:', withdrawalData);
 
-            let response;
-            const fileInput = form.querySelector('input[type="file"]');
-            
-            if (fileInput && fileInput.files[0]) {
-                // Create FormData for file upload
-                const uploadFormData = new FormData();
-                Object.keys(withdrawalData).forEach(key => {
-                    if (withdrawalData[key] !== null) {
-                        uploadFormData.append(key, withdrawalData[key]);
-                    }
-                });
-                uploadFormData.append('expenseReceiptImage', fileInput.files[0]);
-                
-                response = await this.apiService.uploadFile('/wallets/withdraw', uploadFormData);
-            } else {
-                response = await this.apiService.createWithdrawalRequest(withdrawalData);
-            }
+            const response = await this.apiService.request('POST', '/wallets/withdraw', withdrawalData);
 
             console.log('✅ Withdrawal request response:', response);
 
-            if (response && response.withdrawalRequest) {
+            if (response?.success && response?.data?.withdrawalRequest) {
                 this.showAlert('Withdrawal request created successfully! Waiting for approvals.', 'success');
                 this.closeWithdrawalModal();
-                await this.loadInitialData();
-                await this.render();
+                await this.refreshData();
+            } else {
+                throw new Error(response?.message || 'Failed to create withdrawal request');
             }
         } catch (error) {
             console.error('❌ Error creating withdrawal request:', error);
             this.showAlert(error.message || 'Failed to create withdrawal request.', 'error');
         } finally {
-            submitButton.disabled = false;
-            submitButton.textContent = 'Submit Withdrawal Request';
+            if (submitButton) {
+                submitButton.disabled = false;
+                submitButton.textContent = 'Submit Withdrawal Request';
+            }
         }
+    }
+
+    validateWithdrawalData(formData) {
+        const walletId = parseInt(formData.get('walletId'));
+        const amount = parseFloat(formData.get('amount'));
+        const purpose = formData.get('purpose')?.trim();
+        const description = formData.get('description')?.trim();
+        const withdrawalMethod = formData.get('withdrawalMethod');
+        const destinationAccount = formData.get('destinationAccount')?.trim();
+        const destinationPhone = formData.get('destinationPhone')?.trim();
+
+        // Validation
+        if (!walletId || isNaN(walletId)) {
+            throw new Error('Please select a valid wallet');
+        }
+
+        if (!amount || isNaN(amount) || amount <= 0) {
+            throw new Error('Please enter a valid amount greater than 0');
+        }
+
+        if (!purpose || purpose.length < 3) {
+            throw new Error('Purpose must be at least 3 characters long');
+        }
+
+        if (!description || description.length < 10) {
+            throw new Error('Description must be at least 10 characters long');
+        }
+
+        if (!withdrawalMethod) {
+            throw new Error('Please select a withdrawal method');
+        }
+
+        // Find wallet and validate balance
+        const wallet = this.wallets.find(w => w.id === walletId);
+        if (!wallet) {
+            throw new Error('Selected wallet not found');
+        }
+
+        if (amount > (wallet.balance || 0)) {
+            throw new Error(`Insufficient wallet balance. Available: KES ${this.formatCurrency(wallet.balance || 0)}`);
+        }
+
+        // Method-specific validation
+        if (withdrawalMethod === 'BANK_TRANSFER' && !destinationAccount) {
+            throw new Error('Bank account number is required for bank transfers');
+        }
+
+        if (withdrawalMethod === 'MPESA') {
+            if (!destinationPhone) {
+                throw new Error('Phone number is required for M-Pesa transfers');
+            }
+            // Validate Kenyan phone number format
+            const phonePattern = /^(\+254|0)?[17]\d{8}$/;
+            if (!phonePattern.test(destinationPhone)) {
+                throw new Error('Please enter a valid Kenyan phone number');
+            }
+        }
+
+        return {
+            walletId,
+            amount,
+            purpose,
+            description,
+            withdrawalMethod,
+            destinationAccount: destinationAccount || null,
+            destinationPhone: destinationPhone || null
+        };
     }
 
     async handleApprovalSubmit(event) {
@@ -1063,44 +1154,114 @@ export class AdminWalletsView {
         
         const form = event.target;
         const formData = new FormData(form);
-        const submitButton = form.querySelector('button[type="submit"]');
+        const submitButton = form.querySelector('#submit-approval');
         
         // Disable submit button
-        submitButton.disabled = true;
-        submitButton.textContent = 'Approving...';
+        if (submitButton) {
+            submitButton.disabled = true;
+            submitButton.textContent = 'Approving...';
+        }
         
         try {
+            const password = formData.get('password')?.trim();
+            const comment = formData.get('comment')?.trim();
+
+            if (!password) {
+                throw new Error('Withdrawal password is required');
+            }
+
             const approvalData = {
-                password: formData.get('password'),
-                comment: formData.get('comment') || null
+                password,
+                comment: comment || null,
+                approvalMethod: 'PASSWORD'
             };
 
             console.log('📤 Sending approval request for withdrawal:', this.currentWithdrawal.id);
 
-            const response = await this.apiService.approveWithdrawalRequest(
-                this.currentWithdrawal.id, 
+            const response = await this.apiService.request(
+                'POST', 
+                `/wallets/approve/${this.currentWithdrawal.id}`, 
                 approvalData
             );
 
             console.log('✅ Approval response:', response);
 
-            if (response) {
-                if (response.processed) {
+            if (response?.success) {
+                if (response.data?.processed) {
                     this.showAlert('Withdrawal approved and processed successfully!', 'success');
+                } else if (response.data?.requiresMoreApprovals) {
+                    const remaining = response.data.requiredApprovals - response.data.currentApprovals;
+                    this.showAlert(`Approval recorded. ${remaining} more approval${remaining !== 1 ? 's' : ''} needed.`, 'success');
                 } else {
-                    this.showAlert(`Approval recorded. ${response.requiredApprovals - response.currentApprovals} more approvals needed.`, 'success');
+                    this.showAlert('Approval recorded successfully.', 'success');
                 }
                 
                 this.closeApprovalModal();
-                await this.loadInitialData();
-                await this.render();
+                await this.refreshData();
+            } else {
+                throw new Error(response?.message || 'Failed to approve withdrawal');
             }
         } catch (error) {
             console.error('❌ Error approving withdrawal:', error);
             this.showAlert(error.message || 'Failed to approve withdrawal.', 'error');
         } finally {
-            submitButton.disabled = false;
-            submitButton.textContent = 'Approve Withdrawal';
+            if (submitButton) {
+                submitButton.disabled = false;
+                submitButton.textContent = 'Approve Withdrawal';
+            }
+        }
+    }
+
+    // System operation methods
+    async initializeWalletSystem() {
+        console.log('⚡ Initializing wallet system');
+        
+        const confirmMessage = 'Are you sure you want to initialize the wallet system? This will create default wallets if they don\'t exist.';
+        if (!confirm(confirmMessage)) {
+            return;
+        }
+
+        try {
+            this.showAlert('Initializing wallet system...', 'info');
+            
+            const response = await this.apiService.request('POST', '/wallets/initialize');
+            
+            if (response?.success) {
+                const created = response.data?.walletsCreated?.length || 0;
+                this.showAlert(`Wallet system initialized successfully. ${created} wallets created.`, 'success');
+                await this.refreshData();
+            } else {
+                throw new Error(response?.message || 'Failed to initialize wallet system');
+            }
+        } catch (error) {
+            console.error('❌ Error initializing wallet system:', error);
+            this.showAlert(error.message || 'Failed to initialize wallet system.', 'error');
+        }
+    }
+
+    async recalculateBalances() {
+        console.log('🧮 Recalculating wallet balances');
+        
+        const confirmMessage = 'Are you sure you want to recalculate all wallet balances? This will update balances based on completed payments.';
+        if (!confirm(confirmMessage)) {
+            return;
+        }
+
+        try {
+            this.showAlert('Recalculating wallet balances...', 'info');
+            
+            const response = await this.apiService.request('POST', '/wallets/recalculate');
+            
+            if (response?.success) {
+                const processed = response.data?.walletsProcessed || 0;
+                this.showAlert(`Wallet balances recalculated successfully. ${processed} wallets processed.`, 'success');
+                await this.refreshData();
+            } else {
+                throw new Error(response?.message || 'Failed to recalculate balances');
+            }
+        } catch (error) {
+            console.error('❌ Error recalculating balances:', error);
+            this.showAlert(error.message || 'Failed to recalculate balances.', 'error');
         }
     }
 
@@ -1116,6 +1277,11 @@ export class AdminWalletsView {
                 });
             }
         });
+        
+        if (!options) {
+            options = '<option value="" disabled>No wallets with available balance</option>';
+        }
+        
         return options;
     }
 
@@ -1157,6 +1323,8 @@ export class AdminWalletsView {
     }
 
     formatWalletName(wallet) {
+        if (!wallet) return 'Unknown Wallet';
+        
         if (wallet.subType) {
             if (wallet.walletType === 'TITHE') {
                 const titheNames = {
@@ -1182,13 +1350,36 @@ export class AdminWalletsView {
 
     formatDate(date) {
         if (!date) return 'N/A';
-        return new Date(date).toLocaleDateString();
+        try {
+            return new Date(date).toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        } catch (error) {
+            return 'Invalid Date';
+        }
+    }
+
+    escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    getRequiredApprovals() {
+        // This should match your backend configuration
+        return 3;
     }
 
     async refreshData() {
         console.log('🔄 Refreshing wallet data');
-        this.showAlert('Refreshing data...', 'info');
+        
         try {
+            this.showAlert('Refreshing data...', 'info');
             await this.loadInitialData();
             
             // Re-render the entire view
@@ -1201,22 +1392,71 @@ export class AdminWalletsView {
             this.showAlert('Data refreshed successfully.', 'success');
         } catch (error) {
             console.error('❌ Error refreshing data:', error);
-            this.showAlert('Failed to refresh data.', 'error');
+            this.showAlert('Failed to refresh data: ' + error.message, 'error');
         }
     }
 
     viewWithdrawalDetails(withdrawalId) {
         const withdrawal = this.withdrawalRequests.find(w => w.id === withdrawalId);
         if (withdrawal) {
-            const details = `
-Reference: ${withdrawal.withdrawalReference}
-Amount: KES ${this.formatCurrency(withdrawal.amount)}
-Purpose: ${withdrawal.purpose}
-Status: ${withdrawal.status}
-Method: ${withdrawal.withdrawalMethod}
-Date: ${this.formatDate(withdrawal.createdAt)}
-            `.trim();
-            alert(details);
+            let detailsHtml = `
+                <div class="withdrawal-details-popup">
+                    <h3>Withdrawal Details</h3>
+                    <div class="detail-grid">
+                        <div><strong>Reference:</strong> ${withdrawal.withdrawalReference}</div>
+                        <div><strong>Wallet:</strong> ${this.formatWalletName(withdrawal.wallet)}</div>
+                        <div><strong>Amount:</strong> KES ${this.formatCurrency(withdrawal.amount)}</div>
+                        <div><strong>Purpose:</strong> ${this.escapeHtml(withdrawal.purpose)}</div>
+                        <div><strong>Method:</strong> ${withdrawal.withdrawalMethod}</div>
+                        <div><strong>Status:</strong> ${withdrawal.status}</div>
+                        <div><strong>Progress:</strong> ${withdrawal.currentApprovals}/${withdrawal.requiredApprovals} approvals</div>
+                        <div><strong>Requested by:</strong> ${withdrawal.requester?.fullName || 'Unknown'}</div>
+                        <div><strong>Created:</strong> ${this.formatDate(withdrawal.createdAt)}</div>
+            `;
+            
+            if (withdrawal.description) {
+                detailsHtml += `<div class="full-width"><strong>Description:</strong><br>${this.escapeHtml(withdrawal.description)}</div>`;
+            }
+            
+            if (withdrawal.processedAt) {
+                detailsHtml += `<div><strong>Processed:</strong> ${this.formatDate(withdrawal.processedAt)}</div>`;
+            }
+            
+            detailsHtml += `</div></div>`;
+            
+            // Create modal for details
+            const modalHtml = `
+                <div class="modal-overlay" id="withdrawalDetailsModal">
+                    <div class="modal">
+                        <div class="modal-header">
+                            <h2>Withdrawal Details</h2>
+                            <button class="modal-close">&times;</button>
+                        </div>
+                        <div class="modal-content">
+                            ${detailsHtml}
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+            const modal = document.getElementById('withdrawalDetailsModal');
+            modal.style.display = 'flex';
+            
+            // Add close functionality
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal || e.target.classList.contains('modal-close')) {
+                    modal.remove();
+                }
+            });
+            
+            // Show modal with animation
+            requestAnimationFrame(() => {
+                const modalElement = modal.querySelector('.modal');
+                if (modalElement) {
+                    modalElement.classList.add('show');
+                }
+            });
         }
     }
 
@@ -1232,15 +1472,18 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                     body { font-family: Arial, sans-serif; margin: 20px; color: #333; }
                     .header { text-align: center; margin-bottom: 30px; border-bottom: 2px solid #4f46e5; padding-bottom: 15px; }
                     .header h1 { color: #4f46e5; margin: 0; font-size: 24px; }
-                    .overview { display: flex; justify-content: space-between; margin: 20px 0; }
-                    .stat { text-align: center; flex: 1; }
-                    .stat-label { font-size: 12px; color: #666; }
+                    .overview { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin: 20px 0; }
+                    .stat { text-align: center; padding: 15px; border: 1px solid #ddd; border-radius: 8px; }
+                    .stat-label { font-size: 12px; color: #666; margin-bottom: 5px; }
                     .stat-value { font-size: 18px; font-weight: bold; color: #4f46e5; }
+                    .meta-info { margin-top: 20px; }
+                    .meta-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee; }
+                    .meta-label { font-weight: bold; }
                 </style>
             </head>
             <body>
                 <div class="header">
-                    <h1>WALLET REPORT</h1>
+                    <h1>TASSIAC CHURCH - WALLET REPORT</h1>
                     <h2>${this.formatWalletName(this.currentWallet)}</h2>
                     <p>Generated on ${new Date().toLocaleDateString()}</p>
                 </div>
@@ -1257,6 +1500,39 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                     <div class="stat">
                         <div class="stat-label">Total Withdrawals</div>
                         <div class="stat-value">KES ${this.formatCurrency(this.currentWallet.totalWithdrawals || 0)}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Net Activity</div>
+                        <div class="stat-value">KES ${this.formatCurrency((this.currentWallet.totalDeposits || 0) - (this.currentWallet.totalWithdrawals || 0))}</div>
+                    </div>
+                </div>
+                
+                <div class="meta-info">
+                    <div class="meta-row">
+                        <span class="meta-label">Wallet ID:</span>
+                        <span>${this.currentWallet.id}</span>
+                    </div>
+                    <div class="meta-row">
+                        <span class="meta-label">Type:</span>
+                        <span>${this.currentWallet.walletType}</span>
+                    </div>
+                    ${this.currentWallet.subType ? `
+                        <div class="meta-row">
+                            <span class="meta-label">Sub-type:</span>
+                            <span>${this.currentWallet.subType}</span>
+                        </div>
+                    ` : ''}
+                    <div class="meta-row">
+                        <span class="meta-label">Status:</span>
+                        <span>${this.currentWallet.isActive ? 'Active' : 'Inactive'}</span>
+                    </div>
+                    <div class="meta-row">
+                        <span class="meta-label">Last Updated:</span>
+                        <span>${this.formatDate(this.currentWallet.lastUpdated || this.currentWallet.updatedAt)}</span>
+                    </div>
+                    <div class="meta-row">
+                        <span class="meta-label">Created:</span>
+                        <span>${this.formatDate(this.currentWallet.createdAt)}</span>
                     </div>
                 </div>
                 
@@ -1283,10 +1559,15 @@ Date: ${this.formatDate(withdrawal.createdAt)}
         const csvData = [
             ['Wallet Report'],
             ['Wallet Name', this.formatWalletName(this.currentWallet)],
+            ['Wallet ID', this.currentWallet.id],
+            ['Type', this.currentWallet.walletType],
+            ['Sub-type', this.currentWallet.subType || ''],
             ['Current Balance', this.currentWallet.balance || 0],
             ['Total Deposits', this.currentWallet.totalDeposits || 0],
             ['Total Withdrawals', this.currentWallet.totalWithdrawals || 0],
+            ['Status', this.currentWallet.isActive ? 'Active' : 'Inactive'],
             ['Last Updated', this.currentWallet.lastUpdated || this.currentWallet.updatedAt || ''],
+            ['Created', this.currentWallet.createdAt || ''],
             ['Generated On', new Date().toISOString()]
         ];
         
@@ -1303,25 +1584,19 @@ Date: ${this.formatDate(withdrawal.createdAt)}
         window.URL.revokeObjectURL(url);
     }
 
-    showAlert(message, type) {
+    showAlert(message, type = 'info') {
         console.log(`🔔 Alert (${type}):`, message);
         
-        // Try to find alerts container
+        // Get or create alerts container
         let alertsContainer = document.getElementById('alerts-container');
         
-        // If container doesn't exist, try to create it or find app container
         if (!alertsContainer) {
             const appContainer = document.getElementById('app') || document.body;
             const tempDiv = document.createElement('div');
             tempDiv.id = 'alerts-container';
-            tempDiv.style.cssText = 'position: fixed; top: 20px; right: 20px; z-index: 10000; max-width: 400px;';
+            tempDiv.style.cssText = 'position: fixed; top: 80px; right: 20px; z-index: 10000; max-width: 400px;';
             appContainer.appendChild(tempDiv);
             alertsContainer = tempDiv;
-        }
-
-        if (!alertsContainer) {
-            console.warn('Could not create alerts container, using console only');
-            return;
         }
 
         const alertClass = type === 'success' ? 'alert-success' : type === 'error' ? 'alert-error' : 'alert-info';
@@ -1339,18 +1614,25 @@ Date: ${this.formatDate(withdrawal.createdAt)}
             background: ${type === 'success' ? 'rgba(16, 185, 129, 0.1)' : type === 'error' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(59, 130, 246, 0.1)'}; 
             color: ${type === 'success' ? '#059669' : type === 'error' ? '#dc2626' : '#2563eb'}; 
             border: 1px solid ${type === 'success' ? 'rgba(16, 185, 129, 0.2)' : type === 'error' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(59, 130, 246, 0.2)'};
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            animation: slideInRight 0.3s ease-out;
         `;
 
         alertElement.innerHTML = `
             <span>${alertIcon}</span>
-            <span>${message}</span>
+            <span style="flex: 1;">${message}</span>
             <button style="background: none; border: none; font-size: 1.2rem; cursor: pointer; color: inherit; opacity: 0.7; margin-left: auto;">&times;</button>
         `;
 
         // Add close functionality
         const closeBtn = alertElement.querySelector('button');
         closeBtn.addEventListener('click', () => {
-            alertElement.remove();
+            alertElement.style.animation = 'slideOutRight 0.3s ease-in';
+            setTimeout(() => {
+                if (alertElement.parentNode) {
+                    alertElement.remove();
+                }
+            }, 300);
         });
 
         alertsContainer.insertAdjacentElement('afterbegin', alertElement);
@@ -1358,7 +1640,12 @@ Date: ${this.formatDate(withdrawal.createdAt)}
         // Auto-remove after 5 seconds
         setTimeout(() => {
             if (alertElement.parentNode) {
-                alertElement.remove();
+                alertElement.style.animation = 'slideOutRight 0.3s ease-in';
+                setTimeout(() => {
+                    if (alertElement.parentNode) {
+                        alertElement.remove();
+                    }
+                }, 300);
             }
         }, 5000);
     }
@@ -1369,6 +1656,22 @@ Date: ${this.formatDate(withdrawal.createdAt)}
         const style = document.createElement('style');
         style.id = 'wallet-styles';
         style.textContent = `
+            /* Animations */
+            @keyframes slideInRight {
+                from { transform: translateX(100%); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+            
+            @keyframes slideOutRight {
+                from { transform: translateX(0); opacity: 1; }
+                to { transform: translateX(100%); opacity: 0; }
+            }
+            
+            @keyframes spin {
+                from { transform: rotate(0deg); }
+                to { transform: rotate(360deg); }
+            }
+
             /* Reset and base */
             * { box-sizing: border-box; margin: 0; padding: 0; }
             
@@ -1376,6 +1679,32 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                 min-height: 100vh;
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                 font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            }
+
+            /* Error and Loading States */
+            .error-state, .loading-state {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                min-height: 60vh;
+                text-align: center;
+                color: white;
+            }
+            
+            .error-icon {
+                font-size: 4rem;
+                margin-bottom: 1rem;
+            }
+            
+            .loading-spinner {
+                width: 50px;
+                height: 50px;
+                border: 4px solid rgba(255, 255, 255, 0.3);
+                border-top: 4px solid white;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+                margin-bottom: 1rem;
             }
 
             /* Navigation */
@@ -1479,6 +1808,7 @@ Date: ${this.formatDate(withdrawal.createdAt)}
             .header-actions {
                 display: flex;
                 gap: 1rem;
+                flex-wrap: wrap;
             }
 
             /* Buttons */
@@ -1554,6 +1884,9 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                 padding: 1.5rem 2rem;
                 border-bottom: 1px solid rgba(226, 232, 240, 0.5);
                 background: rgba(248, 250, 252, 0.5);
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
             }
 
             .card-header h2 {
@@ -1561,6 +1894,11 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                 font-weight: 700;
                 color: #1a202c;
                 margin: 0;
+            }
+
+            .card-actions {
+                display: flex;
+                gap: 0.5rem;
             }
 
             .card-body {
@@ -1657,6 +1995,63 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                 font-size: 1.2rem;
                 font-weight: 700;
                 color: #1a202c;
+            }
+
+            /* System stats */
+            .system-stats {
+                margin-bottom: 3rem;
+            }
+
+            .stats-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 1.5rem;
+            }
+
+            .stat-card {
+                background: rgba(255, 255, 255, 0.95);
+                border-radius: 16px;
+                padding: 2rem;
+                display: flex;
+                align-items: center;
+                gap: 1.5rem;
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+                transition: all 0.3s ease;
+            }
+
+            .stat-card:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+            }
+
+            .stat-card .stat-icon {
+                width: 60px;
+                height: 60px;
+                background: linear-gradient(135deg, #4f46e5, #7c3aed);
+                color: white;
+                border-radius: 16px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 1.8rem;
+            }
+
+            .stat-card .stat-content {
+                flex: 1;
+            }
+
+            .stat-card .stat-value {
+                font-size: 1.8rem;
+                font-weight: 800;
+                color: #1a202c;
+                margin-bottom: 0.25rem;
+            }
+
+            .stat-card .stat-label {
+                font-size: 0.9rem;
+                color: #64748b;
+                font-weight: 500;
             }
 
             /* Wallets section */
@@ -1758,8 +2153,9 @@ Date: ${this.formatDate(withdrawal.createdAt)}
             .wallet-meta {
                 display: flex;
                 gap: 1.5rem;
-                font-size: 0.9rem;
+                font-size: 0.8rem;
                 color: #64748b;
+                flex-wrap: wrap;
             }
 
             .wallet-action {
@@ -1797,7 +2193,7 @@ Date: ${this.formatDate(withdrawal.createdAt)}
 
             .table-header {
                 display: grid;
-                grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr;
+                grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr;
                 gap: 1rem;
                 padding: 1rem 1.5rem;
                 background: rgba(79, 70, 229, 0.1);
@@ -1809,7 +2205,7 @@ Date: ${this.formatDate(withdrawal.createdAt)}
 
             .table-row {
                 display: grid;
-                grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr;
+                grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr;
                 gap: 1rem;
                 padding: 1rem 1.5rem;
                 background: rgba(248, 250, 252, 0.8);
@@ -1817,7 +2213,7 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                 border-radius: 8px;
                 align-items: center;
                 transition: all 0.3s ease;
-                font-size: 0.9rem;
+                font-size: 0.85rem;
                 color: #374151;
             }
 
@@ -1847,6 +2243,21 @@ Date: ${this.formatDate(withdrawal.createdAt)}
             .status-rejected {
                 background: rgba(239, 68, 68, 0.2);
                 color: #ef4444;
+            }
+
+            .status-approved {
+                background: rgba(59, 130, 246, 0.2);
+                color: #3b82f6;
+            }
+
+            .status-active {
+                background: rgba(16, 185, 129, 0.2);
+                color: #10b981;
+            }
+
+            .status-inactive {
+                background: rgba(156, 163, 175, 0.2);
+                color: #9ca3af;
             }
 
             /* Pending approvals */
@@ -1907,6 +2318,12 @@ Date: ${this.formatDate(withdrawal.createdAt)}
             .approval-progress {
                 color: #64748b;
                 font-size: 0.9rem;
+            }
+
+            .approval-wallet {
+                color: #4f46e5;
+                font-size: 0.9rem;
+                font-weight: 500;
             }
 
             /* Modals */
@@ -2043,7 +2460,7 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                 box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
             }
 
-            .file-info {
+            .form-help {
                 font-size: 0.8rem;
                 color: #64748b;
                 margin-top: 0.5rem;
@@ -2099,39 +2516,38 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                 color: #1a202c;
             }
 
-            .chart-container {
+            .wallet-meta-info {
                 margin-bottom: 2rem;
-            }
-
-            .chart-container h3 {
-                color: #1a202c;
-                margin-bottom: 1rem;
-                font-size: 1.2rem;
-                font-weight: 700;
-            }
-
-            .chart-placeholder {
-                min-height: 200px;
+                padding: 1.5rem;
                 background: rgba(248, 250, 252, 0.8);
-                border: 1px solid rgba(226, 232, 240, 0.5);
                 border-radius: 8px;
+                border: 1px solid rgba(226, 232, 240, 0.5);
+            }
+
+            .meta-row {
                 display: flex;
-                flex-direction: column;
+                justify-content: space-between;
                 align-items: center;
-                justify-content: center;
-                text-align: center;
-                color: #64748b;
-            }
-
-            .chart-icon {
-                font-size: 3rem;
                 margin-bottom: 1rem;
-                opacity: 0.7;
+                padding-bottom: 0.75rem;
+                border-bottom: 1px solid rgba(226, 232, 240, 0.5);
             }
 
-            .chart-text {
-                font-size: 1.1rem;
-                font-weight: 500;
+            .meta-row:last-child {
+                margin-bottom: 0;
+                border-bottom: none;
+            }
+
+            .meta-label {
+                font-weight: 600;
+                color: #64748b;
+                font-size: 0.9rem;
+            }
+
+            .meta-value {
+                font-weight: 700;
+                color: #1a202c;
+                font-size: 0.9rem;
             }
 
             /* Approval modal */
@@ -2167,6 +2583,31 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                 font-weight: 700;
                 color: #1a202c;
                 font-size: 0.9rem;
+            }
+
+            /* Withdrawal details popup */
+            .withdrawal-details-popup {
+                max-width: 600px;
+            }
+
+            .withdrawal-details-popup h3 {
+                color: #1a202c;
+                margin-bottom: 1.5rem;
+                font-size: 1.3rem;
+                font-weight: 700;
+            }
+
+            .detail-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 1rem;
+            }
+
+            .detail-grid .full-width {
+                grid-column: 1 / -1;
+                margin-top: 0.5rem;
+                padding-top: 1rem;
+                border-top: 1px solid rgba(226, 232, 240, 0.5);
             }
 
             /* Alerts */
@@ -2221,7 +2662,7 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                 font-size: 1rem;
                 line-height: 1.6;
                 max-width: 400px;
-                margin: 0 auto;
+                margin: 0 auto 1.5rem;
             }
 
             /* Responsive design */
@@ -2232,6 +2673,7 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                 .balance-amount { font-size: 2.5rem; }
                 .wallets-grid { grid-template-columns: 1fr; }
                 .quick-stats { grid-template-columns: 1fr; }
+                .stats-grid { grid-template-columns: repeat(2, 1fr); }
             }
 
             @media (max-width: 768px) {
@@ -2241,7 +2683,7 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                 .main-content { padding: 1rem; }
                 .page-header { flex-direction: column; align-items: flex-start; gap: 1rem; }
                 .page-title { font-size: 2rem; }
-                .header-actions { width: 100%; justify-content: space-between; }
+                .header-actions { width: 100%; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem; }
                 .hero-card { padding: 2rem 1.5rem; }
                 .balance-amount { font-size: 2rem; }
                 .table-header, .table-row { grid-template-columns: 1fr; gap: 0.5rem; }
@@ -2252,6 +2694,8 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                 .modal-actions { flex-direction: column; }
                 .approval-item { flex-direction: column; align-items: flex-start; gap: 1rem; }
                 .approval-details { flex-direction: column; gap: 0.5rem; align-items: flex-start; }
+                .stats-grid { grid-template-columns: 1fr; }
+                .wallet-overview { grid-template-columns: repeat(2, 1fr); }
             }
 
             @media (max-width: 480px) {
@@ -2265,6 +2709,8 @@ Date: ${this.formatDate(withdrawal.createdAt)}
                 .stat-item { flex-direction: column; text-align: center; gap: 0.75rem; }
                 .modal-header { padding: 1rem 1.5rem; }
                 .modal-content { padding: 1.5rem; }
+                .wallet-overview { grid-template-columns: 1fr; }
+                .detail-grid { grid-template-columns: 1fr; }
             }
 
             /* Print styles */
@@ -2280,21 +2726,47 @@ Date: ${this.formatDate(withdrawal.createdAt)}
         console.log('💄 Styles injected successfully');
     }
 
-    // Cleanup
+    // Cleanup method
     cleanup() {
+        console.log('🧹 Cleaning up wallet view...');
+        
+        // Cancel any pending requests
+        this.abortControllers.forEach((controller, key) => {
+            controller.abort();
+            console.log(`Cancelled request: ${key}`);
+        });
+        this.abortControllers.clear();
+        
+        // Close all modals
+        this.activeModals.forEach(modalType => {
+            const modalId = modalType === 'withdrawal' ? 'withdrawalModal' : 
+                           modalType === 'approval' ? 'approvalModal' : 
+                           modalType === 'walletDetails' ? 'walletDetailsModal' : null;
+            if (modalId) {
+                const modal = document.getElementById(modalId);
+                if (modal) {
+                    modal.remove();
+                }
+            }
+        });
+        this.activeModals.clear();
+        
+        // Remove styles
         const style = document.getElementById('wallet-styles');
         if (style) style.remove();
         
-        // Remove global reference
-        if (window.walletsView === this) {
-            delete window.walletsView;
-        }
+        // Clear data
+        this.wallets = [];
+        this.groupedWallets = {};
+        this.withdrawalRequests = [];
+        this.currentWallet = null;
+        this.currentWithdrawal = null;
         
-        console.log('🧹 Wallet view cleanup completed');
+        console.log('✅ Wallet view cleanup completed');
     }
 }
 
-// Auto-initialize
+// Auto-initialize and export
 if (typeof window !== 'undefined') {
     window.AdminWalletsView = AdminWalletsView;
     console.log('💰 AdminWalletsView class loaded and available globally');
