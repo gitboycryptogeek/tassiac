@@ -1,4 +1,4 @@
-// src/views/admin/wallets.js
+// src/views/admin/wallets.js - Production Ready Version
 
 export class AdminWalletsView {
     constructor() {
@@ -15,19 +15,40 @@ export class AdminWalletsView {
             throw new Error('User authentication is required');
         }
 
+        // Check if user is admin and not view-only
+        if (!this.user.isAdmin) {
+            throw new Error('Admin access required');
+        }
+
         // Data state
         this.wallets = [];
-        this.groupedWallets = {};
+        this.groupedWallets = {
+            TITHE: [],
+            OFFERING: [],
+            DONATION: [],
+            SPECIAL_OFFERING: []
+        };
         this.withdrawalRequests = [];
         this.totalBalance = 0;
         this.isLoading = false;
         this.error = null;
-        this.summary = null;
+        this.summary = {
+            totalBalance: 0,
+            totalDeposits: 0,
+            totalWithdrawals: 0,
+            walletsCount: 0
+        };
         
         // View state
         this.activeModals = new Set();
         this.currentWallet = null;
         this.currentWithdrawal = null;
+        this.walletTransactions = [];
+        
+        // Auto-refresh state
+        this.autoRefreshInterval = null;
+        this.lastRefreshTime = null;
+        this.refreshInterval = 30000; // 30 seconds
         
         // Event abort controllers for cleanup
         this.abortControllers = new Map();
@@ -35,7 +56,7 @@ export class AdminWalletsView {
         // Bind methods properly
         this.bindMethods();
         
-        console.log('💰 AdminWalletsView initialized for user:', this.user.fullName);
+        console.log('💰 AdminWalletsView initialized for admin:', this.user.fullName);
     }
 
     bindMethods() {
@@ -44,8 +65,7 @@ export class AdminWalletsView {
             'refreshData', 'openWithdrawalModal', 'openWalletDetails', 'openApprovalModal',
             'closeWithdrawalModal', 'closeWalletDetailsModal', 'closeApprovalModal',
             'handleWithdrawalSubmit', 'handleApprovalSubmit', 'toggleMethodFields',
-            'viewWithdrawalDetails', 'printWalletReport', 'downloadWalletData',
-            'initializeWalletSystem', 'recalculateBalances'
+            'viewWithdrawalDetails', 'printWalletReport', 'downloadWalletData'
         ];
         
         methodsToBind.forEach(method => {
@@ -60,12 +80,39 @@ export class AdminWalletsView {
         
         try {
             await this.loadInitialData();
-            console.log('✅ Wallet data loaded successfully');
+            if (this.error) {
+                console.warn('⚠️ Wallet initialization notice:', this.error);
+            } else {
+                console.log('✅ Wallet data loaded successfully');
+                // Start auto-refresh after successful initialization
+                this.startAutoRefresh();
+            }
         } catch (error) {
-            console.error('❌ Error loading wallet data:', error);
+            console.error('❌ Error during initialization:', error);
             this.error = error.message;
-            this.showAlert('Failed to load wallet data: ' + error.message, 'error');
         }
+    }
+
+    startAutoRefresh() {
+        if (this.autoRefreshInterval) {
+            clearInterval(this.autoRefreshInterval);
+        }
+        
+        this.autoRefreshInterval = setInterval(async () => {
+            if (!this.isLoading) {
+                await this.refreshData();
+            }
+        }, this.refreshInterval);
+        
+        console.log('🔄 Auto-refresh started');
+    }
+
+    stopAutoRefresh() {
+        if (this.autoRefreshInterval) {
+            clearInterval(this.autoRefreshInterval);
+            this.autoRefreshInterval = null;
+        }
+        console.log('⏹️ Auto-refresh stopped');
     }
 
     async loadInitialData() {
@@ -77,21 +124,74 @@ export class AdminWalletsView {
         this.abortControllers.set('loadData', abortController);
         
         try {
-            // Load wallets and withdrawals in parallel
-            const [walletsResponse, withdrawalsResponse] = await Promise.all([
-                this.apiService.request('GET', '/wallets/all', null, { // <-- Changed this line
-                    signal: abortController.signal
-                }),
-                this.apiService.request('GET', '/wallets/withdrawals', null, {
-                    signal: abortController.signal
-                })
-            ]);
+            // Try to load wallets first
+            let walletsResponse;
+            try {
+                walletsResponse = await this.apiService.getAllWallets();
+                console.log('🔍 Raw wallets response:', walletsResponse);
+            } catch (walletError) {
+                // If wallets don't exist (404 or initialization error), initialize them
+                if (walletError.message.includes('No wallets found') || walletError.message.includes('404')) {
+                    console.log('⚡ Initializing wallet system...');
+                    try {
+                        await this.apiService.initializeWallets();
+                        console.log('✅ Wallets initialized, retrying load...');
+                        walletsResponse = await this.apiService.getAllWallets();
+                    } catch (initError) {
+                        console.error('❌ Failed to initialize wallets:', initError);
+                        // Continue with empty structure
+                        walletsResponse = null;
+                    }
+                } else {
+                    throw walletError;
+                }
+            }
+
+            // Load withdrawal requests
+            let withdrawalsResponse;
+            try {
+                withdrawalsResponse = await this.apiService.getWithdrawalRequests();
+            } catch (withdrawalError) {
+                console.warn('⚠️ Could not load withdrawal requests:', withdrawalError.message);
+                withdrawalsResponse = { withdrawalRequests: [] };
+            }
 
             // Process wallets response
-            if (walletsResponse?.success && walletsResponse?.data) {
-                this.groupedWallets = walletsResponse.data.wallets || {};
-                this.summary = walletsResponse.data.summary || {};
-                this.totalBalance = this.summary.totalBalance || 0;
+            if (walletsResponse?.wallets || walletsResponse?.data?.wallets) {
+                const rawWalletData = walletsResponse.wallets || walletsResponse.data?.wallets || {};
+                const summaryData = walletsResponse.summary || walletsResponse.data?.summary || {};
+                
+                console.log('🔍 Processing wallet data structure:', rawWalletData);
+                
+                // Handle nested structure: {TITHE: {wallets: [...], count: 6}, ...}
+                // Convert to flat structure: {TITHE: [...], OFFERING: [...]}
+                const processedWalletData = {};
+                Object.keys(rawWalletData).forEach(category => {
+                    const categoryData = rawWalletData[category];
+                    if (categoryData && categoryData.wallets && Array.isArray(categoryData.wallets)) {
+                        // Nested structure - extract the wallets array
+                        processedWalletData[category] = categoryData.wallets;
+                    } else if (Array.isArray(categoryData)) {
+                        // Direct array structure
+                        processedWalletData[category] = categoryData;
+                    } else {
+                        // Fallback to empty array
+                        processedWalletData[category] = [];
+                    }
+                });
+                
+                // Ensure all categories exist, including SPECIAL_OFFERING
+                const requiredCategories = ['TITHE', 'OFFERING', 'DONATION', 'SPECIAL_OFFERING'];
+                requiredCategories.forEach(category => {
+                    if (!processedWalletData[category]) {
+                        processedWalletData[category] = [];
+                    }
+                });
+                
+                // Ensure all categories are arrays
+                this.groupedWallets = this.ensureWalletStructure(processedWalletData);
+                this.summary = summaryData;
+                this.totalBalance = summaryData.totalBalance || 0;
                 
                 // Flatten wallets for easier access
                 this.wallets = [];
@@ -101,23 +201,37 @@ export class AdminWalletsView {
                     }
                 });
                 
-                console.log('💰 Wallets loaded:', {
+                console.log('💰 Wallets processed:', {
                     totalBalance: this.totalBalance,
                     categories: Object.keys(this.groupedWallets).length,
-                    totalWallets: this.wallets.length
+                    totalWallets: this.wallets.length,
+                    structure: Object.keys(this.groupedWallets).reduce((acc, key) => {
+                        acc[key] = this.groupedWallets[key].length;
+                        return acc;
+                    }, {}),
+                    sampleWallet: this.wallets[0] || null
                 });
             } else {
-                throw new Error('Invalid wallets response structure');
+                // Initialize empty structure
+                this.groupedWallets = this.ensureWalletStructure();
+                this.summary = {
+                    totalBalance: 0,
+                    totalDeposits: 0,
+                    totalWithdrawals: 0,
+                    walletsCount: 0
+                };
+                this.totalBalance = 0;
+                this.wallets = [];
+                console.log('💳 Showing empty wallet structure');
             }
 
             // Process withdrawals response
-            if (withdrawalsResponse?.success && withdrawalsResponse?.data) {
-                this.withdrawalRequests = withdrawalsResponse.data.withdrawalRequests || [];
-                console.log('💸 Withdrawal requests loaded:', this.withdrawalRequests.length);
-            } else {
-                console.warn('⚠️ Could not load withdrawal requests');
-                this.withdrawalRequests = [];
-            }
+            const withdrawalData = withdrawalsResponse?.withdrawalRequests || 
+                                 withdrawalsResponse?.data?.withdrawalRequests || 
+                                 withdrawalsResponse || [];
+            
+            this.withdrawalRequests = Array.isArray(withdrawalData) ? withdrawalData : [];
+            console.log('💸 Withdrawal requests loaded:', this.withdrawalRequests.length);
 
         } catch (error) {
             if (error.name === 'AbortError') {
@@ -125,7 +239,20 @@ export class AdminWalletsView {
                 return;
             }
             console.error('❌ Error loading wallet data:', error);
-            throw new Error(`Failed to load wallet data: ${error.message}`);
+            
+            // Set empty state instead of throwing
+            this.groupedWallets = this.ensureWalletStructure();
+            this.summary = {
+                totalBalance: 0,
+                totalDeposits: 0,
+                totalWithdrawals: 0,
+                walletsCount: 0
+            };
+            this.totalBalance = 0;
+            this.wallets = [];
+            this.withdrawalRequests = [];
+            
+            this.error = `Could not load wallet data: ${error.message}`;
         } finally {
             this.isLoading = false;
             this.abortControllers.delete('loadData');
@@ -198,12 +325,6 @@ export class AdminWalletsView {
                     <div class="header-actions">
                         <button class="btn btn-secondary" id="refresh-btn">
                             <span>🔄</span> Refresh
-                        </button>
-                        <button class="btn btn-secondary" id="initialize-btn">
-                            <span>⚡</span> Initialize System
-                        </button>
-                        <button class="btn btn-secondary" id="recalculate-btn">
-                            <span>🧮</span> Recalculate Balances
                         </button>
                         <button class="btn btn-primary btn-withdraw" id="withdrawal-btn">
                             <span>💸</span> Request Withdrawal
@@ -354,20 +475,10 @@ export class AdminWalletsView {
 
     attachHeaderEventListeners(container) {
         const refreshBtn = container.querySelector('#refresh-btn');
-        const initializeBtn = container.querySelector('#initialize-btn');
-        const recalculateBtn = container.querySelector('#recalculate-btn');
         const withdrawalBtn = container.querySelector('#withdrawal-btn');
         
         if (refreshBtn) {
             refreshBtn.addEventListener('click', this.refreshData);
-        }
-        
-        if (initializeBtn) {
-            initializeBtn.addEventListener('click', this.initializeWalletSystem);
-        }
-        
-        if (recalculateBtn) {
-            recalculateBtn.addEventListener('click', this.recalculateBalances);
         }
         
         if (withdrawalBtn) {
@@ -394,6 +505,12 @@ export class AdminWalletsView {
                     if (walletId) {
                         this.openWalletDetails(walletId);
                     }
+                }
+                
+                // Manual initialization button
+                const initBtn = e.target.closest('#manual-init-btn');
+                if (initBtn) {
+                    this.initializeWalletSystem();
                 }
             });
         }
@@ -430,13 +547,13 @@ export class AdminWalletsView {
     }
 
     renderQuickStats() {
-        const titheTotal = this.groupedWallets.TITHE ? 
+        const titheTotal = (this.groupedWallets.TITHE && Array.isArray(this.groupedWallets.TITHE)) ? 
             this.groupedWallets.TITHE.reduce((sum, w) => sum + (w.balance || 0), 0) : 0;
-        const offeringTotal = this.groupedWallets.OFFERING ? 
+        const offeringTotal = (this.groupedWallets.OFFERING && Array.isArray(this.groupedWallets.OFFERING)) ? 
             this.groupedWallets.OFFERING.reduce((sum, w) => sum + (w.balance || 0), 0) : 0;
-        const specialTotal = this.groupedWallets.SPECIAL_OFFERING ? 
+        const specialTotal = (this.groupedWallets.SPECIAL_OFFERING && Array.isArray(this.groupedWallets.SPECIAL_OFFERING)) ? 
             this.groupedWallets.SPECIAL_OFFERING.reduce((sum, w) => sum + (w.balance || 0), 0) : 0;
-        const donationTotal = this.groupedWallets.DONATION ? 
+        const donationTotal = (this.groupedWallets.DONATION && Array.isArray(this.groupedWallets.DONATION)) ? 
             this.groupedWallets.DONATION.reduce((sum, w) => sum + (w.balance || 0), 0) : 0;
 
         return `
@@ -491,51 +608,90 @@ export class AdminWalletsView {
     }
 
     renderWalletsGrid() {
-        if (Object.keys(this.groupedWallets).length === 0) {
+        // Always show all categories, even with empty wallets
+        const allCategories = ['TITHE', 'OFFERING', 'DONATION', 'SPECIAL_OFFERING'];
+        
+        // Check if we have any wallets at all
+        const hasAnyWallets = this.wallets.length > 0;
+        
+        if (!hasAnyWallets && this.error) {
             return `
-                <div class="empty-state">
-                    <div class="empty-icon">💰</div>
-                    <h3>No Wallets Found</h3>
-                    <p>Initialize the wallet system to get started.</p>
-                    <button class="btn btn-primary" id="init-from-empty">Initialize Wallets</button>
+                <div class="wallet-initialization">
+                    <div class="init-card">
+                        <div class="init-icon">🏦</div>
+                        <h3>Wallet System Setup Required</h3>
+                        <p>The wallet system needs to be initialized to track church finances.</p>
+                        <div class="init-info">
+                            <div class="info-item">✨ Creates default wallet categories</div>
+                            <div class="info-item">📊 Enables financial tracking</div>
+                            <div class="info-item">💰 Sets up balance management</div>
+                        </div>
+                        <button class="btn btn-primary" id="manual-init-btn">
+                            <span>⚡</span> Initialize Wallet System
+                        </button>
+                        <small class="init-note">This is a one-time setup process.</small>
+                    </div>
                 </div>
             `;
         }
+        
+        return `
+            <div class="wallets-grid">
+                ${allCategories.map(category => `
+                    <div class="wallet-category" data-category="${category}">
+                        <div class="category-header">
+                            <span class="category-icon">${this.getCategoryIcon(category)}</span>
+                            <h3>${category.charAt(0) + category.slice(1).toLowerCase().replace(/_/g, ' ')}</h3>
+                        </div>
+                        <div class="category-wallets">
+                            ${this.renderCategoryWallets(category)}
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
 
-        return Object.entries(this.groupedWallets).map(([category, wallets]) => {
-            if (!Array.isArray(wallets) || wallets.length === 0) return '';
-
-            const categoryTotal = wallets.reduce((sum, wallet) => sum + (wallet.balance || 0), 0);
-
+    renderCategoryWallets(category) {
+        const wallets = this.groupedWallets[category] || [];
+        
+        if (wallets.length === 0) {
             return `
-                <div class="wallet-category">
-                    <div class="category-header">
-                        <h3 class="category-title">
-                            ${this.getCategoryIcon(category)} ${this.formatCategoryName(category)}
-                        </h3>
-                        <div class="category-total">KES ${this.formatCurrency(categoryTotal)}</div>
-                    </div>
-                    <div class="category-wallets">
-                        ${wallets.map(wallet => `
-                            <div class="wallet-card" data-wallet-id="${wallet.id}">
-                                <div class="wallet-info">
-                                    <div class="wallet-name">${this.formatWalletName(wallet)}</div>
-                                    <div class="wallet-balance">KES ${this.formatCurrency(wallet.balance || 0)}</div>
-                                    <div class="wallet-meta">
-                                        <span>In: KES ${this.formatCurrency(wallet.totalDeposits || 0)}</span>
-                                        <span>Out: KES ${this.formatCurrency(wallet.totalWithdrawals || 0)}</span>
-                                        <span>Updated: ${this.formatDate(wallet.lastUpdated)}</span>
-                                    </div>
-                                </div>
-                                <div class="wallet-action">
-                                    <button class="view-btn" data-wallet-id="${wallet.id}" title="View Details">👁️</button>
-                                </div>
-                            </div>
-                        `).join('')}
-                    </div>
+                <div class="empty-wallet-state">
+                    <p>No ${category.toLowerCase().replace(/_/g, ' ')} wallets available</p>
                 </div>
             `;
-        }).join('');
+        }
+        
+        return wallets.map(wallet => `
+            <div class="wallet-card" data-wallet-id="${wallet.id}">
+                <div class="wallet-header">
+                    <h4>${this.formatWalletName(wallet)}</h4>
+                    <span class="wallet-status ${wallet.isActive ? 'active' : 'inactive'}">
+                        ${wallet.isActive ? 'Active' : 'Inactive'}
+                    </span>
+                </div>
+                <div class="wallet-balance">
+                    <span class="balance-label">Current Balance</span>
+                    <span class="balance-amount">KES ${this.formatCurrency(wallet.balance || 0)}</span>
+                </div>
+                <div class="wallet-stats">
+                    <div class="stat">
+                        <span class="stat-label">Total Deposits</span>
+                        <span class="stat-value">KES ${this.formatCurrency(wallet.totalDeposits || 0)}</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Total Withdrawals</span>
+                        <span class="stat-value">KES ${this.formatCurrency(wallet.totalWithdrawals || 0)}</span>
+                    </div>
+                </div>
+                <div class="wallet-actions">
+                    <button class="btn btn-secondary view-btn" data-wallet-id="${wallet.id}">
+                        View Details
+                    </button>
+                </div>
+            </div>
+        `).join('');
     }
 
     renderRecentWithdrawals() {
@@ -602,7 +758,7 @@ export class AdminWalletsView {
         }
     }
 
-    openWalletDetails(walletId) {
+    async openWalletDetails(walletId) {
         console.log('👁️ Opening wallet details for wallet:', walletId);
         if (this.activeModals.has('walletDetails')) return;
         
@@ -610,6 +766,31 @@ export class AdminWalletsView {
         if (wallet) {
             this.currentWallet = wallet;
             this.activeModals.add('walletDetails');
+            
+            // Try to load wallet transactions with proper error handling
+            this.walletTransactions = [];
+            try {
+                console.log('📊 Loading transactions for wallet:', walletId);
+                const transactions = await this.apiService.getWalletTransactions(walletId, {
+                    page: 1,
+                    limit: 50,
+                    include: ['specialOffering', 'payment', 'withdrawal']
+                });
+                
+                if (transactions?.transactions) {
+                    this.walletTransactions = transactions.transactions;
+                } else if (Array.isArray(transactions)) {
+                    this.walletTransactions = transactions;
+                }
+                
+                console.log('✅ Loaded transactions:', this.walletTransactions.length);
+            } catch (error) {
+                console.warn('⚠️ Could not load wallet transactions:', error.message);
+                this.showAlert('Could not load transaction history. Please try again.', 'warning');
+                // Continue with empty transactions - don't block the modal
+                this.walletTransactions = [];
+            }
+            
             this.showWalletDetailsModal();
         }
     }
@@ -673,7 +854,7 @@ export class AdminWalletsView {
                                         <div class="info-icon">ℹ️</div>
                                         <div class="info-text">
                                             <strong>Multi-Admin Approval Required</strong><br>
-                                            This withdrawal will require approval from ${this.getRequiredApprovals()} different administrators before processing.
+                                            This withdrawal will require approval from 3 different administrators before processing.
                                             All withdrawals are automatically treated as expenses and will be recorded in the system.
                                         </div>
                                     </div>
@@ -873,6 +1054,17 @@ export class AdminWalletsView {
     showWalletDetailsModal() {
         if (!this.currentWallet) return;
 
+        // Handle missing data gracefully
+        const walletType = this.currentWallet.walletType || 'Unknown';
+        const subType = this.currentWallet.subType || null;
+        const isActive = this.currentWallet.isActive !== undefined ? this.currentWallet.isActive : true;
+        const createdAt = this.currentWallet.createdAt || this.currentWallet.updatedAt || new Date();
+        const lastUpdated = this.currentWallet.lastUpdated || this.currentWallet.updatedAt || new Date();
+        
+        // Ensure deposits and withdrawals are properly displayed
+        const totalDeposits = this.currentWallet.totalDeposits || 0;
+        const totalWithdrawals = this.currentWallet.totalWithdrawals || 0;
+
         const modalHtml = `
             <div class="modal-overlay" id="walletDetailsModal">
                 <div class="modal modal-large">
@@ -888,15 +1080,15 @@ export class AdminWalletsView {
                             </div>
                             <div class="overview-stat">
                                 <div class="stat-label">Total Deposits</div>
-                                <div class="stat-value">KES ${this.formatCurrency(this.currentWallet.totalDeposits || 0)}</div>
+                                <div class="stat-value">KES ${this.formatCurrency(totalDeposits)}</div>
                             </div>
                             <div class="overview-stat">
                                 <div class="stat-label">Total Withdrawals</div>
-                                <div class="stat-value">KES ${this.formatCurrency(this.currentWallet.totalWithdrawals || 0)}</div>
+                                <div class="stat-value">KES ${this.formatCurrency(totalWithdrawals)}</div>
                             </div>
                             <div class="overview-stat">
                                 <div class="stat-label">Last Updated</div>
-                                <div class="stat-value">${this.formatDate(this.currentWallet.lastUpdated || this.currentWallet.updatedAt)}</div>
+                                <div class="stat-value">${this.formatDate(lastUpdated)}</div>
                             </div>
                         </div>
                         
@@ -907,27 +1099,60 @@ export class AdminWalletsView {
                             </div>
                             <div class="meta-row">
                                 <span class="meta-label">Type:</span>
-                                <span class="meta-value">${this.currentWallet.walletType}</span>
+                                <span class="meta-value">${walletType}</span>
                             </div>
-                            ${this.currentWallet.subType ? `
+                            ${subType ? `
                                 <div class="meta-row">
                                     <span class="meta-label">Sub-type:</span>
-                                    <span class="meta-value">${this.currentWallet.subType}</span>
+                                    <span class="meta-value">${subType}</span>
                                 </div>
                             ` : ''}
                             <div class="meta-row">
                                 <span class="meta-label">Status:</span>
                                 <span class="meta-value">
-                                    <span class="status-badge ${this.currentWallet.isActive ? 'status-active' : 'status-inactive'}">
-                                        ${this.currentWallet.isActive ? 'Active' : 'Inactive'}
+                                    <span class="status-badge ${isActive ? 'status-active' : 'status-inactive'}">
+                                        ${isActive ? 'Active' : 'Inactive'}
                                     </span>
                                 </span>
                             </div>
                             <div class="meta-row">
                                 <span class="meta-label">Created:</span>
-                                <span class="meta-value">${this.formatDate(this.currentWallet.createdAt)}</span>
+                                <span class="meta-value">${this.formatDate(createdAt)}</span>
                             </div>
+                            ${this.currentWallet.specialOffering ? `
+                                <div class="meta-row">
+                                    <span class="meta-label">Special Offering:</span>
+                                    <span class="meta-value">${this.escapeHtml(this.currentWallet.specialOffering.name)}</span>
+                                </div>
+                            ` : ''}
                         </div>
+
+                        ${this.walletTransactions.length > 0 ? `
+                            <div class="wallet-transactions">
+                                <h3>Recent Transactions (${this.walletTransactions.length})</h3>
+                                <div class="transactions-list">
+                                    ${this.walletTransactions.slice(0, 10).map(tx => `
+                                        <div class="transaction-item">
+                                            <div class="transaction-type">${tx.type || 'Transaction'}</div>
+                                            <div class="transaction-amount ${tx.amount > 0 ? 'positive' : 'negative'}">
+                                                ${tx.amount > 0 ? '+' : ''}KES ${this.formatCurrency(Math.abs(tx.amount || 0))}
+                                            </div>
+                                            <div class="transaction-date">${this.formatDate(tx.createdAt || tx.date)}</div>
+                                            <div class="transaction-description">${this.escapeHtml(tx.description || 'No description')}</div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        ` : `
+                            <div class="wallet-transactions">
+                                <h3>Transaction History</h3>
+                                <div class="empty-transactions">
+                                    <div class="empty-icon">📊</div>
+                                    <p>No transaction history available</p>
+                                    <small>Transactions will appear here when wallet activity occurs</small>
+                                </div>
+                            </div>
+                        `}
                         
                         <div class="modal-actions">
                             <button class="btn btn-secondary" id="print-wallet-report">🖨️ Print Report</button>
@@ -1023,6 +1248,7 @@ export class AdminWalletsView {
         }
         this.activeModals.delete('walletDetails');
         this.currentWallet = null;
+        this.walletTransactions = [];
     }
 
     // Event handlers
@@ -1046,16 +1272,16 @@ export class AdminWalletsView {
             
             console.log('📤 Sending withdrawal request:', withdrawalData);
 
-            const response = await this.apiService.request('POST', '/wallets/withdraw', withdrawalData);
+            const response = await this.apiService.createWithdrawalRequest(withdrawalData);
 
             console.log('✅ Withdrawal request response:', response);
 
-            if (response?.success && response?.data?.withdrawalRequest) {
+            if (response?.withdrawalRequest) {
                 this.showAlert('Withdrawal request created successfully! Waiting for approvals.', 'success');
                 this.closeWithdrawalModal();
                 await this.refreshData();
             } else {
-                throw new Error(response?.message || 'Failed to create withdrawal request');
+                throw new Error('Failed to create withdrawal request');
             }
         } catch (error) {
             console.error('❌ Error creating withdrawal request:', error);
@@ -1118,7 +1344,7 @@ export class AdminWalletsView {
                 throw new Error('Phone number is required for M-Pesa transfers');
             }
             // Validate Kenyan phone number format
-            const phonePattern = /^(\\+254|0)?[17]\\d{8}$/;
+            const phonePattern = /^(\+254|0)?[17]\d{8}$/;
             if (!phonePattern.test(destinationPhone)) {
                 throw new Error('Please enter a valid Kenyan phone number');
             }
@@ -1159,35 +1385,29 @@ export class AdminWalletsView {
 
             const approvalData = {
                 password,
-                comment: comment || null,
-                approvalMethod: 'PASSWORD'
+                comment: comment || null
             };
 
             console.log('📤 Sending approval request for withdrawal:', this.currentWithdrawal.id);
 
-            const response = await this.apiService.request(
-                'POST', 
-                `/wallets/approve/${this.currentWithdrawal.id}`, 
+            const response = await this.apiService.approveWithdrawalRequest(
+                this.currentWithdrawal.id, 
                 approvalData
             );
 
             console.log('✅ Approval response:', response);
 
-            if (response?.success) {
-                if (response.data?.processed) {
-                    this.showAlert('Withdrawal approved and processed successfully!', 'success');
-                } else if (response.data?.requiresMoreApprovals) {
-                    const remaining = response.data.requiredApprovals - response.data.currentApprovals;
-                    this.showAlert(`Approval recorded. ${remaining} more approval${remaining !== 1 ? 's' : ''} needed.`, 'success');
-                } else {
-                    this.showAlert('Approval recorded successfully.', 'success');
-                }
-                
-                this.closeApprovalModal();
-                await this.refreshData();
+            if (response?.processed) {
+                this.showAlert('Withdrawal approved and processed successfully!', 'success');
+            } else if (response?.requiresMoreApprovals) {
+                const remaining = response.requiredApprovals - response.currentApprovals;
+                this.showAlert(`Approval recorded. ${remaining} more approval${remaining !== 1 ? 's' : ''} needed.`, 'success');
             } else {
-                throw new Error(response?.message || 'Failed to approve withdrawal');
+                this.showAlert('Approval recorded successfully.', 'success');
             }
+            
+            this.closeApprovalModal();
+            await this.refreshData();
         } catch (error) {
             console.error('❌ Error approving withdrawal:', error);
             this.showAlert(error.message || 'Failed to approve withdrawal.', 'error');
@@ -1201,9 +1421,9 @@ export class AdminWalletsView {
 
     // System operation methods
     async initializeWalletSystem() {
-        console.log('⚡ Initializing wallet system');
+        console.log('⚡ Manually initializing wallet system');
         
-        const confirmMessage = 'Are you sure you want to initialize the wallet system? This will create default wallets if they don\'t exist.';
+        const confirmMessage = 'Are you sure you want to manually initialize the wallet system?\n\nNote: This should only be done once. Existing wallet balances will be preserved.';
         if (!confirm(confirmMessage)) {
             return;
         }
@@ -1211,48 +1431,33 @@ export class AdminWalletsView {
         try {
             this.showAlert('Initializing wallet system...', 'info');
             
-            const response = await this.apiService.request('POST', '/wallets/initialize');
+            const response = await this.apiService.initializeWallets();
             
-            if (response?.success) {
-                const created = response.data?.walletsCreated?.length || 0;
+            if (response?.walletsCreated) {
+                const created = response.walletsCreated.length || 0;
                 this.showAlert(`Wallet system initialized successfully. ${created} wallets created.`, 'success');
+                // Clear error state
+                this.error = null;
                 await this.refreshData();
             } else {
-                throw new Error(response?.message || 'Failed to initialize wallet system');
+                throw new Error('Failed to initialize wallet system');
             }
         } catch (error) {
             console.error('❌ Error initializing wallet system:', error);
             this.showAlert(error.message || 'Failed to initialize wallet system.', 'error');
         }
     }
-
-    async recalculateBalances() {
-        console.log('🧮 Recalculating wallet balances');
-        
-        const confirmMessage = 'Are you sure you want to recalculate all wallet balances? This will update balances based on completed payments.';
-        if (!confirm(confirmMessage)) {
-            return;
-        }
-
-        try {
-            this.showAlert('Recalculating wallet balances...', 'info');
-            
-            const response = await this.apiService.request('POST', '/wallets/recalculate');
-            
-            if (response?.success) {
-                const processed = response.data?.walletsProcessed || 0;
-                this.showAlert(`Wallet balances recalculated successfully. ${processed} wallets processed.`, 'success');
-                await this.refreshData();
-            } else {
-                throw new Error(response?.message || 'Failed to recalculate balances');
-            }
-        } catch (error) {
-            console.error('❌ Error recalculating balances:', error);
-            this.showAlert(error.message || 'Failed to recalculate balances.', 'error');
-        }
+    // Utility methods
+    ensureWalletStructure(walletData = {}) {
+        // Ensure all wallet categories are arrays
+        return {
+            TITHE: Array.isArray(walletData.TITHE) ? walletData.TITHE : [],
+            OFFERING: Array.isArray(walletData.OFFERING) ? walletData.OFFERING : [],
+            DONATION: Array.isArray(walletData.DONATION) ? walletData.DONATION : [],
+            SPECIAL_OFFERING: Array.isArray(walletData.SPECIAL_OFFERING) ? walletData.SPECIAL_OFFERING : []
+        };
     }
 
-    // Utility methods
     renderWalletOptions() {
         let options = '';
         Object.entries(this.groupedWallets).forEach(([category, wallets]) => {
@@ -1294,38 +1499,46 @@ export class AdminWalletsView {
             'TITHE': 'Tithe Funds',
             'OFFERING': 'Offerings',
             'DONATION': 'Donations',
-            'SPECIAL_OFFERING': 'Special Offerings'
+            'SPECIAL_OFFERING': 'Special Offerings',
+            'UNKNOWN': 'Unknown Category'
         };
-        return names[category] || category;
+        return names[category] || category || 'Unknown Category';
     }
 
     getCategoryIcon(category) {
         const icons = {
-            'TITHE': '📿',
-            'OFFERING': '🙏',
+            'TITHE': '💰',
+            'OFFERING': '🎁',
             'DONATION': '💝',
             'SPECIAL_OFFERING': '✨'
         };
-        return icons[category] || '💰';
+        return icons[category] || '💳';
     }
 
     formatWalletName(wallet) {
         if (!wallet) return 'Unknown Wallet';
         
-        if (wallet.subType) {
-            if (wallet.walletType === 'TITHE') {
-                const titheNames = {
-                    'campMeetingExpenses': 'Camp Meeting Expenses',
-                    'welfare': 'Welfare Fund',
-                    'thanksgiving': 'Thanksgiving',
-                    'stationFund': 'Station Fund',
-                    'mediaMinistry': 'Media Ministry'
-                };
-                return titheNames[wallet.subType] || wallet.subType;
-            }
-            return wallet.subType;
+        const type = wallet.walletType || 'Unknown';
+        const subType = wallet.subType;
+        
+        // Handle null subtypes for OFFERING and DONATION
+        if ((type === 'OFFERING' || type === 'DONATION') && !subType) {
+            return type.charAt(0) + type.slice(1).toLowerCase();
         }
-        return this.formatCategoryName(wallet.walletType);
+        
+        // Handle SPECIAL_OFFERING with offering name
+        if (type === 'SPECIAL_OFFERING' && wallet.specialOffering) {
+            return wallet.specialOffering.name || 'Special Offering';
+        }
+        
+        // Handle TITHE subtypes
+        if (type === 'TITHE') {
+            if (!subType) return 'General Tithe';
+            return `${subType.charAt(0).toUpperCase() + subType.slice(1).replace(/([A-Z])/g, ' $1')} Tithe`;
+        }
+        
+        // Default formatting
+        return `${type.charAt(0) + type.slice(1).toLowerCase()}${subType ? ` - ${subType}` : ''}`;
     }
 
     formatCurrency(amount) {
@@ -1357,11 +1570,6 @@ export class AdminWalletsView {
         return div.innerHTML;
     }
 
-    getRequiredApprovals() {
-        // This should match your backend configuration
-        return 3;
-    }
-
     async refreshData() {
         console.log('🔄 Refreshing wallet data');
         
@@ -1376,7 +1584,12 @@ export class AdminWalletsView {
                 container.parentNode.replaceChild(newContainer, container);
             }
             
-            this.showAlert('Data refreshed successfully.', 'success');
+            // Only show success if we actually have data or if initialization worked
+            if (this.wallets.length > 0 || !this.error) {
+                this.showAlert('Data refreshed successfully.', 'success');
+            } else if (this.error) {
+                this.showAlert(this.error, 'warning');
+            }
         } catch (error) {
             console.error('❌ Error refreshing data:', error);
             this.showAlert('Failed to refresh data: ' + error.message, 'error');
@@ -1574,6 +1787,11 @@ export class AdminWalletsView {
     showAlert(message, type = 'info') {
         console.log(`🔔 Alert (${type}):`, message);
         
+        // Don't show alerts for info messages during initialization
+        if (type === 'info' && message.includes('Refreshing data')) {
+            return;
+        }
+        
         // Get or create alerts container
         let alertsContainer = document.getElementById('alerts-container');
         
@@ -1586,8 +1804,12 @@ export class AdminWalletsView {
             alertsContainer = tempDiv;
         }
 
-        const alertClass = type === 'success' ? 'alert-success' : type === 'error' ? 'alert-error' : 'alert-info';
-        const alertIcon = type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️';
+        const alertClass = type === 'success' ? 'alert-success' : 
+                          type === 'error' ? 'alert-error' : 
+                          type === 'warning' ? 'alert-warning' : 'alert-info';
+        const alertIcon = type === 'success' ? '✅' : 
+                         type === 'error' ? '❌' : 
+                         type === 'warning' ? '⚠️' : 'ℹ️';
 
         const alertElement = document.createElement('div');
         alertElement.className = `alert ${alertClass}`;
@@ -1598,9 +1820,15 @@ export class AdminWalletsView {
             display: flex; 
             align-items: center; 
             gap: 1rem; 
-            background: ${type === 'success' ? 'rgba(16, 185, 129, 0.1)' : type === 'error' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(59, 130, 246, 0.1)'}; 
-            color: ${type === 'success' ? '#059669' : type === 'error' ? '#dc2626' : '#2563eb'}; 
-            border: 1px solid ${type === 'success' ? 'rgba(16, 185, 129, 0.2)' : type === 'error' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(59, 130, 246, 0.2)'};
+            background: ${type === 'success' ? 'rgba(16, 185, 129, 0.1)' : 
+                       type === 'error' ? 'rgba(239, 68, 68, 0.1)' : 
+                       type === 'warning' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(59, 130, 246, 0.1)'}; 
+            color: ${type === 'success' ? '#059669' : 
+                   type === 'error' ? '#dc2626' : 
+                   type === 'warning' ? '#d97706' : '#2563eb'}; 
+            border: 1px solid ${type === 'success' ? 'rgba(16, 185, 129, 0.2)' : 
+                              type === 'error' ? 'rgba(239, 68, 68, 0.2)' : 
+                              type === 'warning' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(59, 130, 246, 0.2)'};
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
             animation: slideInRight 0.3s ease-out;
         `;
@@ -1624,7 +1852,8 @@ export class AdminWalletsView {
 
         alertsContainer.insertAdjacentElement('afterbegin', alertElement);
 
-        // Auto-remove after 5 seconds
+        // Auto-remove after appropriate time
+        const autoRemoveTime = type === 'warning' ? 7000 : 5000;
         setTimeout(() => {
             if (alertElement.parentNode) {
                 alertElement.style.animation = 'slideOutRight 0.3s ease-in';
@@ -1634,7 +1863,7 @@ export class AdminWalletsView {
                     }
                 }, 300);
             }
-        }, 5000);
+        }, autoRemoveTime);
     }
 
     injectStyles() {
@@ -2171,6 +2400,122 @@ export class AdminWalletsView {
                 transform: scale(1.1);
             }
 
+            /* Empty transactions */
+            .empty-transactions {
+                padding: 3rem 2rem;
+                text-align: center;
+                color: #64748b;
+                border: 1px solid rgba(226, 232, 240, 0.5);
+                border-radius: 8px;
+                background: rgba(248, 250, 252, 0.5);
+            }
+
+            .empty-transactions .empty-icon {
+                font-size: 3rem;
+                margin-bottom: 1rem;
+                opacity: 0.7;
+            }
+
+            .empty-transactions p {
+                font-size: 1.1rem;
+                margin-bottom: 0.5rem;
+                color: #374151;
+            }
+
+            .empty-transactions small {
+                font-size: 0.9rem;
+                color: #9ca3af;
+            }
+
+            /* Wallet initialization */
+            .wallet-initialization {
+                display: flex;
+                justify-content: center;
+                padding: 2rem;
+                grid-column: 1 / -1;
+            }
+
+            .init-card {
+                background: rgba(255, 255, 255, 0.95);
+                border-radius: 20px;
+                padding: 3rem 2rem;
+                text-align: center;
+                max-width: 500px;
+                border: 2px solid rgba(79, 70, 229, 0.2);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            }
+
+            .init-icon {
+                font-size: 4rem;
+                margin-bottom: 1.5rem;
+                color: #4f46e5;
+            }
+
+            .init-card h3 {
+                font-size: 1.8rem;
+                font-weight: 700;
+                color: #1a202c;
+                margin-bottom: 1rem;
+            }
+
+            .init-card p {
+                font-size: 1.1rem;
+                color: #64748b;
+                margin-bottom: 2rem;
+                line-height: 1.6;
+            }
+
+            .init-info {
+                margin: 2rem 0;
+                text-align: left;
+                background: rgba(79, 70, 229, 0.05);
+                border-radius: 12px;
+                padding: 1.5rem;
+            }
+
+            .info-item {
+                display: flex;
+                align-items: center;
+                margin-bottom: 0.75rem;
+                color: #374151;
+                font-weight: 500;
+            }
+
+            .info-item:last-child {
+                margin-bottom: 0;
+            }
+
+            .init-note {
+                display: block;
+                margin-top: 1rem;
+                color: #9ca3af;
+                font-size: 0.9rem;
+            }
+
+            /* Empty wallet message */
+            .empty-wallet-message {
+                text-align: center;
+                padding: 3rem 2rem;
+                color: #64748b;
+            }
+
+            .empty-wallet-message .empty-icon {
+                font-size: 3rem;
+                margin-bottom: 1rem;
+                opacity: 0.7;
+            }
+
+            .empty-wallet-message p {
+                font-size: 1.1rem;
+                margin-bottom: 0.5rem;
+                color: #374151;
+            }
+
+            .empty-wallet-message small {
+                font-size: 0.9rem;
+                color: #9ca3af;
+            }
+
             /* Tables */
             .withdrawals-table {
                 display: flex;
@@ -2537,6 +2882,70 @@ export class AdminWalletsView {
                 font-size: 0.9rem;
             }
 
+            /* Wallet transactions */
+            .wallet-transactions {
+                margin-bottom: 2rem;
+            }
+
+            .wallet-transactions h3 {
+                color: #1a202c;
+                margin-bottom: 1rem;
+                font-size: 1.2rem;
+                font-weight: 700;
+            }
+
+            .transactions-list {
+                max-height: 300px;
+                overflow-y: auto;
+                border: 1px solid rgba(226, 232, 240, 0.5);
+                border-radius: 8px;
+            }
+
+            .transaction-item {
+                display: grid;
+                grid-template-columns: 1fr auto auto 2fr;
+                gap: 1rem;
+                padding: 1rem;
+                border-bottom: 1px solid rgba(226, 232, 240, 0.3);
+                align-items: center;
+                font-size: 0.9rem;
+            }
+
+            .transaction-item:last-child {
+                border-bottom: none;
+            }
+
+            .transaction-type {
+                font-weight: 600;
+                color: #374151;
+            }
+
+            .transaction-amount {
+                font-weight: 700;
+                font-size: 1rem;
+            }
+
+            .transaction-amount.positive {
+                color: #059669;
+            }
+
+            .transaction-amount.negative {
+                color: #dc2626;
+            }
+
+            .transaction-date {
+                color: #64748b;
+                font-size: 0.8rem;
+            }
+
+            .transaction-description {
+                color: #64748b;
+                font-size: 0.85rem;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
             /* Approval modal */
             .withdrawal-details {
                 margin-bottom: 2rem;
@@ -2620,6 +3029,12 @@ export class AdminWalletsView {
                 border: 1px solid rgba(239, 68, 68, 0.2);
             }
 
+            .alert-warning {
+                background: rgba(245, 158, 11, 0.1);
+                color: #d97706;
+                border: 1px solid rgba(245, 158, 11, 0.2);
+            }
+
             .alert-info {
                 background: rgba(59, 130, 246, 0.1);
                 color: #2563eb;
@@ -2683,6 +3098,7 @@ export class AdminWalletsView {
                 .approval-details { flex-direction: column; gap: 0.5rem; align-items: flex-start; }
                 .stats-grid { grid-template-columns: 1fr; }
                 .wallet-overview { grid-template-columns: repeat(2, 1fr); }
+                .transaction-item { grid-template-columns: 1fr; gap: 0.5rem; text-align: left; }
             }
 
             @media (max-width: 480px) {
@@ -2715,41 +3131,11 @@ export class AdminWalletsView {
 
     // Cleanup method
     cleanup() {
-        console.log('🧹 Cleaning up wallet view...');
-        
-        // Cancel any pending requests
-        this.abortControllers.forEach((controller, key) => {
-            controller.abort();
-            console.log(`Cancelled request: ${key}`);
-        });
+        this.stopAutoRefresh();
+        // Clear any existing abort controllers
+        this.abortControllers.forEach(controller => controller.abort());
         this.abortControllers.clear();
-        
-        // Close all modals
-        this.activeModals.forEach(modalType => {
-            const modalId = modalType === 'withdrawal' ? 'withdrawalModal' : 
-                           modalType === 'approval' ? 'approvalModal' : 
-                           modalType === 'walletDetails' ? 'walletDetailsModal' : null;
-            if (modalId) {
-                const modal = document.getElementById(modalId);
-                if (modal) {
-                    modal.remove();
-                }
-            }
-        });
-        this.activeModals.clear();
-        
-        // Remove styles
-        const style = document.getElementById('wallet-styles');
-        if (style) style.remove();
-        
-        // Clear data
-        this.wallets = [];
-        this.groupedWallets = {};
-        this.withdrawalRequests = [];
-        this.currentWallet = null;
-        this.currentWithdrawal = null;
-        
-        console.log('✅ Wallet view cleanup completed');
+        console.log('🧹 Wallet view cleanup completed');
     }
 }
 

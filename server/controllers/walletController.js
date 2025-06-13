@@ -43,14 +43,25 @@ const logAdminActivity = async (actionType, targetId, initiatedBy, actionData = 
 };
 
 /**
- * Initialize wallet system - create default wallets
+ * Initialize wallet system with proper validation
  */
 exports.initializeWallets = async (req, res) => {
   try {
     logger.wallet('Initialize Wallets attempt started', { userId: req.user.id });
     
     if (isViewOnlyAdmin(req.user)) {
-      return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot initialize wallets.", { code: 'FORBIDDEN_VIEW_ONLY' });
+      return sendResponse(res, 403, false, null, "Forbidden: View-only admins cannot initialize wallets.", { 
+        code: 'FORBIDDEN_VIEW_ONLY' 
+      });
+    }
+
+    // Check if wallets already exist
+    const existingWallets = await prisma.wallet.findMany();
+    if (existingWallets.length > 0) {
+      return sendResponse(res, 400, false, null, "Wallet system already initialized.", {
+        code: 'WALLETS_EXIST',
+        existingCount: existingWallets.length
+      });
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -60,13 +71,21 @@ exports.initializeWallets = async (req, res) => {
       timeout: 30000,
     });
 
-    await logAdminActivity('INITIALIZE_WALLETS', 'SYSTEM', req.user.id, { walletsCreated: result.length });
+    await logAdminActivity('INITIALIZE_WALLETS', 'SYSTEM', req.user.id, { 
+      walletsCreated: result.length 
+    });
+    
     logger.wallet(`Wallet initialization completed. Created ${result.length} new wallets.`);
     
-    return sendResponse(res, 200, true, { walletsCreated: result }, `Wallet system initialized. Created ${result.length} new wallets.`);
+    return sendResponse(res, 200, true, { 
+      walletsCreated: result 
+    }, `Wallet system initialized. Created ${result.length} new wallets.`);
 
   } catch (error) {
-    logger.error('Error initializing wallets', { error: error.message, userId: req.user.id });
+    logger.error('Error initializing wallets', { 
+      error: error.message, 
+      userId: req.user.id 
+    });
     return sendResponse(res, 500, false, null, 'Server error initializing wallets.', { 
       code: 'SERVER_ERROR', 
       details: error.message 
@@ -626,197 +645,71 @@ exports.getWithdrawalRequests = async (req, res) => {
 };
 
 /**
- * Get transactions for a specific wallet with enhanced details
+ * Get wallet transactions with proper error handling and pagination
  */
 exports.getWalletTransactions = async (req, res) => {
   try {
     const { walletId } = req.params;
-    const { page = 1, limit = 20, startDate, endDate, transactionType } = req.query;
-    const numericWalletId = parseInt(walletId);
-
-    logger.wallet(`Get Wallet Transactions for walletId: ${numericWalletId}`);
-
-    if (isNaN(numericWalletId)) {
-      return sendResponse(res, 400, false, null, 'Invalid Wallet ID format.', { code: 'INVALID_WALLET_ID' });
-    }
+    const { page = 1, limit = 50, include = [] } = req.query;
     
-    // Get wallet details with validation
+    // Validate wallet exists
     const wallet = await prisma.wallet.findUnique({
-      where: { id: numericWalletId }
+      where: { id: parseInt(walletId) }
     });
-
+    
     if (!wallet) {
-      return sendResponse(res, 404, false, null, 'Wallet not found.', { code: 'WALLET_NOT_FOUND' });
+      return sendResponse(res, 404, false, null, 'Wallet not found', {
+        code: 'WALLET_NOT_FOUND'
+      });
     }
-
-    const take = parseInt(limit);
-    const skip = (parseInt(page) - 1) * take;
     
-    // Enhanced date filtering
-    const dateFilter = {};
-    if (startDate || endDate) {
-      if (startDate) dateFilter.gte = new Date(startDate);
-      if (endDate) dateFilter.lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
-    }
-
-    // Build deposit query based on wallet type
-    let depositQuery = { 
-      status: 'COMPLETED', 
-      isExpense: false 
-    };
+    // Calculate pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
     
-    if (dateFilter.gte || dateFilter.lte) {
-      depositQuery.paymentDate = dateFilter;
+    // Build include object based on requested relations
+    const includeObj = {};
+    if (include.includes('specialOffering')) {
+      includeObj.specialOffering = true;
     }
-
-    // Wallet-specific filtering
-    if (wallet.walletType === 'TITHE') {
-      depositQuery.paymentType = 'TITHE';
-      if (wallet.subType) {
-        depositQuery.titheDistributionSDA = { 
-          path: `$.${wallet.subType}`, 
-          not: 0 
-        };
-      }
-    } else if (wallet.walletType === 'SPECIAL_OFFERING') {
-      depositQuery.specialOfferingId = wallet.specialOfferingId;
-      depositQuery.paymentType = 'SPECIAL_OFFERING_CONTRIBUTION';
-    } else {
-      depositQuery.paymentType = wallet.walletType;
+    if (include.includes('payment')) {
+      includeObj.payment = true;
     }
-
-    // Build withdrawal query
-    let withdrawalQuery = { 
-      walletId: numericWalletId, 
-      status: 'COMPLETED' 
-    };
+    if (include.includes('withdrawal')) {
+      includeObj.withdrawal = true;
+    }
     
-    if (dateFilter.gte || dateFilter.lte) {
-      withdrawalQuery.processedAt = dateFilter;
-    }
-
-    // Get deposits and withdrawals
-    const [deposits, withdrawals, totalDeposits, totalWithdrawals] = await Promise.all([
-      transactionType === 'WITHDRAWAL' ? [] : prisma.payment.findMany({
-        where: depositQuery,
-        include: { 
-          user: { select: { fullName: true, username: true } },
-          specialOffering: { select: { name: true, offeringCode: true } }
-        },
-        orderBy: { paymentDate: 'desc' },
-        skip: transactionType === 'DEPOSIT' ? skip : 0,
-        take: transactionType === 'DEPOSIT' ? take : 999
+    // Get transactions with proper error handling
+    const [transactions, total] = await Promise.all([
+      prisma.walletTransaction.findMany({
+        where: { walletId: parseInt(walletId) },
+        include: includeObj,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: parseInt(limit)
       }),
-      transactionType === 'DEPOSIT' ? [] : prisma.withdrawalRequest.findMany({
-        where: withdrawalQuery,
-        include: { 
-          requester: { select: { fullName: true, username: true } },
-          approvals: { 
-            include: { approver: { select: { fullName: true } } }
-          }
-        },
-        orderBy: { processedAt: 'desc' },
-        skip: transactionType === 'WITHDRAWAL' ? skip : 0,
-        take: transactionType === 'WITHDRAWAL' ? take : 999
-      }),
-      transactionType === 'WITHDRAWAL' ? 0 : prisma.payment.count({ where: depositQuery }),
-      transactionType === 'DEPOSIT' ? 0 : prisma.withdrawalRequest.count({ where: withdrawalQuery })
+      prisma.walletTransaction.count({
+        where: { walletId: parseInt(walletId) }
+      })
     ]);
     
-    // Format transactions with enhanced details
-    const transactions = [];
-    
-    deposits.forEach(payment => {
-      let amount = parseFloat(payment.amount.toString());
-      
-      // For tithe distributions, calculate the actual amount for this wallet
-      if (wallet.walletType === 'TITHE' && wallet.subType && payment.titheDistributionSDA) {
-        const distributionAmount = payment.titheDistributionSDA[wallet.subType];
-        if (typeof distributionAmount === 'number') {
-          amount = distributionAmount;
-        }
-      }
-      
-      transactions.push({
-        id: `P-${payment.id}`,
-        type: 'DEPOSIT',
-        amount: amount,
-        date: payment.paymentDate,
-        description: payment.description || `${payment.paymentType} payment`,
-        relatedUser: payment.user?.fullName || 'N/A',
-        paymentMethod: payment.paymentMethod,
-        reference: payment.reference,
-        receiptNumber: payment.receiptNumber,
-        specialOffering: payment.specialOffering?.name
-      });
-    });
-    
-    withdrawals.forEach(withdrawal => {
-      transactions.push({
-        id: `W-${withdrawal.id}`,
-        type: 'WITHDRAWAL',
-        amount: -parseFloat(withdrawal.amount.toString()),
-        date: withdrawal.processedAt,
-        description: `${withdrawal.purpose} - ${withdrawal.description || ''}`.trim(),
-        relatedUser: withdrawal.requester?.fullName || 'N/A',
-        withdrawalMethod: withdrawal.withdrawalMethod,
-        reference: withdrawal.withdrawalReference,
-        approvalCount: withdrawal.approvals?.length || 0,
-        destination: withdrawal.destinationAccount || withdrawal.destinationPhone
-      });
-    });
-    
-    // Sort combined transactions by date (most recent first)
-    transactions.sort((a, b) => new Date(b.date) - new Date(a.date));
-    
-    // Apply pagination to combined results if no specific type filter
-    let paginatedTransactions = transactions;
-    let totalTransactions = totalDeposits + totalWithdrawals;
-    
-    if (!transactionType) {
-      paginatedTransactions = transactions.slice(skip, skip + take);
-    } else {
-      totalTransactions = transactionType === 'DEPOSIT' ? totalDeposits : totalWithdrawals;
-    }
-
-    // Calculate summary statistics
-    const summary = {
-      totalDeposits: deposits.reduce((sum, p) => sum + parseFloat(p.amount.toString()), 0),
-      totalWithdrawals: withdrawals.reduce((sum, w) => sum + parseFloat(w.amount.toString()), 0),
-      transactionCount: transactions.length,
-      dateRange: {
-        startDate: startDate || null,
-        endDate: endDate || null
-      }
-    };
-
     return sendResponse(res, 200, true, {
-      wallet: {
-        ...wallet,
-        balance: parseFloat(wallet.balance.toString()),
-        totalDeposits: parseFloat(wallet.totalDeposits.toString()),
-        totalWithdrawals: parseFloat(wallet.totalWithdrawals.toString())
-      },
-      transactions: paginatedTransactions,
+      transactions,
       pagination: {
-        currentPage: parseInt(page),
-        totalTransactions,
-        totalPages: Math.ceil(totalTransactions / take),
-        hasNextPage: skip + take < totalTransactions,
-        hasPreviousPage: parseInt(page) > 1
-      },
-      summary
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      }
     }, 'Wallet transactions retrieved successfully');
-
+    
   } catch (error) {
     logger.error('Error getting wallet transactions', { 
       error: error.message, 
-      walletId: req.params.walletId,
-      userId: req.user.id 
+      walletId: req.params.walletId 
     });
-    return sendResponse(res, 500, false, null, 'Server error retrieving wallet transactions.', {
+    return sendResponse(res, 500, false, null, 'Server error retrieving wallet transactions', {
       code: 'SERVER_ERROR',
-      details: error.message,
+      details: error.message
     });
   }
 };
