@@ -17,7 +17,13 @@
     "seed": "node prisma/seed.js"
   },
   "devDependencies": {
+    "@babel/preset-env": "^7.27.2",
+    "@babel/preset-react": "^7.27.1",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.3.0",
     "autoprefixer": "^10.4.17",
+    "jest": "^30.0.0",
+    "jest-environment-jsdom": "^30.0.0",
     "prisma": "^5.12.1"
   },
   "dependencies": {
