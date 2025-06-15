@@ -613,6 +613,274 @@ class WalletService {
   }
 
   /**
+   * Recalculate all wallet balances from scratch
+   * This method was missing and causing test failures
+   */
+  async recalculateAllWalletBalances(prisma) {
+    try {
+      const wallets = await prisma.wallet.findMany({
+        where: { isActive: true }
+      });
+
+      const recalculatedWallets = [];
+
+      for (const wallet of wallets) {
+        // Calculate total deposits
+        const depositQuery = {
+          where: {
+            status: 'COMPLETED',
+            isExpense: false
+          }
+        };
+
+        // Add wallet-specific filters
+        switch (wallet.walletType) {
+          case 'OFFERING':
+            depositQuery.where.paymentType = 'OFFERING';
+            if (wallet.subType) {
+              depositQuery.where.specialOfferingId = wallet.specialOfferingId;
+            }
+            break;
+          
+          case 'TITHE':
+            depositQuery.where.paymentType = 'TITHE';
+            if (wallet.subType) {
+              // For tithe sub-categories, we need to check the distribution
+              depositQuery.where.titheDistributionSDA = {
+                path: [wallet.subType],
+                not: null
+              };
+            }
+            break;
+          
+          case 'DONATION':
+            depositQuery.where.paymentType = 'DONATION';
+            break;
+          
+          case 'SPECIAL_OFFERING':
+            depositQuery.where.paymentType = 'SPECIAL_OFFERING_CONTRIBUTION';
+            if (wallet.specialOfferingId) {
+              depositQuery.where.specialOfferingId = wallet.specialOfferingId;
+            }
+            break;
+        }
+
+        // Calculate total deposits
+        const depositsResult = await prisma.payment.aggregate({
+          _sum: { amount: true },
+          ...depositQuery
+        });
+
+        let totalDeposits = 0;
+        if (wallet.walletType === 'TITHE' && wallet.subType) {
+          // For tithe sub-categories, sum up the distributed amounts
+          const payments = await prisma.payment.findMany({
+            where: {
+              status: 'COMPLETED',
+              paymentType: 'TITHE',
+              titheDistributionSDA: {
+                path: [wallet.subType],
+                not: null
+              }
+            }
+          });
+
+          totalDeposits = payments.reduce((sum, payment) => {
+            const distribution = payment.titheDistributionSDA || {};
+            const amount = distribution[wallet.subType] || 0;
+            return sum + parseFloat(amount);
+          }, 0);
+        } else {
+          totalDeposits = parseFloat((depositsResult._sum.amount || 0).toString());
+        }
+
+        // Calculate total withdrawals
+        const withdrawalsResult = await prisma.withdrawalRequest.aggregate({
+          _sum: { amount: true },
+          where: {
+            walletId: wallet.id,
+            status: 'COMPLETED'
+          }
+        });
+
+        const totalWithdrawals = parseFloat((withdrawalsResult._sum.amount || 0).toString());
+        const newBalance = totalDeposits - totalWithdrawals;
+
+        // Update wallet
+        const updatedWallet = await prisma.wallet.update({
+          where: { id: wallet.id },
+          data: {
+            balance: newBalance,
+            totalDeposits: totalDeposits,
+            totalWithdrawals: totalWithdrawals,
+            lastUpdated: new Date()
+          }
+        });
+
+        recalculatedWallets.push(updatedWallet);
+      }
+
+      return recalculatedWallets;
+    } catch (error) {
+      console.error('Error recalculating wallet balances:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get comprehensive wallet summary
+   */
+  async getWalletsSummary(prisma) {
+    try {
+      const wallets = await prisma.wallet.findMany({
+        where: { isActive: true },
+        include: {
+          specialOffering: true
+        }
+      });
+
+      const totalBalance = wallets.reduce((sum, wallet) => {
+        return sum + parseFloat(wallet.balance.toString());
+      }, 0);
+
+      const summary = {
+        totalWallets: wallets.length,
+        totalBalance: totalBalance.toFixed(2),
+        walletsByType: {}
+      };
+
+      // Group by wallet type
+      wallets.forEach(wallet => {
+        const type = wallet.subType ? `${wallet.walletType}_${wallet.subType}` : wallet.walletType;
+        summary.walletsByType[type] = {
+          id: wallet.id,
+          balance: parseFloat(wallet.balance.toString()),
+          totalDeposits: parseFloat(wallet.totalDeposits.toString()),
+          totalWithdrawals: parseFloat(wallet.totalWithdrawals.toString()),
+          lastUpdated: wallet.lastUpdated,
+          specialOffering: wallet.specialOffering?.name || null
+        };
+      });
+
+      return summary;
+    } catch (error) {
+      console.error('Error getting wallets summary:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Validate wallet integrity
+   */
+  async validateWalletIntegrity(prisma) {
+    const issues = [];
+
+    try {
+      const wallets = await prisma.wallet.findMany({
+        where: { isActive: true }
+      });
+
+      for (const wallet of wallets) {
+        // Check for negative balances
+        if (parseFloat(wallet.balance.toString()) < 0) {
+          issues.push({
+            walletId: wallet.id,
+            type: 'NEGATIVE_BALANCE',
+            message: `Wallet ${wallet.walletType}${wallet.subType ? `/${wallet.subType}` : ''} has negative balance: ${wallet.balance}`
+          });
+        }
+
+        // Check if total deposits minus withdrawals equals balance
+        const calculatedBalance = parseFloat(wallet.totalDeposits.toString()) - parseFloat(wallet.totalWithdrawals.toString());
+        const actualBalance = parseFloat(wallet.balance.toString());
+
+        if (Math.abs(calculatedBalance - actualBalance) > 0.01) { // Allow for small rounding differences
+          issues.push({
+            walletId: wallet.id,
+            type: 'BALANCE_MISMATCH',
+            message: `Wallet balance mismatch. Calculated: ${calculatedBalance}, Actual: ${actualBalance}`
+          });
+        }
+      }
+
+      return {
+        isValid: issues.length === 0,
+        issues: issues
+      };
+    } catch (error) {
+      console.error('Error validating wallet integrity:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Process withdrawal - complete implementation
+   */
+  async processWithdrawal(withdrawalRequestId, prisma) {
+    try {
+      const withdrawal = await prisma.withdrawalRequest.findUnique({
+        where: { id: withdrawalRequestId },
+        include: {
+          wallet: true,
+          approvals: true
+        }
+      });
+
+      if (!withdrawal) {
+        throw new Error('Withdrawal request not found');
+      }
+
+      if (withdrawal.status !== 'PENDING') {
+        throw new Error('Withdrawal request is not pending');
+      }
+
+      if (withdrawal.currentApprovals < withdrawal.requiredApprovals) {
+        throw new Error('Insufficient approvals for withdrawal');
+      }
+
+      const withdrawalAmount = parseFloat(withdrawal.amount.toString());
+      const currentBalance = parseFloat(withdrawal.wallet.balance.toString());
+
+      if (currentBalance < withdrawalAmount) {
+        throw new Error('Insufficient wallet balance for withdrawal');
+      }
+
+      // Process the withdrawal
+      const [updatedWithdrawal, updatedWallet] = await prisma.$transaction(async (tx) => {
+        // Update withdrawal request
+        const withdrawalUpdate = await tx.withdrawalRequest.update({
+          where: { id: withdrawalRequestId },
+          data: {
+            status: 'COMPLETED',
+            processedAt: new Date()
+          }
+        });
+
+        // Update wallet balances
+        const walletUpdate = await tx.wallet.update({
+          where: { id: withdrawal.walletId },
+          data: {
+            balance: { decrement: withdrawalAmount },
+            totalWithdrawals: { increment: withdrawalAmount },
+            lastUpdated: new Date()
+          }
+        });
+
+        return [withdrawalUpdate, walletUpdate];
+      });
+
+      return {
+        withdrawal: updatedWithdrawal,
+        wallet: updatedWallet
+      };
+    } catch (error) {
+      console.error('Error processing withdrawal:', error);
+      throw error;
+    }
+  }
+
+
+  /**
    * Get wallet transaction history with pagination
    */
   async getWalletTransactionHistory(walletId, options = {}) {

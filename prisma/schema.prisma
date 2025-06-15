@@ -26,6 +26,8 @@ model User {
   isActive                Boolean                 @default(true) @map("isActive")
   createdAt               DateTime                @default(now()) @map("createdAt")
   updatedAt               DateTime                @updatedAt @map("updatedAt")
+  
+  // Fixed relations with proper cascade deletes
   payments                Payment[]               @relation("UserPayments")
   processedPayments       Payment[]               @relation("PaymentProcessor")
   createdSpecialOfferings SpecialOffering[]       @relation("SpecialOfferingCreator")
@@ -37,7 +39,7 @@ model User {
   submittedContactInquiries ContactInquiry[]      @relation("SubmittedByUser")
   handledContactInquiries ContactInquiry[]        @relation("HandledByAdmin")
   
-  // Wallet and batch payment relations
+  // Wallet and batch payment relations with cascade deletes
   batchPaymentsCreated    BatchPayment[]          @relation("BatchPaymentCreator")
   batchPaymentsProcessed  BatchPayment[]          @relation("BatchPaymentProcessor")
   withdrawalRequests      WithdrawalRequest[]     @relation("WithdrawalRequester")
@@ -56,7 +58,7 @@ model AdminAction {
   actionData        Json?                   @map("actionData")
   status            String                  @default("COMPLETED")
   initiatedById     Int                     @map("initiatedById")
-  initiator         User                    @relation("Initiator", fields: [initiatedById], references: [id])
+  initiator         User                    @relation("Initiator", fields: [initiatedById], references: [id], onDelete: Cascade)
   createdAt         DateTime                @default(now()) @map("createdAt")
   updatedAt         DateTime                @updatedAt @map("updatedAt")
   approvals         AdminActionApproval[]
@@ -70,9 +72,9 @@ model AdminAction {
 model AdminActionApproval {
   id            Int          @id @default(autoincrement())
   adminActionId Int          @map("adminActionId")
-  adminAction   AdminAction  @relation(fields: [adminActionId], references: [id])
+  adminAction   AdminAction  @relation(fields: [adminActionId], references: [id], onDelete: Cascade)
   adminId       Int          @map("adminId")
-  admin         User         @relation("AdminApprover", fields: [adminId], references: [id])
+  admin         User         @relation("AdminApprover", fields: [adminId], references: [id], onDelete: Cascade)
   approved      Boolean
   comment       String?
   createdAt     DateTime     @default(now()) @map("createdAt")
@@ -95,7 +97,7 @@ model SpecialOffering {
   isActive      Boolean   @default(true) @map("isActive")
   customFields  Json?     @map("customFields")
   createdById   Int       @map("createdById")
-  creator       User      @relation("SpecialOfferingCreator", fields: [createdById], references: [id])
+  creator       User      @relation("SpecialOfferingCreator", fields: [createdById], references: [id], onDelete: Cascade)
   contributions Payment[] @relation("SpecialOfferingContributions")
   wallets       Wallet[]  @relation("SpecialOfferingWallets")
   createdAt     DateTime  @default(now()) @map("createdAt")
@@ -110,7 +112,7 @@ model SpecialOffering {
 model Payment {
   id                   Int               @id @default(autoincrement())
   userId               Int               @map("userId")
-  user                 User              @relation("UserPayments", fields: [userId], references: [id])
+  user                 User              @relation("UserPayments", fields: [userId], references: [id], onDelete: Cascade)
   amount               Decimal           @map("amount") @db.Decimal(12, 2)
   paymentType          String            @map("paymentType")
   paymentMethod        String            @map("paymentMethod")
@@ -128,15 +130,15 @@ model Payment {
   expenseReceiptUrl    String?           @map("expenseReceiptUrl")
   failureReason        String?           @map("failureReason")
   processedById        Int?
-  processor            User?             @relation("PaymentProcessor", fields: [processedById], references: [id])
+  processor            User?             @relation("PaymentProcessor", fields: [processedById], references: [id], onDelete: SetNull)
   specialOfferingId    Int?              @map("specialOfferingId")
-  specialOffering      SpecialOffering?  @relation("SpecialOfferingContributions", fields: [specialOfferingId], references: [id])
+  specialOffering      SpecialOffering?  @relation("SpecialOfferingContributions", fields: [specialOfferingId], references: [id], onDelete: SetNull)
   isTemplate           Boolean?          @default(false) @map("isTemplate")
   targetGoal           Decimal?          @map("targetGoal") @db.Decimal(12, 2)
   
-  // Batch payment fields
+  // Batch payment fields with cascade
   batchPaymentId       Int?              @map("batchPaymentId")
-  batchPayment         BatchPayment?     @relation(fields: [batchPaymentId], references: [id])
+  batchPayment         BatchPayment?     @relation(fields: [batchPaymentId], references: [id], onDelete: SetNull)
   isBatchProcessed     Boolean           @default(false) @map("isBatchProcessed")
   
   // KCB integration fields
@@ -167,9 +169,9 @@ model BatchPayment {
   status            String    @default("PENDING") @map("status")
   description       String?
   createdById       Int       @map("createdById")
-  creator           User      @relation("BatchPaymentCreator", fields: [createdById], references: [id])
+  creator           User      @relation("BatchPaymentCreator", fields: [createdById], references: [id], onDelete: Cascade)
   processedById     Int?      @map("processedById")
-  processor         User?     @relation("BatchPaymentProcessor", fields: [processedById], references: [id])
+  processor         User?     @relation("BatchPaymentProcessor", fields: [processedById], references: [id], onDelete: SetNull)
   kcbTransactionId  String?   @map("kcbTransactionId")
   kcbReference      String?   @map("kcbReference")
   depositedAt       DateTime? @map("depositedAt")
@@ -197,9 +199,9 @@ model Wallet {
   lastUpdated     DateTime         @default(now()) @map("lastUpdated")
   isActive        Boolean          @default(true) @map("isActive")
   
-  // Metadata for special offerings
+  // Metadata for special offerings with proper cascade
   specialOfferingId Int?           @map("specialOfferingId")
-  specialOffering   SpecialOffering? @relation("SpecialOfferingWallets", fields: [specialOfferingId], references: [id])
+  specialOffering   SpecialOffering? @relation("SpecialOfferingWallets", fields: [specialOfferingId], references: [id], onDelete: SetNull)
   
   createdAt       DateTime         @default(now()) @map("createdAt")
   updatedAt       DateTime         @updatedAt @map("updatedAt")
@@ -216,12 +218,12 @@ model WithdrawalRequest {
   id                Int       @id @default(autoincrement())
   withdrawalReference String  @unique @map("withdrawalReference")
   walletId          Int       @map("walletId")
-  wallet            Wallet    @relation(fields: [walletId], references: [id])
+  wallet            Wallet    @relation(fields: [walletId], references: [id], onDelete: Cascade)
   amount            Decimal   @db.Decimal(12, 2)
   purpose           String
   description       String?
   requestedById     Int       @map("requestedById")
-  requester         User      @relation("WithdrawalRequester", fields: [requestedById], references: [id])
+  requester         User      @relation("WithdrawalRequester", fields: [requestedById], references: [id], onDelete: Cascade)
   status            String    @default("PENDING") @map("status")
   
   // Withdrawal destination
@@ -255,9 +257,9 @@ model WithdrawalRequest {
 model WithdrawalApproval {
   id                  Int               @id @default(autoincrement())
   withdrawalRequestId Int               @map("withdrawalRequestId")
-  withdrawalRequest   WithdrawalRequest @relation(fields: [withdrawalRequestId], references: [id])
+  withdrawalRequest   WithdrawalRequest @relation(fields: [withdrawalRequestId], references: [id], onDelete: Cascade)
   approvedById        Int               @map("approvedById")
-  approver            User              @relation("WithdrawalApprover", fields: [approvedById], references: [id])
+  approver            User              @relation("WithdrawalApprover", fields: [approvedById], references: [id], onDelete: Cascade)
   approved            Boolean
   password            String?
   approvalMethod      String            @map("approvalMethod")
@@ -281,7 +283,7 @@ model KcbTransactionSync {
   
   // Sync status with proper foreign key
   syncStatus        String   @default("UNLINKED") @map("syncStatus")
-  linkedPaymentId   Int?     @unique @map("linkedPaymentId")  // Added @unique here
+  linkedPaymentId   Int?     @unique @map("linkedPaymentId")
   linkedPayment     Payment? @relation("KcbLinkedPayment", fields: [linkedPaymentId], references: [id], onDelete: SetNull)
   
   // Raw KCB data
@@ -301,11 +303,11 @@ model Receipt {
   id              Int       @id @default(autoincrement())
   receiptNumber   String    @unique @map("receiptNumber")
   paymentId       Int       @unique @map("paymentId")
-  payment         Payment   @relation(fields: [paymentId], references: [id])
+  payment         Payment   @relation(fields: [paymentId], references: [id], onDelete: Cascade)
   userId          Int       @map("userId")
-  user            User      @relation("UserReceipts", fields: [userId], references: [id])
+  user            User      @relation("UserReceipts", fields: [userId], references: [id], onDelete: Cascade)
   generatedById   Int?      @map("generatedById")
-  generator       User?     @relation("ReceiptGenerator", fields: [generatedById], references: [id])
+  generator       User?     @relation("ReceiptGenerator", fields: [generatedById], references: [id], onDelete: SetNull)
   receiptDate     DateTime  @default(now()) @map("receiptDate")
   receiptData     Json      @map("receiptData")
   pdfPath         String?   @map("pdfPath")
@@ -323,7 +325,7 @@ model Receipt {
 model Notification {
   id               Int      @id @default(autoincrement())
   userId           Int      @map("userId")
-  user             User     @relation("UserNotifications", fields: [userId], references: [id])
+  user             User     @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
   notificationType String   @map("notificationType")
   message          String
   reference        String?
@@ -347,9 +349,9 @@ model ContactInquiry {
   message           String
   status            String    @default("PENDING")
   submittedById     Int?
-  submittedBy       User?     @relation("SubmittedByUser", fields: [submittedById], references: [id])
+  submittedBy       User?     @relation("SubmittedByUser", fields: [submittedById], references: [id], onDelete: SetNull)
   handledById       Int?
-  handledBy         User?     @relation("HandledByAdmin", fields: [handledById], references: [id])
+  handledBy         User?     @relation("HandledByAdmin", fields: [handledById], references: [id], onDelete: SetNull)
   resolutionNotes   String?
   createdAt         DateTime  @default(now()) @map("createdAt")
   updatedAt         DateTime  @updatedAt @map("updatedAt")
